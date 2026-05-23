@@ -8,8 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.cache import close_redis_client
 from app.config import get_settings
 from app.routers.auth import router as auth_router
-from app.routers.users import router as users_router
+from app.routers.content import router as content_router
 from app.routers.scopes import router as scopes_router
+from app.routers.users import router as users_router
 from app.middleware.rate_limit import RateLimitMiddleware
 
 
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(users_router)
     app.include_router(scopes_router)
+    app.include_router(content_router)
 
     return app
 

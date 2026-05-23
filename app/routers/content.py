@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import Session
+
+from app.auth.dependencies import get_current_user_id
+from app.dependencies import get_db
+from app.services.content import (
+    create_post,
+    create_thread,
+    get_post_by_id,
+    get_thread_by_slug,
+)
+
+router = APIRouter(prefix="/content", tags=["content"])
+
+
+class ThreadCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    slug: str = Field(min_length=3, max_length=120)
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1)
+    channel_slugs: list[str] = Field(min_length=1, description="At least one channel slug is required")
+
+
+class PostCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1)
+    audience: str = Field(default="public", pattern="^(public|followers)$")
+
+
+class TagOut(BaseModel):
+    id: UUID
+    tag_kind: str
+    channel_id: UUID | None = None
+    community_id: UUID | None = None
+
+
+class ThreadOut(BaseModel):
+    id: UUID
+    slug: str
+    title: str
+    body: str
+    author_id: UUID | None = None
+    vote_count: int
+    comment_count: int
+    last_activity_at: object
+    created_at: object
+    updated_at: object
+    tags: list[TagOut]
+
+
+class PostOut(BaseModel):
+    id: UUID
+    author_id: UUID | None = None
+    body: str
+    audience: str
+    vote_count: int
+    comment_count: int
+    created_at: object
+    updated_at: object
+
+
+class ThreadResponse(BaseModel):
+    thread: ThreadOut
+
+
+class PostResponse(BaseModel):
+    post: PostOut
+
+
+@router.post("/threads", response_model=ThreadResponse)
+def create_new_thread(
+    payload: ThreadCreateRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return create_thread(db, current_user_id, payload.slug, payload.title, payload.body, payload.channel_slugs)
+
+
+@router.get("/threads/{slug}", response_model=ThreadResponse)
+def get_thread(slug: str, db: Session = Depends(get_db)) -> dict[str, object]:
+    return get_thread_by_slug(db, slug)
+
+
+@router.post("/posts", response_model=PostResponse)
+def create_new_post(
+    payload: PostCreateRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return create_post(db, current_user_id, payload.body, payload.audience)
+
+
+@router.get("/posts/{post_id}", response_model=PostResponse)
+def get_post(post_id: UUID, db: Session = Depends(get_db)) -> dict[str, object]:
+    return get_post_by_id(db, post_id)
