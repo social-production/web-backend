@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_cache, get_db
 from app.services.events import (
     create_event,
-    get_event_by_slug,
+    get_event_detail,
     join_event,
     toggle_event_attendance,
     toggle_event_signal,
@@ -74,6 +76,54 @@ class EventResponse(BaseModel):
     event: EventOut
 
 
+class EventDetailResponse(BaseModel):
+    id: str
+    slug: str
+    createdAt: str
+    title: str
+    description: str
+    isPrivate: bool
+    scheduledAt: str | None = None
+    channelTags: list[dict[str, Any]]
+    communityTags: list[dict[str, Any]]
+    createdByUsername: str
+    timeLabel: str
+    locationLabel: str
+    voteCount: int
+    activeVote: int
+    commentCount: int
+    goingCount: int
+    memberCount: int
+    lastActivityAt: str
+    signalSummary: dict[str, Any] | None = None
+    lifecycle: dict[str, Any]
+    attendanceNote: str
+    agenda: list[str]
+    updates: list[dict[str, Any]]
+    updateRequests: list[dict[str, Any]]
+    viewerCanRequestUpdate: bool
+    viewerCanVoteOnUpdateRequests: bool
+    editRequests: list[dict[str, Any]]
+    viewerCanRequestEdit: bool
+    viewerCanVoteOnEditRequests: bool
+    history: list[dict[str, Any]]
+    attendees: list[str]
+    invitedUsernames: list[str]
+    eventEditors: list[dict[str, Any]]
+    members: list[dict[str, Any]]
+    viewerIsGoing: bool
+    viewerCanToggleGoing: bool
+    viewerHasEventEditAccess: bool
+    viewerCanManageEditors: bool
+    viewerCanShare: bool
+    availableEditorInvitees: list[dict[str, Any]]
+    shareContacts: list[dict[str, Any]]
+    report: dict[str, Any] | None = None
+    isRemovedByReport: bool
+    discussionNote: str
+    discussion: list[dict[str, Any]]
+
+
 class EventMembershipResponse(BaseModel):
     ok: bool
     joined: bool
@@ -108,6 +158,27 @@ class EventSignalToggleResponse(BaseModel):
     signals: SignalCountsOut
 
 
+async def _get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> UUID | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    try:
+        payload = await get_current_user_token_payload(credentials)
+    except HTTPException:
+        return None
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None
+
+
 @router.post("", response_model=EventResponse)
 async def create_new_event(
     payload: EventCreateRequest,
@@ -128,13 +199,14 @@ async def create_new_event(
     )
 
 
-@router.get("/{slug}", response_model=EventResponse)
+@router.get("/{slug}", response_model=EventDetailResponse)
 async def get_event(
     slug: str,
+    viewer_user_id: UUID | None = Depends(_get_optional_user_id),
     db: Session = Depends(get_db),
     cache: Redis = Depends(get_cache),
 ) -> dict[str, object]:
-    return await get_event_by_slug(db=db, cache=cache, slug=slug)
+    return await get_event_detail(db=db, cache=cache, slug=slug, current_user_id=viewer_user_id)
 
 
 @router.post("/{slug}/join", response_model=EventMembershipResponse)
