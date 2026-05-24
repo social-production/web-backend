@@ -10,12 +10,58 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import channels, project_memberships, project_signals, project_tags, projects
+from app.models import (
+    channels,
+    comments,
+    communities,
+    content_votes,
+    project_activities,
+    project_activity_assignments,
+    project_activity_roles,
+    project_edit_request_votes,
+    project_edit_requests,
+    project_link_request_votes,
+    project_link_requests,
+    project_links,
+    project_memberships,
+    project_phase_change_requests,
+    project_phase_change_votes,
+    project_plan_value_votes,
+    project_plan_votes,
+    project_plans,
+    project_revert_history,
+    project_service_request_setting_change_votes,
+    project_service_request_setting_changes,
+    project_service_request_settings,
+    project_service_requests,
+    project_signals,
+    project_tags,
+    project_update_request_votes,
+    project_update_requests,
+    project_updates,
+    project_value_importance_votes,
+    project_values,
+    projects,
+    reports,
+    user_follows,
+    users,
+)
 from app.services.search import index_document
+from app.services.projects_software import get_project_software_governance
+from app.utils.votes import required_votes
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
 PROJECT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
+PROJECT_PHASES = (
+    ("phase-1", 1, "P1", "Discovery", "Define values and demand."),
+    ("phase-2", 2, "P2", "Production Plan", "Select production plan."),
+    ("phase-3", 3, "P3", "Distribution Plan", "Select distribution plan."),
+    ("phase-4", 4, "P4", "Acquisition", "Prepare acquisition and inventory."),
+    ("phase-5", 5, "P5", "Activity", "Run project activities."),
+    ("phase-6", 6, "P6", "Pending Execution", "Await execution confirmation."),
+    ("phase-7", 7, "P7", "Closed", "Project has closed."),
+)
 
 
 def _serialize_project(row: Mapping[str, object], tags: list[dict[str, object]], signal_counts: dict[str, int]) -> dict[str, object]:
@@ -264,6 +310,845 @@ async def get_project_by_slug(db: Session, cache: Redis, slug: str) -> dict[str,
     tags = _get_project_tags(db, row["id"])
     signal_counts = await _get_signal_counts(db, cache, row["id"])
     return {"project": _serialize_project(row, tags, signal_counts)}
+
+
+def _iso(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _username_lookup(db: Session, user_ids: set[UUID]) -> dict[UUID, dict[str, str]]:
+    if not user_ids:
+        return {}
+    rows = db.execute(
+        select(users.c.id, users.c.username, users.c.bio).where(users.c.id.in_(list(user_ids)))
+    ).all()
+    return {
+        row[0]: {
+            "username": row[1],
+            "bio": row[2] or "",
+        }
+        for row in rows
+    }
+
+
+def _vote_summary(
+    vote_rows: list[tuple[str, UUID]],
+    member_count: int,
+    current_user_id: UUID | None,
+) -> tuple[dict[str, object], bool, bool]:
+    yes_count = 0
+    no_count = 0
+    active_vote: str | None = None
+    for vote, voter_id in vote_rows:
+        if vote == "yes":
+            yes_count += 1
+        elif vote == "no":
+            no_count += 1
+        if current_user_id is not None and voter_id == current_user_id:
+            active_vote = vote
+
+    total_votes = yes_count + no_count
+    votes_required = required_votes(member_count)
+    approval_percent = (yes_count / total_votes * 100.0) if total_votes > 0 else 0.0
+    meets_quorum = total_votes >= votes_required
+    passes = meets_quorum and approval_percent >= 66.0
+
+    remaining_eligible = max(0, member_count - total_votes)
+    max_yes = yes_count + remaining_eligible
+    max_total = total_votes + remaining_eligible
+    can_meet_quorum = max_total >= votes_required
+    can_meet_approval = (max_yes / max_total * 100.0) >= 66.0 if max_total > 0 else False
+    can_still_pass = (not passes) and can_meet_quorum and can_meet_approval
+
+    quorum_threshold_percent = (votes_required / member_count * 100.0) if member_count > 0 else 0.0
+    summary = {
+        "yesCount": yes_count,
+        "noCount": no_count,
+        "totalVotes": total_votes,
+        "approvalPercent": approval_percent,
+        "activeVote": active_vote,
+        "meetsQuorum": meets_quorum,
+        "eligibleVoterCount": member_count,
+        "quorumThresholdPercent": quorum_threshold_percent,
+        "votesRequired": votes_required,
+        "votesRemaining": max(0, votes_required - total_votes),
+        "remainingEligibleVotes": remaining_eligible,
+    }
+    return summary, passes, can_still_pass
+
+
+def _lifecycle_phases(current_phase_id: str) -> list[dict[str, object]]:
+    phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
+    current_order = phase_order.get(current_phase_id, 1)
+    phases: list[dict[str, object]] = []
+    for phase_id, order, short_label, title, summary in PROJECT_PHASES:
+        if order < current_order:
+            progress = "complete"
+        elif order == current_order:
+            progress = "current"
+        else:
+            progress = "upcoming"
+        phases.append(
+            {
+                "id": phase_id,
+                "order": order,
+                "shortLabel": short_label,
+                "title": title,
+                "summary": summary,
+                "progressState": progress,
+                "projectStatus": "active",
+                "mechanics": [],
+            }
+        )
+    return phases
+
+
+async def get_project_detail(
+    db: Session,
+    slug: str,
+    current_user_id: UUID | None = None,
+    cache: Redis | None = None,
+) -> dict[str, object]:
+    row = _get_project_by_slug_row(db, slug)
+    project_id = row["id"]
+    member_count = int(row["member_count"] or 0)
+
+    if cache is not None:
+        try:
+            signal_counts = await _get_signal_counts(db, cache, project_id)
+        except Exception:
+            signal_counts = _get_signal_counts_db(db, project_id)
+    else:
+        signal_counts = _get_signal_counts_db(db, project_id)
+
+    viewer_membership = None
+    if current_user_id is not None:
+        viewer_membership = db.execute(
+            select(project_memberships).where(
+                project_memberships.c.project_id == project_id,
+                project_memberships.c.user_id == current_user_id,
+            )
+        ).mappings().first()
+
+    viewer_is_member = viewer_membership is not None
+    viewer_is_manager = bool(viewer_membership["is_manager"]) if viewer_membership else False
+    viewer_is_manager_candidate = bool(viewer_membership["is_manager_candidate"]) if viewer_membership else False
+
+    author_row = db.execute(
+        select(users.c.username).where(users.c.id == row["author_id"])
+    ).first()
+    author_username = author_row[0] if author_row else "unknown"
+
+    channel_tag_rows = db.execute(
+        select(channels.c.slug, channels.c.name)
+        .select_from(project_tags.join(channels, channels.c.id == project_tags.c.channel_id))
+        .where(project_tags.c.project_id == project_id, project_tags.c.tag_kind == "channel")
+    ).all()
+    channel_tags = [{"slug": slug_v, "label": name, "kind": "channel"} for slug_v, name in channel_tag_rows]
+
+    community_tag_rows = db.execute(
+        select(communities.c.slug, communities.c.name)
+        .select_from(project_tags.join(communities, communities.c.id == project_tags.c.community_id))
+        .where(project_tags.c.project_id == project_id, project_tags.c.tag_kind == "community")
+    ).all()
+    community_tags = [{"slug": slug_v, "label": name, "kind": "community"} for slug_v, name in community_tag_rows]
+
+    active_vote = 0
+    if current_user_id is not None:
+        vote_row = db.execute(
+            select(content_votes.c.direction).where(
+                content_votes.c.target_type == "project",
+                content_votes.c.target_id == project_id,
+                content_votes.c.voter_id == current_user_id,
+            )
+        ).first()
+        if vote_row is not None:
+            active_vote = int(vote_row[0])
+
+    member_rows = db.execute(
+        select(project_memberships.c.user_id, project_memberships.c.is_manager, project_memberships.c.is_manager_candidate)
+        .where(project_memberships.c.project_id == project_id)
+    ).all()
+    member_ids = {member_id for member_id, _, _ in member_rows}
+
+    usernames = _username_lookup(db, member_ids | ({row["author_id"]} if row["author_id"] else set()))
+
+    members = []
+    project_managers = []
+    for member_id, is_manager, is_manager_candidate in member_rows:
+        payload = {
+            "id": str(member_id),
+            "username": usernames.get(member_id, {}).get("username", "unknown"),
+            "bio": usernames.get(member_id, {}).get("bio", ""),
+            "isManagerCandidate": bool(is_manager_candidate),
+        }
+        members.append(payload)
+        if is_manager:
+            project_managers.append(payload)
+
+    share_contact_rows = db.execute(
+        select(users.c.id, users.c.username, users.c.bio)
+        .select_from(user_follows.join(users, users.c.id == user_follows.c.followed_id))
+        .where(
+            user_follows.c.follower_id == row["author_id"],
+            user_follows.c.status == "accepted",
+        )
+        .limit(12)
+    ).all()
+    share_contacts = [
+        {"id": str(user_id), "username": username, "bio": bio or ""}
+        for user_id, username, bio in share_contact_rows
+    ]
+
+    value_rows = db.execute(
+        select(project_values.c.id, project_values.c.label, project_values.c.author_id)
+        .where(project_values.c.project_id == project_id)
+        .order_by(project_values.c.created_at.asc())
+    ).all()
+    value_ids = [value_id for value_id, _, _ in value_rows]
+    importance_rows = db.execute(
+        select(
+            project_value_importance_votes.c.value_id,
+            project_value_importance_votes.c.voter_id,
+            project_value_importance_votes.c.importance,
+        ).where(project_value_importance_votes.c.value_id.in_(value_ids or [UUID(int=0)]))
+    ).all() if value_ids else []
+
+    votes_by_value: dict[UUID, list[tuple[UUID, int]]] = {}
+    for value_id, voter_id, importance in importance_rows:
+        votes_by_value.setdefault(value_id, []).append((voter_id, int(importance)))
+
+    phase_one_values = []
+    for value_id, label, value_author_id in value_rows:
+        votes = votes_by_value.get(value_id, [])
+        vote_count = len(votes)
+        avg = (sum(score for _, score in votes) / vote_count) if vote_count > 0 else 0.0
+        if avg >= 7:
+            importance_label = "high"
+        elif avg >= 4:
+            importance_label = "medium"
+        else:
+            importance_label = "low"
+        active_importance_vote = 0
+        if current_user_id is not None:
+            for voter_id, score in votes:
+                if voter_id == current_user_id:
+                    active_importance_vote = score
+                    break
+        phase_one_values.append(
+            {
+                "id": str(value_id),
+                "label": label,
+                "authorUsername": usernames.get(value_author_id, {}).get("username", "unknown"),
+                "voteCount": vote_count,
+                "importanceScore": round(avg, 2),
+                "importanceLabel": importance_label,
+                "activeImportanceVote": active_importance_vote,
+            }
+        )
+
+    viewer_signal = None
+    if current_user_id is not None:
+        viewer_signal_row = db.execute(
+            select(project_signals.c.signal_type).where(
+                project_signals.c.project_id == project_id,
+                project_signals.c.user_id == current_user_id,
+            )
+        ).first()
+        if viewer_signal_row is not None:
+            viewer_signal = viewer_signal_row[0]
+
+    required_demand = required_votes(member_count)
+    signal_total = signal_counts["total"]
+    demand_ratio_percent = (signal_counts["demand"] / signal_total * 100.0) if signal_total > 0 else 0.0
+    signal_summary = {
+        "demandCount": signal_counts["demand"],
+        "oppositionCount": signal_counts["opposition"],
+        "totalCount": signal_counts["total"],
+        "viewerSignal": viewer_signal,
+        "signalRatioPercent": demand_ratio_percent,
+        "ratioRequirementMet": demand_ratio_percent >= 66.0 if signal_total > 0 else False,
+        "requiredDemandCount": required_demand,
+        "demandRequirementMet": signal_counts["demand"] >= required_demand,
+        "advancementUnlocked": signal_counts["demand"] >= required_demand,
+        "usesPlatformVoteContext": False,
+        "voteContextLabel": "Project members",
+        "voteContextPopulation": member_count,
+    }
+
+    plan_rows = db.execute(
+        select(project_plans).where(project_plans.c.project_id == project_id).order_by(project_plans.c.created_at.desc())
+    ).mappings().all()
+
+    phase_two_plans = []
+    phase_three_plans = []
+    phase_two_winning = None
+    phase_three_winning = None
+
+    for plan in plan_rows:
+        plan_vote_rows = db.execute(
+            select(project_plan_votes.c.vote, project_plan_votes.c.voter_id).where(project_plan_votes.c.plan_id == plan["id"])
+        ).all()
+        overall_summary, _, _ = _vote_summary(plan_vote_rows, member_count, current_user_id)
+
+        value_assessments = []
+        for value_id, value_label, _ in value_rows:
+            value_vote_rows = db.execute(
+                select(project_plan_value_votes.c.vote, project_plan_value_votes.c.voter_id)
+                .where(
+                    project_plan_value_votes.c.plan_id == plan["id"],
+                    project_plan_value_votes.c.value_id == value_id,
+                )
+            ).all()
+            summary, _, _ = _vote_summary(value_vote_rows, member_count, current_user_id)
+            value_assessments.append({
+                "valueId": str(value_id),
+                "valueLabel": value_label,
+                **summary,
+            })
+
+        plan_payload = dict(plan["plan_payload"] or {})
+        plan_phases = [
+            {
+                "id": str(item.get("id") or f"phase-{idx + 1}"),
+                "title": str(item.get("title") or f"Phase {idx + 1}"),
+                "details": str(item.get("details") or ""),
+                "materialsLabel": str(item.get("materialsLabel") or ""),
+                "costLabel": str(item.get("costLabel") or ""),
+            }
+            for idx, item in enumerate(list(plan_payload.get("planPhases") or []))
+        ]
+
+        base_plan = {
+            "id": str(plan["id"]),
+            "title": plan["title"],
+            "authorUsername": usernames.get(plan["author_id"], {}).get("username", "unknown"),
+            "createdAt": _iso(plan["created_at"]),
+            "description": plan["description"],
+            "repositoryUrl": plan["repository_url"],
+            "demandSignalSnapshot": signal_counts["demand"],
+            "demandConsiderationNote": plan["demand_consideration_note"] or "",
+            "totalCostLabel": plan["total_cost_label"] or "",
+            "planPhases": plan_phases,
+            "valueAssessments": value_assessments,
+            "overallApproval": overall_summary,
+            "isLeading": bool(plan["is_leading"]),
+        }
+
+        if plan["phase_kind"] in {"production", "organisation"}:
+            item = {
+                **base_plan,
+                "projectSubtype": plan["project_subtype"] or "standard",
+                "projectSubtypeLabel": (plan["project_subtype"] or "standard").replace("-", " ").title(),
+                "outputSummary": str(plan_payload.get("outputSummary") or ""),
+                "materialsSummary": str(plan_payload.get("materialsSummary") or ""),
+                "acquisitionsSummary": str(plan_payload.get("acquisitionsSummary") or ""),
+                "acquisitionBundles": list(plan_payload.get("acquisitionBundles") or []),
+                "purchaseRows": list(plan_payload.get("purchaseRows") or []),
+                "viewerCanEdit": current_user_id is not None and plan["author_id"] == current_user_id,
+            }
+            phase_two_plans.append(item)
+            if plan["is_leading"]:
+                phase_two_winning = str(plan["id"])
+
+        if plan["phase_kind"] in {"distribution", "access"}:
+            item = {
+                **base_plan,
+                "distributionSummary": str(plan_payload.get("distributionSummary") or ""),
+                "accessSummary": str(plan_payload.get("accessSummary") or ""),
+                "reserveSummary": str(plan_payload.get("reserveSummary") or ""),
+                "requestSystemEnabled": bool(plan_payload.get("requestSystemEnabled") or False),
+                "requestMode": str(plan_payload.get("requestMode") or "both"),
+                "allowOffScheduleRequests": bool(plan_payload.get("allowOffScheduleRequests") or False),
+            }
+            phase_three_plans.append(item)
+            if plan["is_leading"]:
+                phase_three_winning = str(plan["id"])
+
+    activities_rows = db.execute(
+        select(project_activities).where(project_activities.c.project_id == project_id).order_by(project_activities.c.scheduled_at.desc())
+    ).mappings().all()
+    activity_ids = [row_v["id"] for row_v in activities_rows]
+    role_rows = db.execute(
+        select(project_activity_roles).where(project_activity_roles.c.activity_id.in_(activity_ids or [UUID(int=0)]))
+    ).mappings().all() if activity_ids else []
+
+    role_ids = [role["id"] for role in role_rows]
+    assignment_rows = db.execute(
+        select(project_activity_assignments.c.role_id, project_activity_assignments.c.user_id)
+        .where(project_activity_assignments.c.role_id.in_(role_ids or [UUID(int=0)]))
+    ).all() if role_ids else []
+
+    assignments_by_role: dict[UUID, list[UUID]] = {}
+    for role_id, user_id in assignment_rows:
+        assignments_by_role.setdefault(role_id, []).append(user_id)
+
+    roles_by_activity: dict[UUID, list[Mapping[str, object]]] = {}
+    for role in role_rows:
+        roles_by_activity.setdefault(role["activity_id"], []).append(role)
+
+    activities = []
+    for activity in activities_rows:
+        activity_roles = []
+        minimum_participants = 0
+        maximum_participants: int | None = 0
+        committed_users: set[UUID] = set()
+        viewer_assigned_label = None
+
+        for role in roles_by_activity.get(activity["id"], []):
+            assigned_users = assignments_by_role.get(role["id"], [])
+            committed_users.update(assigned_users)
+            is_viewer_assigned = current_user_id is not None and current_user_id in assigned_users
+            if is_viewer_assigned:
+                viewer_assigned_label = role["label"]
+
+            minimum_participants += int(role["required_count"] or 0)
+            if role["maximum_count"] is None:
+                maximum_participants = None
+            elif maximum_participants is not None:
+                maximum_participants += int(role["maximum_count"])
+
+            activity_roles.append(
+                {
+                    "label": role["label"],
+                    "filledCount": len(assigned_users),
+                    "requiredCount": int(role["required_count"] or 0),
+                    "maximumCount": role["maximum_count"],
+                    "isViewerAssigned": is_viewer_assigned,
+                }
+            )
+
+        activities.append(
+            {
+                "id": str(activity["id"]),
+                "title": activity["title"],
+                "authorUsername": usernames.get(activity["author_id"], {}).get("username", "unknown"),
+                "scheduledAt": _iso(activity["scheduled_at"]),
+                "startAt": _iso(activity["scheduled_at"]),
+                "endAt": _iso(activity["ends_at"]),
+                "locationLabel": activity["location_label"],
+                "minimumParticipants": minimum_participants,
+                "maximumParticipants": maximum_participants,
+                "committedCount": len(committed_users),
+                "viewerAssignedRoleLabel": viewer_assigned_label,
+                "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
+                "statusTone": "green" if activity["status"] == "active" else "yellow",
+                "roles": activity_roles,
+                "note": activity["note"],
+                "isActive": activity["status"] == "active",
+            }
+        )
+
+    updates_rows = db.execute(
+        select(project_updates).where(project_updates.c.project_id == project_id).order_by(project_updates.c.created_at.desc())
+    ).mappings().all()
+    updates = [
+        {
+            "id": str(item["id"]),
+            "title": item["title"],
+            "body": item["body"],
+            "authorUsername": usernames.get(item["author_id"], {}).get("username", "unknown"),
+            "createdAt": _iso(item["created_at"]),
+        }
+        for item in updates_rows
+    ]
+
+    def _build_request_list(request_table, vote_table, body_keys: list[str]) -> list[dict[str, object]]:
+        rows = db.execute(
+            select(request_table).where(request_table.c.project_id == project_id).order_by(request_table.c.created_at.desc())
+        ).mappings().all()
+        out = []
+        for req in rows:
+            vote_rows = db.execute(
+                select(vote_table.c.vote, vote_table.c.voter_id).where(vote_table.c.request_id == req["id"])
+            ).all()
+            summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+            payload = {
+                "id": str(req["id"]),
+                "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                "createdAt": _iso(req["created_at"]),
+                "approvalThresholdPercent": 66,
+                "voteSummary": summary,
+                "passesApprovalThreshold": passes,
+                "canStillPass": can_still,
+            }
+            for key in body_keys:
+                payload[key] = req[key.lower()] if key.lower() in req else req.get(key)
+            out.append(payload)
+        return out
+
+    update_requests = _build_request_list(project_update_requests, project_update_request_votes, ["body"])
+    edit_requests = _build_request_list(project_edit_requests, project_edit_request_votes, ["title", "description"])
+
+    phase_change_rows = db.execute(
+        select(project_phase_change_requests)
+        .where(project_phase_change_requests.c.project_id == project_id)
+        .order_by(project_phase_change_requests.c.created_at.desc())
+    ).mappings().all()
+    phase_title_map = {item[0]: item[3] for item in PROJECT_PHASES}
+    phase_change_requests = []
+    for req in phase_change_rows:
+        vote_rows = db.execute(
+            select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id)
+            .where(project_phase_change_votes.c.request_id == req["id"])
+        ).all()
+        summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+        conversion_target = None
+        if req["conversion_target_mode"] and req["conversion_target_subtype"]:
+            conversion_target = {
+                "projectMode": req["conversion_target_mode"],
+                "projectSubtype": req["conversion_target_subtype"],
+                "projectModeLabel": str(req["conversion_target_mode"]).replace("-", " ").title(),
+                "projectSubtypeLabel": str(req["conversion_target_subtype"]).replace("-", " ").title(),
+                "entryPhaseId": req["target_phase_id"],
+                "entryPhaseLabel": phase_title_map.get(req["target_phase_id"], req["target_phase_id"]),
+            }
+        phase_change_requests.append(
+            {
+                "id": str(req["id"]),
+                "targetPhaseId": req["target_phase_id"],
+                "targetPhaseLabel": phase_title_map.get(req["target_phase_id"], req["target_phase_id"]),
+                "reason": req["reason"],
+                "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                "createdAt": _iso(req["created_at"]),
+                "kind": req["change_kind"],
+                "closeOutcome": req["close_outcome"],
+                "conversionTarget": conversion_target,
+                "approvalThresholdPercent": 66,
+                "voteSummary": summary,
+                "passesApprovalThreshold": passes,
+                "canStillPass": can_still,
+            }
+        )
+
+    revert_rows = db.execute(
+        select(project_revert_history).where(project_revert_history.c.project_id == project_id).order_by(project_revert_history.c.created_at.desc())
+    ).mappings().all()
+    revert_history = [
+        {
+            "id": str(item["id"]),
+            "targetPhaseId": item["target_phase_id"],
+            "reason": item["reason"],
+            "authorUsername": usernames.get(item["author_id"], {}).get("username", "unknown"),
+            "createdAt": _iso(item["created_at"]),
+        }
+        for item in revert_rows
+    ]
+
+    service_settings = db.execute(
+        select(project_service_request_settings).where(project_service_request_settings.c.project_id == project_id)
+    ).mappings().first()
+    if service_settings is None:
+        service_settings_payload = {
+            "enabled": False,
+            "requestMode": "both",
+            "allowOffScheduleRequests": False,
+            "summary": "",
+        }
+    else:
+        service_settings_payload = {
+            "enabled": bool(service_settings["enabled"]),
+            "requestMode": service_settings["request_mode"],
+            "allowOffScheduleRequests": bool(service_settings["allow_off_schedule_requests"]),
+            "summary": service_settings["summary"],
+        }
+
+    service_requests_rows = db.execute(
+        select(project_service_requests).where(project_service_requests.c.project_id == project_id).order_by(project_service_requests.c.created_at.desc())
+    ).mappings().all()
+    service_requests = [
+        {
+            "id": str(item["id"]),
+            "title": item["title"],
+            "body": item["body"],
+            "requesterUsername": usernames.get(item["requester_id"], {}).get("username", "unknown"),
+            "createdAt": _iso(item["created_at"]),
+            "status": item["status"],
+            "scheduledAt": _iso(item["scheduled_at"]) if item["scheduled_at"] else None,
+            "endsAt": _iso(item["ends_at"]) if item["ends_at"] else None,
+            "linkedActivityId": str(item["linked_activity_id"]) if item["linked_activity_id"] else None,
+        }
+        for item in service_requests_rows
+    ]
+
+    settings_change_rows = db.execute(
+        select(project_service_request_setting_changes)
+        .where(project_service_request_setting_changes.c.project_id == project_id)
+        .order_by(project_service_request_setting_changes.c.created_at.desc())
+    ).mappings().all()
+    settings_change_requests = []
+    for req in settings_change_rows:
+        vote_rows = db.execute(
+            select(project_service_request_setting_change_votes.c.vote, project_service_request_setting_change_votes.c.voter_id)
+            .where(project_service_request_setting_change_votes.c.request_id == req["id"])
+        ).all()
+        summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+        settings_change_requests.append(
+            {
+                "id": str(req["id"]),
+                "reason": req["reason"],
+                "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                "createdAt": _iso(req["created_at"]),
+                "proposedSettings": {
+                    "enabled": bool(req["enabled"]),
+                    "requestMode": req["request_mode"],
+                    "allowOffScheduleRequests": bool(req["allow_off_schedule_requests"]),
+                    "summary": service_settings_payload["summary"],
+                },
+                "approvalThresholdPercent": 66,
+                "voteSummary": summary,
+                "passesApprovalThreshold": passes,
+                "canStillPass": can_still,
+            }
+        )
+
+    link_rows = db.execute(
+        select(project_links).where(project_links.c.source_project_id == project_id)
+    ).mappings().all()
+    auto_links = [
+        {
+            "id": str(item["id"]),
+            "title": item["relationship_label"],
+            "relationshipLabel": item["relationship_label"],
+            "summary": item["summary"],
+            "href": None,
+            "publicItem": None,
+        }
+        for item in link_rows
+    ]
+
+    link_request_rows = db.execute(
+        select(project_link_requests).where(project_link_requests.c.source_project_id == project_id).order_by(project_link_requests.c.created_at.desc())
+    ).mappings().all()
+    manual_link_requests = []
+    for req in link_request_rows:
+        this_votes = db.execute(
+            select(project_link_request_votes.c.vote).where(
+                project_link_request_votes.c.request_id == req["id"],
+                project_link_request_votes.c.vote_scope == "source",
+            )
+        ).all()
+        yes = sum(1 for (vote,) in this_votes if vote == "yes")
+        no = sum(1 for (vote,) in this_votes if vote == "no")
+        manual_link_requests.append(
+            {
+                "id": str(req["id"]),
+                "title": req["relationship_label"],
+                "relationshipLabel": req["relationship_label"],
+                "summary": req["summary"],
+                "statusLabel": req["status"],
+                "proposedByUsername": usernames.get(req["proposed_by"], {}).get("username", "unknown"),
+                "createdAtLabel": _iso(req["created_at"]),
+                "targetProjectHref": None,
+                "thisProjectVote": {
+                    "projectTitle": row["title"],
+                    "yesCount": yes,
+                    "noCount": no,
+                    "memberCount": member_count,
+                    "approvalsRequired": required_votes(member_count),
+                    "approvalsRemaining": max(0, required_votes(member_count) - yes),
+                    "approvalPercent": (yes / (yes + no) * 100.0) if (yes + no) > 0 else 0.0,
+                    "statusLabel": req["status"],
+                    "resultNote": "",
+                    "viewerCanVote": viewer_is_member,
+                    "viewerVote": None,
+                },
+                "otherProjectVote": {
+                    "projectTitle": "Linked project",
+                    "yesCount": 0,
+                    "noCount": 0,
+                    "memberCount": 0,
+                    "approvalsRequired": 0,
+                    "approvalsRemaining": 0,
+                    "approvalPercent": 0,
+                    "statusLabel": "pending",
+                    "resultNote": "",
+                    "viewerCanVote": False,
+                    "viewerVote": None,
+                },
+            }
+        )
+
+    linkable_rows = db.execute(
+        select(projects.c.slug, projects.c.title).where(projects.c.id != project_id).order_by(projects.c.title.asc()).limit(20)
+    ).all()
+    linkable_projects = [{"slug": s, "title": t, "href": f"/projects/{s}"} for s, t in linkable_rows]
+
+    phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
+    current_order = phase_order.get(row["current_phase_id"], 1)
+    next_phase = next((p for p in PROJECT_PHASES if p[1] == current_order + 1), None)
+
+    software_governance = None
+    if row["project_subtype"] == "software":
+        software_governance = get_project_software_governance(db=db, project_slug=row["slug"], current_user_id=current_user_id)
+
+    request_system = {
+        "enabled": bool(service_settings_payload["enabled"]),
+        "requestCount": len(service_requests),
+        "requests": service_requests,
+        "viewerCanSubmitRequests": viewer_is_member,
+        "viewerCanReviewRequests": viewer_is_manager,
+        "viewerCanRequestSettingsChanges": viewer_is_member,
+        "viewerCanVoteOnSettingsChanges": viewer_is_member,
+        "requiresSchedule": service_settings_payload["requestMode"] == "calendar",
+        "settings": service_settings_payload,
+        "settingsChangeRequests": settings_change_requests,
+    }
+
+    lifecycle = {
+        "projectMode": row["project_mode"],
+        "currentSubtype": row["project_subtype"],
+        "currentSubtypeLabel": row["project_subtype"].replace("-", " ").title() if row["project_subtype"] else None,
+        "usesPlatformLifecycle": row["project_mode"] != "personal-service",
+        "supportsDemandSignals": True,
+        "supportsPlanning": row["project_mode"] != "personal-service",
+        "currentPhaseId": row["current_phase_id"],
+        "quorumThresholdPercent": (required_votes(member_count) / member_count * 100.0) if member_count > 0 else 0.0,
+        "quorumVotesRequired": required_votes(member_count),
+        "voteContextLabel": "Project members",
+        "voteContextPopulation": member_count,
+        "notes": [],
+        "phases": _lifecycle_phases(row["current_phase_id"]),
+        "viewerCanRequestPhaseChanges": viewer_is_member,
+        "viewerCanVoteOnPhaseChanges": viewer_is_member,
+        "phaseChangeRequests": phase_change_requests,
+        "viewerCanAdvancePhase": viewer_is_manager,
+        "nextPhaseId": next_phase[0] if next_phase else None,
+        "nextPhaseLabel": next_phase[3] if next_phase else None,
+        "viewerCanRevertPhase": viewer_is_manager,
+        "revertablePhaseIds": [phase_id for phase_id, order, _, _, _ in PROJECT_PHASES if order < current_order and order <= 3],
+        "revertHistory": revert_history,
+        "requestSystem": request_system,
+        "personalService": {
+            "availabilitySummary": "",
+            "travelRadiusLabel": "",
+            "usesCalendar": service_settings_payload["requestMode"] == "calendar",
+            "requestMode": service_settings_payload["requestMode"],
+        } if row["project_mode"] == "personal-service" else None,
+        "phaseOne": {
+            "values": phase_one_values,
+            "viewerCanSignalDemand": viewer_is_member,
+            "viewerHasDemandSignal": viewer_signal == "demand",
+            "viewerCanSignalOpposition": viewer_is_member,
+            "viewerHasOppositionSignal": viewer_signal == "opposition",
+            "signalSummary": signal_summary,
+            "viewerCanAddValue": viewer_is_member,
+            "viewerCanVoteOnValues": viewer_is_member,
+        },
+        "phaseTwo": {
+            "plans": phase_two_plans,
+            "winningPlanId": phase_two_winning,
+            "viewerCanSubmitPlans": viewer_is_member,
+            "viewerCanVoteOnPlans": viewer_is_member,
+            "availableAssetManagementServices": [],
+        },
+        "phaseThree": {
+            "plans": phase_three_plans,
+            "winningPlanId": phase_three_winning,
+            "viewerCanSubmitPlans": viewer_is_member,
+            "viewerCanVoteOnPlans": viewer_is_member,
+            "requestSystemEnabled": bool(service_settings_payload["enabled"]),
+        },
+        "phaseFour": None,
+        "phaseFive": {
+            "activities": activities,
+            "history": [],
+            "viewerCanCreateActivities": viewer_is_member,
+            "selectablePlanPhases": [],
+            "softwareGovernance": software_governance,
+        },
+    }
+
+    report_row = db.execute(
+        select(reports.c.id, reports.c.resolution).where(reports.c.target_type == "project", reports.c.target_id == project_id)
+    ).first()
+    report = None
+    is_removed = False
+    if report_row is not None:
+        is_removed = report_row[1] == "removed"
+
+    discussion_rows = db.execute(
+        select(comments.c.id, comments.c.author_id, comments.c.body, comments.c.created_at, comments.c.vote_count)
+        .where(comments.c.subject_type == "project", comments.c.subject_id == project_id, comments.c.parent_id.is_(None))
+        .order_by(comments.c.created_at.asc())
+    ).all()
+    discussion = [
+        {
+            "id": str(comment_id),
+            "authorUsername": usernames.get(author_id, {}).get("username", "unknown"),
+            "body": body,
+            "createdAt": _iso(created_at),
+            "voteCount": int(vote_count or 0),
+            "activeVote": 0,
+            "report": None,
+            "replies": [],
+        }
+        for comment_id, author_id, body, created_at, vote_count in discussion_rows
+    ]
+
+    return {
+        "id": str(project_id),
+        "slug": row["slug"],
+        "createdAt": _iso(row["created_at"]),
+        "title": row["title"],
+        "authorUsername": author_username,
+        "projectMode": row["project_mode"],
+        "projectSubtype": row["project_subtype"],
+        "description": row["description"],
+        "channelTags": channel_tags,
+        "communityTags": community_tags,
+        "stage": row["stage_label"],
+        "locationLabel": row["location_label"],
+        "voteCount": int(row["vote_count"] or 0),
+        "activeVote": active_vote,
+        "signalCount": signal_counts["total"],
+        "commentCount": int(row["comment_count"] or 0),
+        "memberCount": member_count,
+        "lastActivityAt": _iso(row["last_activity_at"]),
+        "lifecycle": lifecycle,
+        "updates": updates,
+        "updateRequests": update_requests,
+        "viewerCanRequestUpdate": viewer_is_member,
+        "viewerCanVoteOnUpdateRequests": viewer_is_member,
+        "editRequests": edit_requests,
+        "viewerCanRequestEdit": viewer_is_member,
+        "viewerCanVoteOnEditRequests": viewer_is_member,
+        "linksFrame": {
+            "projectSlug": row["slug"],
+            "intro": "Project links",
+            "autoLinks": auto_links,
+            "manualLinks": [],
+            "manualLinkRequests": manual_link_requests,
+            "linkableProjects": linkable_projects,
+            "viewerCanProposeLinks": viewer_is_member,
+            "conversionNote": "",
+            "conversionWorkflow": [],
+            "conversionLineage": None,
+            "requestFrames": [
+                {"id": "borrowing", "title": "Borrowing", "body": ""},
+                {"id": "delivery", "title": "Delivery", "body": ""},
+                {"id": "asset-use", "title": "Asset use", "body": ""},
+            ],
+            "placeholderSections": [],
+        },
+        "inventoryFrame": None,
+        "history": [],
+        "projectManagers": project_managers,
+        "members": members,
+        "viewerIsMember": viewer_is_member,
+        "viewerCanToggleMembership": current_user_id is not None,
+        "viewerCanShare": viewer_is_member,
+        "viewerCanToggleManagerNomination": viewer_is_member,
+        "viewerIsManagerCandidate": viewer_is_manager_candidate,
+        "viewerIsProjectManager": viewer_is_manager,
+        "shareContacts": share_contacts,
+        "report": report,
+        "isRemovedByReport": is_removed,
+        "discussionNote": "",
+        "discussion": discussion,
+    }
 
 
 def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:

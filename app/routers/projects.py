@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from uuid import UUID
+from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_cache, get_db
 from app.services.projects import (
     create_project,
-    get_project_by_slug,
+    get_project_detail,
     join_project,
     leave_project,
     toggle_project_signal,
@@ -74,6 +76,51 @@ class ProjectResponse(BaseModel):
     project: ProjectOut
 
 
+class ProjectDetailResponse(BaseModel):
+    id: str
+    slug: str
+    createdAt: str
+    title: str
+    authorUsername: str
+    projectMode: str
+    projectSubtype: str | None = None
+    description: str
+    channelTags: list[dict[str, Any]]
+    communityTags: list[dict[str, Any]]
+    stage: str
+    locationLabel: str
+    voteCount: int
+    activeVote: int
+    signalCount: int
+    commentCount: int
+    memberCount: int
+    lastActivityAt: str
+    lifecycle: dict[str, Any]
+    updates: list[dict[str, Any]]
+    updateRequests: list[dict[str, Any]]
+    viewerCanRequestUpdate: bool
+    viewerCanVoteOnUpdateRequests: bool
+    editRequests: list[dict[str, Any]]
+    viewerCanRequestEdit: bool
+    viewerCanVoteOnEditRequests: bool
+    linksFrame: dict[str, Any]
+    inventoryFrame: dict[str, Any] | None = None
+    history: list[dict[str, Any]]
+    projectManagers: list[dict[str, Any]]
+    members: list[dict[str, Any]]
+    viewerIsMember: bool
+    viewerCanToggleMembership: bool
+    viewerCanShare: bool
+    viewerCanToggleManagerNomination: bool
+    viewerIsManagerCandidate: bool
+    viewerIsProjectManager: bool
+    shareContacts: list[dict[str, Any]]
+    report: dict[str, Any] | None = None
+    isRemovedByReport: bool
+    discussionNote: str
+    discussion: list[dict[str, Any]]
+
+
 class ProjectMembershipResponse(BaseModel):
     ok: bool
     joined: bool
@@ -92,6 +139,27 @@ class ProjectSignalToggleResponse(BaseModel):
     action: str
     signal_type: str
     signals: SignalCountsOut
+
+
+async def _get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> UUID | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    try:
+        payload = await get_current_user_token_payload(credentials)
+    except HTTPException:
+        return None
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None
 
 
 @router.post("", response_model=ProjectResponse)
@@ -113,13 +181,14 @@ async def create_new_project(
     )
 
 
-@router.get("/{slug}", response_model=ProjectResponse)
+@router.get("/{slug}", response_model=ProjectDetailResponse)
 async def get_project(
     slug: str,
+    viewer_user_id: UUID | None = Depends(_get_optional_user_id),
     db: Session = Depends(get_db),
     cache: Redis = Depends(get_cache),
 ) -> dict[str, object]:
-    return await get_project_by_slug(db=db, cache=cache, slug=slug)
+    return await get_project_detail(db=db, cache=cache, slug=slug, current_user_id=viewer_user_id)
 
 
 @router.post("/{slug}/join", response_model=ProjectMembershipResponse)
