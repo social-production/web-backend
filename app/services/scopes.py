@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import channels, communities, scope_memberships, users
+from app.services.search import index_document
 
 CHANNEL_SCOPE_KIND = "channel"
 COMMUNITY_SCOPE_KIND = "community"
@@ -118,6 +119,15 @@ def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, des
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Channel slug already exists") from exc
 
+    index_document(
+        db=db,
+        entity_type="channel",
+        entity_id=created_row["id"],
+        title=created_row["name"],
+        summary=created_row["description"],
+        meta="channel",
+        href=f"/channels/{created_row['slug']}",
+    )
     return {"channel": _serialize_channel(created_row)}
 
 
@@ -153,6 +163,15 @@ def create_community(db: Session, current_user_id: UUID, slug: str, name: str, d
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Community slug already exists") from exc
 
+    index_document(
+        db=db,
+        entity_type="community",
+        entity_id=created_row["id"],
+        title=created_row["name"],
+        summary=created_row["description"],
+        meta="community",
+        href=f"/communities/{created_row['slug']}",
+    )
     return {"community": _serialize_community(created_row)}
 
 

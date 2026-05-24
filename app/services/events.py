@@ -18,6 +18,7 @@ from app.models import (
     event_tags,
     events,
 )
+from app.services.search import index_document
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 EVENT_ATTENDANCE_STATES = frozenset({"going", "not-going"})
@@ -226,6 +227,15 @@ def create_event(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Event slug already exists") from exc
 
     tags = _get_event_tags(db, created["id"])
+    index_document(
+        db=db,
+        entity_type="event",
+        entity_id=created["id"],
+        title=created["title"],
+        summary=created["description"],
+        meta=created["location_label"],
+        href=f"/events/{created['slug']}",
+    )
     return {"event": _serialize_event(created, tags, {"demand": 0, "opposition": 0, "total": 0})}
 
 

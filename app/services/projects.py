@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import channels, project_memberships, project_signals, project_tags, projects
+from app.services.search import index_document
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
@@ -246,6 +247,15 @@ def create_project(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project slug already exists") from exc
 
     tags = _get_project_tags(db, created["id"])
+    index_document(
+        db=db,
+        entity_type="project",
+        entity_id=created["id"],
+        title=created["title"],
+        summary=created["description"],
+        meta=created["project_mode"],
+        href=f"/projects/{created['slug']}",
+    )
     return {"project": _serialize_project(created, tags, {"demand": 0, "opposition": 0, "total": 0})}
 
 

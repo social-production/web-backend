@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import channels, posts, thread_tags, threads
+from app.services.search import index_document
 
 VALID_AUDIENCE = frozenset({"public", "followers"})
 
@@ -135,6 +136,15 @@ def create_thread(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Thread slug already exists") from exc
 
     tags = _get_thread_tags(db, thread_row["id"])
+    index_document(
+        db=db,
+        entity_type="thread",
+        entity_id=thread_row["id"],
+        title=thread_row["title"],
+        summary=thread_row["body"],
+        meta="thread",
+        href=f"/threads/{thread_row['slug']}",
+    )
     return {"thread": _serialize_thread(thread_row, tags)}
 
 

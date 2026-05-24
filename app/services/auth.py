@@ -14,6 +14,7 @@ from app.auth.jwt import get_access_token_payload, create_access_token
 from app.auth.passwords import hash_password, verify_password
 from app.cache import get_redis_client
 from app.models import user_settings, users
+from app.services.search import index_document
 
 AUTH_RATE_LIMIT = 10
 AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -94,6 +95,15 @@ def register_user(db: Session, username: str, password: str, profile_bio: str | 
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists") from exc
 
+    index_document(
+        db=db,
+        entity_type="user",
+        entity_id=created_user["id"],
+        title=created_user["username"],
+        summary=created_user["bio"] if created_user["bio"] else created_user["username"],
+        meta="user",
+        href=f"/users/{created_user['username']}",
+    )
     access_token = create_access_token(str(created_user["id"]))
     return _build_auth_response(created_user, access_token)
 
