@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import Session
+
+from app.auth.dependencies import get_current_user_id
+from app.dependencies import get_db
+from app.services.messages import (
+    create_group_conversation,
+    get_messages_for_conversation,
+    list_conversations,
+    send_message,
+    start_direct_conversation,
+)
+
+router = APIRouter(prefix="/messages", tags=["messages"])
+
+
+class ParticipantOut(BaseModel):
+    id: UUID
+    username: str
+
+
+class ConversationOut(BaseModel):
+    id: UUID
+    kind: str
+    title: str | None = None
+    created_by: UUID | None = None
+    created_at: object
+    updated_at: object
+    last_message_at: object
+    participants: list[ParticipantOut]
+
+
+class ConversationResponse(BaseModel):
+    conversation: ConversationOut
+
+
+class StartDirectConversationRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    other_username: str = Field(min_length=3, max_length=32)
+
+
+class CreateGroupConversationRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    participant_usernames: list[str] = Field(default_factory=list)
+
+
+class ConversationsListResponse(BaseModel):
+    total: int
+    items: list[ConversationOut]
+
+
+class SendMessageRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1)
+
+
+class MessageOut(BaseModel):
+    id: UUID
+    conversation_id: UUID
+    sender_id: UUID | None = None
+    body: str
+    created_at: object
+    updated_at: object
+
+
+class MessageResponse(BaseModel):
+    message: MessageOut
+
+
+class ConversationMessagesResponse(BaseModel):
+    conversation_id: UUID
+    total: int
+    items: list[MessageOut]
+
+
+@router.post("/direct", response_model=ConversationResponse)
+def start_direct(
+    payload: StartDirectConversationRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return start_direct_conversation(
+        db=db,
+        current_user_id=current_user_id,
+        other_username=payload.other_username,
+    )
+
+
+@router.post("/group", response_model=ConversationResponse)
+def create_group(
+    payload: CreateGroupConversationRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return create_group_conversation(
+        db=db,
+        current_user_id=current_user_id,
+        title=payload.title,
+        participant_usernames=payload.participant_usernames,
+    )
+
+
+@router.get("/conversations", response_model=ConversationsListResponse)
+def list_my_conversations(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return list_conversations(db=db, current_user_id=current_user_id)
+
+
+@router.post("/conversations/{conversation_id}/messages", response_model=MessageResponse)
+def send_conversation_message(
+    conversation_id: UUID,
+    payload: SendMessageRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return send_message(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        body=payload.body,
+    )
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=ConversationMessagesResponse)
+def get_conversation_messages(
+    conversation_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_messages_for_conversation(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+    )
