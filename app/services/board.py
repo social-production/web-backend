@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from redis import Redis as SyncRedis
 from sqlalchemy import case, delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import board_standing_votes, meaningful_actions, platform_board_memberships, users
 from app.utils.votes import required_votes
 
@@ -17,16 +20,40 @@ BOARD_STATE_CANDIDATE = "candidate"
 VALID_BOARD_STATES = frozenset({BOARD_STATE_MEMBER, BOARD_STATE_CANDIDATE})
 MIN_APPROVAL_RATIO = 0.66
 VOTE_VALUE_MAP = {"yes": 1, "no": -1}
+WEEKLY_ACTIVE_CACHE_KEY = "governance:weekly_active"
+WEEKLY_ACTIVE_CACHE_TTL_SECONDS = 3600
+
+
+@lru_cache(maxsize=1)
+def _redis_client() -> SyncRedis:
+    settings = get_settings()
+    return SyncRedis.from_url(settings.redis_url, decode_responses=True)
 
 
 def _weekly_active_users(db: Session) -> int:
+    try:
+        cached = _redis_client().get(WEEKLY_ACTIVE_CACHE_KEY)
+        if cached is not None:
+            return max(0, int(cached))
+    except Exception:
+        # Cache errors should not block governance calculations.
+        pass
+
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     total = db.execute(
         select(func.count(func.distinct(meaningful_actions.c.user_id))).where(
             meaningful_actions.c.occurred_at >= week_ago
         )
     ).scalar_one()
-    return int(total or 0)
+    computed = int(total or 0)
+
+    try:
+        _redis_client().setex(WEEKLY_ACTIVE_CACHE_KEY, WEEKLY_ACTIVE_CACHE_TTL_SECONDS, computed)
+    except Exception:
+        # Cache write failures are non-fatal.
+        pass
+
+    return computed
 
 
 def _vote_stats_map(db: Session, target_user_ids: list[UUID]) -> dict[UUID, dict[str, object]]:

@@ -9,6 +9,7 @@ from app.cache import close_redis_client
 from app.config import get_settings
 from app.routers.auth import router as auth_router
 from app.routers.board import router as board_router
+from app.routers.bootstrap import router as bootstrap_router
 from app.routers.content import router as content_router
 from app.routers.events import router as events_router
 from app.routers.governance import router as governance_router
@@ -19,6 +20,7 @@ from app.routers.projects_phases import router as projects_phases_router
 from app.routers.projects_plans import router as projects_plans_router
 from app.routers.projects_service_requests import router as projects_service_requests_router
 from app.routers.feeds import router as feeds_router
+from app.routers.platform import router as platform_router
 from app.routers.search import router as search_router
 from app.routers.scopes import router as scopes_router
 from app.routers.users import router as users_router
@@ -52,6 +54,7 @@ def create_app() -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+    app.include_router(bootstrap_router)
     app.include_router(auth_router)
     app.include_router(users_router)
     app.include_router(scopes_router)
@@ -63,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(events_router)
     app.include_router(search_router)
     app.include_router(feeds_router)
+    app.include_router(platform_router)
     app.include_router(projects_router)
     app.include_router(projects_plans_router)
     app.include_router(projects_phases_router)

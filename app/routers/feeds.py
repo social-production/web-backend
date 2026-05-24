@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
-from app.services.feeds import get_home_feed, get_public_feed
+from app.services.feeds import get_home_feed, get_personal_feed, get_public_feed
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
 
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/feeds", tags=["feeds"])
 class FeedItemOut(BaseModel):
     id: UUID
     entity_type: str
-    slug: str
+    slug: str | None = None
     title: str
     body: str
     author_id: UUID | None = None
@@ -56,6 +56,23 @@ def home_feed(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return get_home_feed(
+        db=db,
+        current_user_id=current_user_id,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/personal", response_model=FeedResponse)
+def personal_feed(
+    sort: str = Query(default="recent", pattern="^(popular|recent)$"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_personal_feed(
         db=db,
         current_user_id=current_user_id,
         sort=sort,

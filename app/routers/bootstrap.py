@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.auth.dependencies import get_current_user_id
+from app.dependencies import get_db
+from app.services.bootstrap import get_bootstrap
+
+router = APIRouter(tags=["bootstrap"])
+
+
+class ViewerSummaryOut(BaseModel):
+    id: UUID
+    username: str
+    bio: str | None = None
+    profile_image_url: str | None = None
+
+
+class FeatureFlagsOut(BaseModel):
+    assets: bool
+    funding: bool
+    platform: bool
+
+
+class UnreadCountsOut(BaseModel):
+    notifications: int
+    messages: int
+
+
+class DirectoryItemOut(BaseModel):
+    slug: str
+    label: str
+    href: str
+    visibility: str | None = None
+
+
+class DirectoryOut(BaseModel):
+    platform: DirectoryItemOut | None = None
+    channels: list[DirectoryItemOut]
+    communities: list[DirectoryItemOut]
+
+
+class BootstrapResponse(BaseModel):
+    viewer: ViewerSummaryOut
+    feature_flags: FeatureFlagsOut
+    unread_counts: UnreadCountsOut
+    directory: DirectoryOut
+    suggested_contacts: list[ViewerSummaryOut]
+
+
+@router.get("/bootstrap", response_model=BootstrapResponse)
+def bootstrap(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_bootstrap(db=db, current_user_id=current_user_id)

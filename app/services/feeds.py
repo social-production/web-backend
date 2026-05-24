@@ -9,11 +9,13 @@ from sqlalchemy.orm import Session
 from app.models import (
     event_tags,
     events,
+    posts,
     project_tags,
     projects,
     scope_memberships,
     thread_tags,
     threads,
+    user_follows,
 )
 
 VALID_SORTS = frozenset({"popular", "recent"})
@@ -151,6 +153,121 @@ def _serialize_item(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _serialize_personal_item(row: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "id": row["id"],
+        "entity_type": row["entity_type"],
+        "slug": row["slug"],
+        "title": row["title"],
+        "body": row["body"],
+        "author_id": row["author_id"],
+        "signal_count": int(row["signal_count"] or 0),
+        "vote_count": int(row["vote_count"] or 0),
+        "comment_count": int(row["comment_count"] or 0),
+        "member_count": int(row["member_count"] or 0),
+        "going_count": int(row["going_count"] or 0),
+        "last_activity_at": row["last_activity_at"],
+        "created_at": row["created_at"],
+    }
+
+
+def _get_followed_user_ids(db: Session, current_user_id: UUID) -> list[UUID]:
+    rows = db.execute(
+        select(user_follows.c.followed_id)
+        .where(
+            user_follows.c.follower_id == current_user_id,
+            user_follows.c.status == "accepted",
+        )
+    ).all()
+    return [row[0] for row in rows]
+
+
+def _posts_select_for_followed(followed_user_ids: list[UUID]):
+    if not followed_user_ids:
+        return None
+    return select(
+        posts.c.id,
+        literal("post").label("entity_type"),
+        literal(None).label("slug"),
+        literal("Post").label("title"),
+        posts.c.body,
+        posts.c.author_id,
+        _ZERO_INT.label("signal_count"),
+        posts.c.vote_count,
+        posts.c.comment_count,
+        _ZERO_INT.label("member_count"),
+        _ZERO_INT.label("going_count"),
+        posts.c.updated_at.label("last_activity_at"),
+        posts.c.created_at,
+    ).where(posts.c.author_id.in_(followed_user_ids))
+
+
+def _projects_select_for_followed(followed_user_ids: list[UUID]):
+    if not followed_user_ids:
+        return None
+    return select(
+        projects.c.id,
+        literal("project").label("entity_type"),
+        projects.c.slug,
+        projects.c.title,
+        projects.c.description.label("body"),
+        projects.c.author_id,
+        projects.c.signal_count,
+        projects.c.vote_count,
+        projects.c.comment_count,
+        projects.c.member_count,
+        _ZERO_INT.label("going_count"),
+        projects.c.last_activity_at,
+        projects.c.created_at,
+    ).where(
+        projects.c.author_id.in_(followed_user_ids),
+        projects.c.is_closed.is_(False),
+    )
+
+
+def _threads_select_for_followed(followed_user_ids: list[UUID]):
+    if not followed_user_ids:
+        return None
+    return select(
+        threads.c.id,
+        literal("thread").label("entity_type"),
+        threads.c.slug,
+        threads.c.title,
+        threads.c.body,
+        threads.c.author_id,
+        _ZERO_INT.label("signal_count"),
+        threads.c.vote_count,
+        threads.c.comment_count,
+        _ZERO_INT.label("member_count"),
+        _ZERO_INT.label("going_count"),
+        threads.c.last_activity_at,
+        threads.c.created_at,
+    ).where(threads.c.author_id.in_(followed_user_ids))
+
+
+def _events_select_for_followed(followed_user_ids: list[UUID]):
+    if not followed_user_ids:
+        return None
+    return select(
+        events.c.id,
+        literal("event").label("entity_type"),
+        events.c.slug,
+        events.c.title,
+        events.c.description.label("body"),
+        events.c.created_by.label("author_id"),
+        _ZERO_INT.label("signal_count"),
+        events.c.vote_count,
+        events.c.comment_count,
+        events.c.member_count,
+        events.c.going_count,
+        events.c.last_activity_at,
+        events.c.created_at,
+    ).where(
+        events.c.created_by.in_(followed_user_ids),
+        events.c.is_private.is_(False),
+    )
+
+
 def _build_feed(
     db: Session,
     sort: str,
@@ -218,3 +335,59 @@ def get_home_feed(
         channel_ids=channel_ids,
         community_ids=community_ids,
     )
+
+
+def get_personal_feed(
+    db: Session,
+    current_user_id: UUID,
+    sort: str = "recent",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, object]:
+    safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
+    bounded_limit = max(1, min(limit, 100))
+    bounded_offset = max(0, offset)
+
+    followed_user_ids = _get_followed_user_ids(db, current_user_id)
+    if not followed_user_ids:
+        return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+
+    parts = [
+        _posts_select_for_followed(followed_user_ids),
+        _projects_select_for_followed(followed_user_ids),
+        _threads_select_for_followed(followed_user_ids),
+        _events_select_for_followed(followed_user_ids),
+    ]
+    parts = [part for part in parts if part is not None]
+
+    if not parts:
+        return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+
+    combined = union_all(*parts).subquery("personal_feed")
+
+    if safe_sort == "popular":
+        sort_col = (
+            combined.c.signal_count
+            + combined.c.vote_count
+            + combined.c.comment_count
+            + combined.c.member_count
+            + combined.c.going_count
+        ).desc()
+    else:
+        sort_col = combined.c.last_activity_at.desc()
+
+    rows = db.execute(
+        select(combined)
+        .order_by(sort_col, combined.c.created_at.desc())
+        .limit(bounded_limit)
+        .offset(bounded_offset)
+    ).mappings().all()
+
+    items = [_serialize_personal_item(row) for row in rows]
+    return {
+        "total": len(items),
+        "sort": safe_sort,
+        "limit": bounded_limit,
+        "offset": bounded_offset,
+        "items": items,
+    }
