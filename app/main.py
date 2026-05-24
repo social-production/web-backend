@@ -21,6 +21,7 @@ from app.routers.projects import router as projects_router
 from app.routers.projects_phases import router as projects_phases_router
 from app.routers.projects_plans import router as projects_plans_router
 from app.routers.projects_service_requests import router as projects_service_requests_router
+from app.routers.projects_software import router as projects_software_router
 from app.routers.feeds import router as feeds_router
 from app.routers.platform import router as platform_router
 from app.routers.search import router as search_router
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(projects_plans_router)
     app.include_router(projects_phases_router)
     app.include_router(projects_service_requests_router)
+    app.include_router(projects_software_router)
 
     return app
 
