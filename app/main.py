@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.cache import close_redis_client
 from app.config import get_settings
 from app.routers.auth import router as auth_router
+from app.routers.board import router as board_router
 from app.routers.content import router as content_router
 from app.routers.events import router as events_router
 from app.routers.governance import router as governance_router
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(scopes_router)
     app.include_router(content_router)
     app.include_router(governance_router)
+    app.include_router(board_router)
     app.include_router(messages_router)
     app.include_router(notifications_router)
     app.include_router(events_router)
