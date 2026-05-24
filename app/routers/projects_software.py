@@ -2,110 +2,201 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_db
 from app.services.projects_software import (
-    DECISION_KIND_MERGE_CAPABILITY,
-    DECISION_KIND_PULL_REQUEST,
-    DECISION_KIND_REPOSITORY_REPLACEMENT,
-    list_software_requests,
+    get_project_software_governance,
     record_pull_request_merge,
     request_merge_capability_change,
     request_repository_replacement,
     submit_pull_request,
-    vote_software_request,
+    vote_merge_capability_change,
+    vote_pull_request,
+    vote_repository_replacement,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects-software"])
 
 
-class VoteSummaryOut(BaseModel):
-    yes_count: int
-    no_count: int
-    total_votes: int
-    approval_ratio: float
-    approval_threshold: float
-    votes_required: int
-    member_count: int
-    meets_quorum: bool
-    meets_approval: bool
-    is_passing: bool
+class DetailMemberOut(BaseModel):
+    id: str
+    username: str
+    bio: str = ""
 
 
-class SoftwareDecisionOut(BaseModel):
-    id: UUID
-    decision_kind: str
-    status: str
-    author_id: UUID | None = None
-    created_at: object
-    resolved_at: object | None = None
-    payload: dict[str, object]
-    vote_summary: VoteSummaryOut
+class ProjectPlanVoteSummaryOut(BaseModel):
+    yesCount: int
+    noCount: int
+    totalVotes: int
+    approvalPercent: float
+    activeVote: str | None = None
+    meetsQuorum: bool
+    eligibleVoterCount: int
+    quorumThresholdPercent: float
+    votesRequired: int
+    votesRemaining: int
+    remainingEligibleVotes: int
 
 
-class SoftwareDecisionResponse(BaseModel):
-    request: SoftwareDecisionOut
+class ProjectSoftwareMergeCapabilityMemberOut(DetailMemberOut):
+    sourceLabel: str
 
 
-class SoftwareDecisionListResponse(BaseModel):
-    project_slug: str
-    total: int
-    items: list[SoftwareDecisionOut]
+class ProjectSoftwarePullRequestOut(BaseModel):
+    id: str
+    decisionId: str | None = None
+    title: str
+    summary: str
+    pullRequestId: str
+    pullRequestUrl: str
+    authorUsername: str
+    createdAt: str
+    stage: str
+    stageLabel: str
+    mergeId: str | None = None
+    mergedByUsername: str | None = None
+    approvalThresholdPercent: float
+    voteSummary: ProjectPlanVoteSummaryOut | None = None
+    passesApprovalThreshold: bool
+    canStillPass: bool
+    viewerCanRecordMerge: bool
 
 
-class SoftwareVoteRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+class ProjectSoftwareBlockedPullRequestOut(BaseModel):
+    id: str
+    title: str
+    pullRequestId: str
+    stage: str
+    stageLabel: str
 
-    vote: str = Field(pattern="^(yes|no)$")
+
+class ProjectSoftwareMergeCapabilityChangeRequestOut(BaseModel):
+    id: str
+    decisionId: str
+    action: str
+    actionLabel: str
+    targetMember: DetailMemberOut
+    authorUsername: str
+    createdAt: str
+    approvalThresholdPercent: float
+    voteSummary: ProjectPlanVoteSummaryOut | None = None
+    passesApprovalThreshold: bool
+    canStillPass: bool
 
 
-class SoftwareVoteResponse(BaseModel):
-    request: SoftwareDecisionOut
-    vote: str
-    executed: bool
+class ProjectSoftwareRepositoryReplacementRequestOut(BaseModel):
+    id: str
+    decisionId: str
+    repositoryUrl: str
+    previousRepositoryUrl: str
+    reason: str
+    relatedPullRequestId: str
+    authorUsername: str
+    createdAt: str
+    approvalThresholdPercent: float
+    voteSummary: ProjectPlanVoteSummaryOut | None = None
+    passesApprovalThreshold: bool
+    canStillPass: bool
+
+
+class ProjectSoftwareRepositoryRecordOut(BaseModel):
+    id: str
+    repositoryUrl: str
+    previousRepositoryUrl: str
+    reason: str
+    relatedPullRequestId: str
+    replacedAt: str
+    replacedByUsername: str
+
+
+class ProjectSoftwareGovernanceDataOut(BaseModel):
+    repositoryUrl: str
+    licenseLabel: str
+    mergeCapabilityMembers: list[ProjectSoftwareMergeCapabilityMemberOut]
+    availableMergeCapabilityCandidates: list[DetailMemberOut]
+    mergeCapabilityChangeRequests: list[ProjectSoftwareMergeCapabilityChangeRequestOut]
+    repositoryReplacementRequests: list[ProjectSoftwareRepositoryReplacementRequestOut]
+    replaceablePullRequests: list[ProjectSoftwareBlockedPullRequestOut]
+    repositoryHistory: list[ProjectSoftwareRepositoryRecordOut]
+    pullRequests: list[ProjectSoftwarePullRequestOut]
+    viewerCanCreatePullRequests: bool
+    viewerCanRequestMergeCapabilityChanges: bool
+    viewerCanRequestRepositoryReplacement: bool
 
 
 class PullRequestSubmitIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     title: str = Field(min_length=1, max_length=200)
-    description: str = Field(min_length=1)
-    pull_request_url: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    pullRequestId: str = Field(min_length=1, max_length=120)
+    pullRequestUrl: str = Field(min_length=1)
 
 
 class MergeCapabilityRequestIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    target_user_id: UUID
-    enable_merge: bool = True
-    reason: str = Field(min_length=1)
+    targetUserId: UUID
+    action: str = Field(pattern="^(grant|revoke)$")
 
 
 class RepositoryReplacementRequestIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    new_repository_url: str = Field(min_length=1)
+    repositoryUrl: str = Field(min_length=1)
     reason: str = Field(min_length=1)
+    relatedPullRequestId: UUID
 
 
-class PullRequestMergeIn(BaseModel):
+class VoteRequestIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    merge_commit_id: str = Field(min_length=1)
+    vote: str = Field(pattern="^(yes|no)$")
 
 
-class PullRequestMergeResponse(BaseModel):
-    request: SoftwareDecisionOut
-    merged: bool
-    merge_commit_id: str
+class MergeRecordIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    mergeId: str = Field(min_length=1)
 
 
-@router.post("/{slug}/software/pull-requests", response_model=SoftwareDecisionResponse)
-def submit_project_pull_request(
+async def _get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> UUID | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    try:
+        payload = await get_current_user_token_payload(credentials)
+    except HTTPException:
+        return None
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None
+
+
+@router.get("/{slug}/software", response_model=ProjectSoftwareGovernanceDataOut)
+def get_project_software(
+    slug: str,
+    viewer_user_id: UUID | None = Depends(_get_optional_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_project_software_governance(db=db, project_slug=slug, current_user_id=viewer_user_id)
+
+
+@router.post("/{slug}/software/pull-requests", response_model=ProjectSoftwareGovernanceDataOut)
+def create_pull_request(
     slug: str,
     payload: PullRequestSubmitIn,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -116,42 +207,34 @@ def submit_project_pull_request(
         current_user_id=current_user_id,
         project_slug=slug,
         title=payload.title,
-        description=payload.description,
-        pull_request_url=payload.pull_request_url,
+        summary=payload.summary,
+        pull_request_id=payload.pullRequestId,
+        pull_request_url=payload.pullRequestUrl,
     )
 
 
-@router.get("/{slug}/software/pull-requests", response_model=SoftwareDecisionListResponse)
-def list_project_pull_requests(
+@router.post("/{slug}/software/pull-requests/{request_id}/vote", response_model=ProjectSoftwareGovernanceDataOut)
+def vote_on_pull_request(
     slug: str,
-    db: Session = Depends(get_db),
-) -> dict[str, object]:
-    return list_software_requests(db=db, project_slug=slug, kind=DECISION_KIND_PULL_REQUEST)
-
-
-@router.post("/{slug}/software/pull-requests/{decision_id}/vote", response_model=SoftwareVoteResponse)
-def vote_project_pull_request(
-    slug: str,
-    decision_id: UUID,
-    payload: SoftwareVoteRequest,
+    request_id: UUID,
+    payload: VoteRequestIn,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return vote_software_request(
+    return vote_pull_request(
         db=db,
         current_user_id=current_user_id,
         project_slug=slug,
-        decision_id=decision_id,
-        kind=DECISION_KIND_PULL_REQUEST,
+        request_id=request_id,
         vote=payload.vote,
     )
 
 
-@router.post("/{slug}/software/pull-requests/{decision_id}/merge", response_model=PullRequestMergeResponse)
-def merge_project_pull_request(
+@router.post("/{slug}/software/pull-requests/{request_id}/merge", response_model=ProjectSoftwareGovernanceDataOut)
+def merge_pull_request(
     slug: str,
-    decision_id: UUID,
-    payload: PullRequestMergeIn,
+    request_id: UUID,
+    payload: MergeRecordIn,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -159,13 +242,13 @@ def merge_project_pull_request(
         db=db,
         current_user_id=current_user_id,
         project_slug=slug,
-        decision_id=decision_id,
-        merge_commit_id=payload.merge_commit_id,
+        request_id=request_id,
+        merge_id=payload.mergeId,
     )
 
 
-@router.post("/{slug}/software/merge-capability-requests", response_model=SoftwareDecisionResponse)
-def submit_merge_capability_request(
+@router.post("/{slug}/software/merge-capability-requests", response_model=ProjectSoftwareGovernanceDataOut)
+def create_merge_capability_request(
     slug: str,
     payload: MergeCapabilityRequestIn,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -175,40 +258,30 @@ def submit_merge_capability_request(
         db=db,
         current_user_id=current_user_id,
         project_slug=slug,
-        target_user_id=payload.target_user_id,
-        enable_merge=payload.enable_merge,
-        reason=payload.reason,
+        target_user_id=payload.targetUserId,
+        action=payload.action,
     )
 
 
-@router.get("/{slug}/software/merge-capability-requests", response_model=SoftwareDecisionListResponse)
-def list_merge_capability_requests(
+@router.post("/{slug}/software/merge-capability-requests/{request_id}/vote", response_model=ProjectSoftwareGovernanceDataOut)
+def vote_on_merge_capability_request(
     slug: str,
-    db: Session = Depends(get_db),
-) -> dict[str, object]:
-    return list_software_requests(db=db, project_slug=slug, kind=DECISION_KIND_MERGE_CAPABILITY)
-
-
-@router.post("/{slug}/software/merge-capability-requests/{decision_id}/vote", response_model=SoftwareVoteResponse)
-def vote_merge_capability_request(
-    slug: str,
-    decision_id: UUID,
-    payload: SoftwareVoteRequest,
+    request_id: UUID,
+    payload: VoteRequestIn,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return vote_software_request(
+    return vote_merge_capability_change(
         db=db,
         current_user_id=current_user_id,
         project_slug=slug,
-        decision_id=decision_id,
-        kind=DECISION_KIND_MERGE_CAPABILITY,
+        request_id=request_id,
         vote=payload.vote,
     )
 
 
-@router.post("/{slug}/software/repository-replacement-requests", response_model=SoftwareDecisionResponse)
-def submit_repository_replacement_request(
+@router.post("/{slug}/software/repository-replacement-requests", response_model=ProjectSoftwareGovernanceDataOut)
+def create_repository_replacement_request(
     slug: str,
     payload: RepositoryReplacementRequestIn,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -218,32 +291,24 @@ def submit_repository_replacement_request(
         db=db,
         current_user_id=current_user_id,
         project_slug=slug,
-        new_repository_url=payload.new_repository_url,
+        repository_url=payload.repositoryUrl,
         reason=payload.reason,
+        related_pull_request_id=payload.relatedPullRequestId,
     )
 
 
-@router.get("/{slug}/software/repository-replacement-requests", response_model=SoftwareDecisionListResponse)
-def list_repository_replacement_requests(
+@router.post("/{slug}/software/repository-replacement-requests/{request_id}/vote", response_model=ProjectSoftwareGovernanceDataOut)
+def vote_on_repository_replacement_request(
     slug: str,
-    db: Session = Depends(get_db),
-) -> dict[str, object]:
-    return list_software_requests(db=db, project_slug=slug, kind=DECISION_KIND_REPOSITORY_REPLACEMENT)
-
-
-@router.post("/{slug}/software/repository-replacement-requests/{decision_id}/vote", response_model=SoftwareVoteResponse)
-def vote_repository_replacement_request(
-    slug: str,
-    decision_id: UUID,
-    payload: SoftwareVoteRequest,
+    request_id: UUID,
+    payload: VoteRequestIn,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return vote_software_request(
+    return vote_repository_replacement(
         db=db,
         current_user_id=current_user_id,
         project_slug=slug,
-        decision_id=decision_id,
-        kind=DECISION_KIND_REPOSITORY_REPLACEMENT,
+        request_id=request_id,
         vote=payload.vote,
     )

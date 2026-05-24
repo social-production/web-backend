@@ -112,6 +112,96 @@ project_plan_value_votes = table(
     created_at(),
 )
 
+project_pull_requests = table(
+    "project_pull_requests",
+    uuid_pk(),
+    project_fk("project_id", nullable=False),
+    sa.Column("decision_id", UUID, nullable=True),
+    sa.Column("title", sa.String(200), nullable=False),
+    sa.Column("summary", sa.Text, nullable=False),
+    sa.Column("pull_request_id", sa.String(120), nullable=False),
+    sa.Column("pull_request_url", sa.Text, nullable=False),
+    user_fk("author_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("stage", sa.String(24), nullable=False, server_default="approval"),
+    sa.Column("merge_id", sa.String(120), nullable=True),
+    user_fk("merged_by_user_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"),
+    created_at(),
+    updated_at(),
+)
+
+project_pull_request_votes = table(
+    "project_pull_request_votes",
+    sa.Column("request_id", UUID, sa.ForeignKey("project_pull_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("vote", sa.String(8), nullable=False),
+    created_at(),
+)
+
+project_merge_capability_members = table(
+    "project_merge_capability_members",
+    sa.Column("project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("source_label", sa.String(120), nullable=False, server_default="approved-request"),
+    created_at(),
+)
+
+project_merge_capability_change_requests = table(
+    "project_merge_capability_change_requests",
+    uuid_pk(),
+    project_fk("project_id", nullable=False),
+    sa.Column("decision_id", UUID, nullable=False),
+    sa.Column("action", sa.String(8), nullable=False),
+    sa.Column("target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    user_fk("author_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("status", sa.String(24), nullable=False, server_default="open"),
+    sa.Column("approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"),
+    created_at(),
+    updated_at(),
+)
+
+project_merge_capability_change_votes = table(
+    "project_merge_capability_change_votes",
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_merge_capability_change_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("vote", sa.String(8), nullable=False),
+    created_at(),
+)
+
+project_repository_replacement_requests = table(
+    "project_repository_replacement_requests",
+    uuid_pk(),
+    project_fk("project_id", nullable=False),
+    sa.Column("decision_id", UUID, nullable=False),
+    sa.Column("repository_url", sa.Text, nullable=False),
+    sa.Column("previous_repository_url", sa.Text, nullable=False, server_default=""),
+    sa.Column("reason", sa.Text, nullable=False),
+    sa.Column("related_pull_request_id", UUID, sa.ForeignKey("project_pull_requests.id", ondelete="CASCADE"), nullable=False),
+    user_fk("author_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("status", sa.String(24), nullable=False, server_default="open"),
+    sa.Column("approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"),
+    created_at(),
+    updated_at(),
+)
+
+project_repository_replacement_votes = table(
+    "project_repository_replacement_votes",
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_repository_replacement_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("vote", sa.String(8), nullable=False),
+    created_at(),
+)
+
 project_activities = table(
     "project_activities",
     uuid_pk(),

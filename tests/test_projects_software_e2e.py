@@ -134,7 +134,6 @@ def _seed_software_project() -> dict[str, str]:
             joined_at=now,
         )
     )
-
     db.execute(
         insert(project_plans).values(
             id=uuid4(),
@@ -185,11 +184,12 @@ def run() -> None:
         token=seeded["owner_token"],
         body={
             "title": "PR #1",
-            "description": "Implements feature",
-            "pull_request_url": "https://github.com/acme/repo/pull/1",
+            "summary": "Implements feature",
+            "pullRequestId": "acme/repo#1",
+            "pullRequestUrl": "https://github.com/acme/repo/pull/1",
         },
     )
-    pr_request_id = pr_submit["request"]["id"]
+    pr_request_id = pr_submit["pullRequests"][0]["id"]
 
     _request_json(
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/vote",
@@ -203,13 +203,14 @@ def run() -> None:
         token=seeded["member_token"],
         body={"vote": "yes"},
     )
-    assert pr_vote["request"]["status"] == "approved"
+    approved_pr = next(item for item in pr_vote["pullRequests"] if item["id"] == pr_request_id)
+    assert approved_pr["stage"] == "awaiting-merge"
 
     merge_forbidden = _request_error_code(
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/merge",
         method="POST",
         token=seeded["member_token"],
-        body={"merge_commit_id": "abc123"},
+        body={"mergeId": "abc123"},
     )
     assert merge_forbidden == 403
 
@@ -218,12 +219,11 @@ def run() -> None:
         method="POST",
         token=seeded["owner_token"],
         body={
-            "target_user_id": seeded["member_id"],
-            "enable_merge": True,
-            "reason": "Trusted reviewer",
+            "targetUserId": seeded["member_id"],
+            "action": "grant",
         },
     )
-    merge_cap_request_id = merge_cap_req["request"]["id"]
+    merge_cap_request_id = merge_cap_req["mergeCapabilityChangeRequests"][0]["id"]
 
     _request_json(
         f"{base}/projects/{slug}/software/merge-capability-requests/{merge_cap_request_id}/vote",
@@ -237,28 +237,31 @@ def run() -> None:
         token=seeded["member_token"],
         body={"vote": "yes"},
     )
-    assert merge_cap_vote["request"]["status"] == "approved"
-    assert merge_cap_vote["executed"] is True
+    merge_req = next(item for item in merge_cap_vote["mergeCapabilityChangeRequests"] if item["id"] == merge_cap_request_id)
+    assert merge_req["passesApprovalThreshold"] is True
+    assert any(member["id"] == seeded["member_id"] for member in merge_cap_vote["mergeCapabilityMembers"])
 
     merged = _request_json(
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/merge",
         method="POST",
         token=seeded["member_token"],
-        body={"merge_commit_id": "abc123"},
+        body={"mergeId": "abc123"},
     )
-    assert merged["request"]["status"] == "merged"
-    assert merged["merged"] is True
+    merged_pr = next(item for item in merged["pullRequests"] if item["id"] == pr_request_id)
+    assert merged_pr["stage"] == "confirmed"
+    assert merged_pr["mergeId"] == "abc123"
 
     repo_req = _request_json(
         f"{base}/projects/{slug}/software/repository-replacement-requests",
         method="POST",
         token=seeded["owner_token"],
         body={
-            "new_repository_url": "https://github.com/acme/new-repo",
+            "repositoryUrl": "https://github.com/acme/new-repo",
             "reason": "Repository migration",
+            "relatedPullRequestId": pr_request_id,
         },
     )
-    repo_request_id = repo_req["request"]["id"]
+    repo_request_id = repo_req["repositoryReplacementRequests"][0]["id"]
 
     _request_json(
         f"{base}/projects/{slug}/software/repository-replacement-requests/{repo_request_id}/vote",
@@ -272,8 +275,8 @@ def run() -> None:
         token=seeded["member_token"],
         body={"vote": "yes"},
     )
-    assert repo_vote["request"]["status"] == "approved"
-    assert repo_vote["executed"] is True
+    repo_decision = next(item for item in repo_vote["repositoryReplacementRequests"] if item["id"] == repo_request_id)
+    assert repo_decision["passesApprovalThreshold"] is True
 
     db = SessionLocal()
     repo_after = db.execute(
@@ -290,9 +293,9 @@ def run() -> None:
         json.dumps(
             {
                 "project_slug": slug,
-                "pull_request_status": merged["request"]["status"],
-                "merge_recorded": merged["merged"],
-                "merge_capability_granted": merge_cap_vote["executed"],
+                "pull_request_status": merged_pr["stage"],
+                "merge_recorded": merged_pr["mergeId"] is not None,
+                "merge_capability_granted": any(member["id"] == seeded["member_id"] for member in merge_cap_vote["mergeCapabilityMembers"]),
                 "repository_replaced": repo_after != seeded["repo_before"],
                 "repository_before": seeded["repo_before"],
                 "repository_after": repo_after,
