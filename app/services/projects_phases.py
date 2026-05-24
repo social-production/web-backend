@@ -19,6 +19,15 @@ from app.utils.votes import required_votes
 APPROVAL_THRESHOLD = 0.66
 VALID_PHASE_IDS = frozenset({"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"})
 VALID_VOTES = frozenset({"yes", "no"})
+STAGE_LABEL_BY_PHASE_ID = {
+    "phase-1": "proposal",
+    "phase-2": "production-plan",
+    "phase-3": "distribution-plan",
+    "phase-4": "acquisition",
+    "phase-5": "activity",
+    "phase-6": "pending-execution",
+    "phase-7": "closed",
+}
 
 
 def _serialize_phase_request(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
@@ -246,6 +255,7 @@ def vote_phase_change_request(
 
         executed = False
         if summary["is_passing"]:
+            target_phase_id = request_row["target_phase_id"]
             db.execute(
                 update(project_phase_change_requests)
                 .where(project_phase_change_requests.c.id == request_id)
@@ -254,7 +264,10 @@ def vote_phase_change_request(
             db.execute(
                 update(projects)
                 .where(projects.c.id == project_row["id"])
-                .values(current_phase_id=request_row["target_phase_id"])
+                .values(
+                    current_phase_id=target_phase_id,
+                    stage_label=STAGE_LABEL_BY_PHASE_ID.get(target_phase_id, "proposal"),
+                )
             )
             executed = True
 
