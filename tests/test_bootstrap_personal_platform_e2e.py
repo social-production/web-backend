@@ -332,9 +332,9 @@ def run() -> None:
 
     bootstrap = _request_json(f"{base}/bootstrap", token=seeded["viewer_token"])
     assert bootstrap["viewer"]["id"]
-    assert bootstrap["feature_flags"] == {"assets": False, "funding": False, "platform": True}
-    assert bootstrap["unread_counts"]["notifications"] >= 1
-    assert bootstrap["unread_counts"]["messages"] >= 1
+    assert bootstrap["featureFlags"] == {"assets": False, "funding": False, "platform": True}
+    assert bootstrap["unreadCounts"]["notifications"] >= 1
+    assert bootstrap["unreadCounts"]["messages"] >= 1
     assert bootstrap["directory"]["platform"]["slug"] == "platform"
     assert len(bootstrap["directory"]["channels"]) >= 1
     assert len(bootstrap["directory"]["communities"]) >= 1

@@ -17,7 +17,7 @@ class ViewerSummaryOut(BaseModel):
     id: UUID
     username: str
     bio: str | None = None
-    profile_image_url: str | None = None
+    profileImageUrl: str | None = None
 
 
 class FeatureFlagsOut(BaseModel):
@@ -46,10 +46,11 @@ class DirectoryOut(BaseModel):
 
 class BootstrapResponse(BaseModel):
     viewer: ViewerSummaryOut
-    feature_flags: FeatureFlagsOut
-    unread_counts: UnreadCountsOut
+    featureFlags: FeatureFlagsOut
+    unreadCounts: UnreadCountsOut
     directory: DirectoryOut
-    suggested_contacts: list[ViewerSummaryOut]
+    suggestedContacts: list[ViewerSummaryOut]
+    activityRail: list[dict[str, object]]
 
 
 @router.get("/bootstrap", response_model=BootstrapResponse)

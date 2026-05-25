@@ -153,7 +153,7 @@ def _get_suggested_contacts(db: Session, current_user_id: UUID) -> list[dict[str
             "id": row["id"],
             "username": row["username"],
             "bio": row["bio"],
-            "profile_image_url": row["profile_image_url"],
+            "profileImageUrl": row["profile_image_url"],
         }
         for row in rows
     ]
@@ -167,14 +167,14 @@ def get_bootstrap(db: Session, current_user_id: UUID) -> dict[str, object]:
             "id": viewer["id"],
             "username": viewer["username"],
             "bio": viewer["bio"],
-            "profile_image_url": viewer["profile_image_url"],
+            "profileImageUrl": viewer["profile_image_url"],
         },
-        "feature_flags": {
+        "featureFlags": {
             "assets": False,
             "funding": False,
             "platform": True,
         },
-        "unread_counts": {
+        "unreadCounts": {
             "notifications": _get_unread_notification_count(db, current_user_id),
             "messages": _get_unread_message_count(db, current_user_id),
         },
@@ -183,5 +183,6 @@ def get_bootstrap(db: Session, current_user_id: UUID) -> dict[str, object]:
             "channels": _get_channel_directory_items(db, current_user_id),
             "communities": _get_community_directory_items(db, current_user_id),
         },
-        "suggested_contacts": _get_suggested_contacts(db, current_user_id),
+        "suggestedContacts": _get_suggested_contacts(db, current_user_id),
+        "activityRail": [],
     }
