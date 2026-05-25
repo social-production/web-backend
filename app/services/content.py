@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import channels, posts, thread_tags, threads
+from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
 
 VALID_AUDIENCE = frozenset({"public", "followers"})
@@ -190,6 +191,12 @@ def create_post(
                 posts.c.updated_at,
             )
         ).mappings().one()
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="create-post",
+            metadata={"post_id": str(post_row["id"]), "audience": normalized_audience},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()

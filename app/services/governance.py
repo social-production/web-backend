@@ -19,6 +19,7 @@ from app.models import (
     reports,
     threads,
 )
+from app.services.meaningful_actions import record_meaningful_action
 from app.utils.votes import required_votes
 
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post"})
@@ -243,6 +244,16 @@ def add_comment(
         ).mappings().one()
 
         _update_subject_comment_count(db, normalized_subject_type, subject_id, 1)
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="create-comment",
+            metadata={
+                "subject_type": normalized_subject_type,
+                "subject_id": str(subject_id),
+                "comment_id": str(created["id"]),
+            },
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -361,6 +372,17 @@ def cast_vote(
             )
 
         _apply_vote_count_delta(db, normalized_target_type, target_id, delta)
+        if new_value != 0:
+            record_meaningful_action(
+                db=db,
+                user_id=current_user_id,
+                action_type="cast-vote",
+                metadata={
+                    "target_type": normalized_target_type,
+                    "target_id": str(target_id),
+                    "direction": normalized_direction,
+                },
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -490,6 +512,16 @@ def vote_report(
             update(reports)
             .where(reports.c.id == report_id)
             .values(resolution=new_resolution)
+        )
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={
+                "target_type": "report",
+                "target_id": str(report_id),
+                "vote": normalized_vote,
+            },
         )
         db.commit()
     except IntegrityError as exc:

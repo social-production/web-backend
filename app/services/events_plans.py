@@ -9,6 +9,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import event_memberships, event_plan_votes, event_plans, events
+from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
 from app.utils.votes import required_votes
 
 APPROVAL_THRESHOLD = 0.66
@@ -237,6 +239,13 @@ def cast_event_plan_vote(
             )
             plan_is_leading = False
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "event-plan", "target_id": str(plan_id), "vote": normalized_vote},
+        )
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -246,6 +255,21 @@ def cast_event_plan_vote(
         select(event_plans).where(event_plans.c.id == plan_id)
     ).mappings().one()
     final_summary = _compute_vote_summary(db, plan_id, int(event_row["member_count"] or 0))
+
+    if plan_is_leading and plan_row["author_id"] is not None:
+        create_notification(
+            db=db,
+            recipient_id=plan_row["author_id"],
+            actor_id=current_user_id,
+            kind="evt-plan-lead",
+            surface="event",
+            subject_type="event-plan",
+            subject_id=plan_id,
+            target_id=event_row["id"],
+            title="Plan became leading",
+            body="A vote passed and your event plan is now leading.",
+            href=f"/events/{event_row['slug']}",
+        )
 
     return {
         "plan": _serialize_plan(refreshed_plan, final_summary),

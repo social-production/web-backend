@@ -46,6 +46,7 @@ from app.models import (
     user_follows,
     users,
 )
+from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
 from app.services.projects_software import get_project_software_governance
 from app.utils.votes import required_votes
@@ -1175,6 +1176,12 @@ def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, obj
             .where(projects.c.id == project_row["id"])
             .values(member_count=projects.c.member_count + 1)
         )
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="join-project",
+            metadata={"project_id": str(project_row["id"]), "project_slug": project_row["slug"]},
+        )
         db.commit()
 
     return {"ok": True, "joined": True, "slug": project_row["slug"]}
@@ -1289,6 +1296,17 @@ def vote_project_value_importance(
             )
             .values(importance=importance)
         )
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={
+            "target_type": "project-value",
+            "target_id": str(value_id),
+            "project_id": str(project_row["id"]),
+            "importance": importance,
+        },
+    )
     db.commit()
 
     return {
@@ -1501,6 +1519,14 @@ async def toggle_project_signal(
                 update(projects)
                 .where(projects.c.id == project_row["id"])
                 .values(signal_count=func.greatest(projects.c.signal_count + signal_count_delta, 0))
+            )
+
+        if normalized_signal == "demand" and action in {"added", "switched"}:
+            record_meaningful_action(
+                db=db,
+                user_id=current_user_id,
+                action_type="signal-demand",
+                metadata={"project_id": str(project_row["id"]), "project_slug": project_row["slug"]},
             )
 
         db.commit()

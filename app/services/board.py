@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import board_standing_votes, meaningful_actions, platform_board_memberships, users
+from app.services.meaningful_actions import record_meaningful_action
 from app.utils.votes import required_votes
 
 BOARD_STATE_MEMBER = "member"
@@ -260,6 +261,12 @@ def cast_standing_vote(
             )
 
         removed_member_ids, weekly_active_users, required_quorum = _remove_unqualified_members(db)
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "board-standing", "target_id": str(target_user_id), "vote": normalized_vote},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()

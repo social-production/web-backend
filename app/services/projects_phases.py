@@ -19,6 +19,9 @@ from app.models import (
     project_updates,
     projects,
 )
+from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
+from app.services.search import index_document
 from app.utils.votes import required_votes
 
 APPROVAL_THRESHOLD = 0.66
@@ -338,6 +341,13 @@ def vote_phase_change_request(
             )
             executed = True
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "project-phase-change", "target_id": str(request_id), "vote": normalized_vote},
+        )
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -348,6 +358,21 @@ def vote_phase_change_request(
     ).mappings().one()
     refreshed_project = db.execute(select(projects).where(projects.c.id == project_row["id"])).mappings().one()
     final_summary = _compute_vote_summary(db, request_id, int(refreshed_project["member_count"] or 0))
+
+    if executed and request_row["author_id"] is not None:
+        create_notification(
+            db=db,
+            recipient_id=request_row["author_id"],
+            actor_id=current_user_id,
+            kind="prj-phase-done",
+            surface="project",
+            subject_type="phase-change",
+            subject_id=request_id,
+            target_id=project_row["id"],
+            title="Project phase change executed",
+            body=f"The project phase changed to {refreshed_project['current_phase_id']}.",
+            href=f"/projects/{project_row['slug']}",
+        )
 
     return {
         "request": _serialize_phase_request(refreshed_request, final_summary),
@@ -455,6 +480,13 @@ def vote_project_update_request(
             )
         )
         executed = True
+
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={"target_type": "project-update-request", "target_id": str(request_id), "vote": normalized_vote},
+    )
 
     db.commit()
 
@@ -566,12 +598,30 @@ def vote_project_edit_request(
             .where(project_edit_requests.c.id == request_id)
             .values(status="approved")
         )
+        db.execute(
+            update(projects)
+            .where(projects.c.id == project_row["id"])
+            .values(
+                title=request_row["title"],
+                description=request_row["description"],
+            )
+        )
         executed = True
+
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={"target_type": "project-edit-request", "target_id": str(request_id), "vote": normalized_vote},
+    )
 
     db.commit()
 
     refreshed_request = db.execute(
         select(project_edit_requests).where(project_edit_requests.c.id == request_id)
+    ).mappings().one()
+    refreshed_project = db.execute(
+        select(projects).where(projects.c.id == project_row["id"])
     ).mappings().one()
     final_summary = _compute_simple_vote_summary(
         db,
@@ -579,6 +629,16 @@ def vote_project_edit_request(
         request_id,
         int(project_row["member_count"] or 0),
     )
+    if executed:
+        index_document(
+            db=db,
+            entity_type="project",
+            entity_id=project_row["id"],
+            title=str(refreshed_project["title"]),
+            summary=str(refreshed_project["description"]),
+            meta="project",
+            href=f"/projects/{project_row['slug']}",
+        )
     return {
         "request": _serialize_edit_request(refreshed_request, final_summary),
         "vote": normalized_vote,
@@ -720,6 +780,13 @@ def vote_revert_phase_change_request(
         )
         executed = True
 
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={"target_type": "project-phase-revert", "target_id": str(request_id), "vote": normalized_vote},
+    )
+
     db.commit()
 
     refreshed_request = db.execute(
@@ -727,6 +794,21 @@ def vote_revert_phase_change_request(
     ).mappings().one()
     refreshed_project = db.execute(select(projects).where(projects.c.id == project_row["id"])).mappings().one()
     final_summary = _compute_vote_summary(db, request_id, int(refreshed_project["member_count"] or 0))
+
+    if executed and request_row["author_id"] is not None:
+        create_notification(
+            db=db,
+            recipient_id=request_row["author_id"],
+            actor_id=current_user_id,
+            kind="prj-phase-done",
+            surface="project",
+            subject_type="phase-change",
+            subject_id=request_id,
+            target_id=project_row["id"],
+            title="Project phase change executed",
+            body=f"The project phase changed to {refreshed_project['current_phase_id']}.",
+            href=f"/projects/{project_row['slug']}",
+        )
 
     return {
         "request": _serialize_phase_request(refreshed_request, final_summary),

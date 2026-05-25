@@ -23,6 +23,8 @@ from app.models import (
     projects,
     users,
 )
+from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
 from app.utils.votes import required_votes
 
 APPROVAL_THRESHOLD_PERCENT = 66.0
@@ -557,6 +559,7 @@ def vote_pull_request(
         )
 
         next_stage = request_row["stage"]
+        previous_stage = request_row["stage"]
         if request_row["stage"] == "approval":
             if passes:
                 next_stage = "awaiting-merge"
@@ -570,10 +573,32 @@ def vote_pull_request(
                 .values(stage=next_stage)
             )
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "pull-request", "target_id": str(request_id), "vote": normalized_vote},
+        )
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record vote") from exc
+
+    if previous_stage == "approval" and next_stage == "awaiting-merge" and request_row["author_id"] is not None:
+        create_notification(
+            db=db,
+            recipient_id=request_row["author_id"],
+            actor_id=current_user_id,
+            kind="pr-approved",
+            surface="project",
+            subject_type="pull-request",
+            subject_id=request_id,
+            target_id=project_row["id"],
+            title="Pull request approved",
+            body="Voting passed and your pull request is approved for merge.",
+            href=f"/projects/{project_row['slug']}/software",
+        )
 
     return _governance_payload(db, project_row, current_user_id)
 
@@ -745,6 +770,13 @@ def vote_merge_capability_change(
                 .values(status="rejected")
             )
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "merge-capability-request", "target_id": str(request_id), "vote": normalized_vote},
+        )
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -884,6 +916,13 @@ def vote_repository_replacement(
                 .where(project_repository_replacement_requests.c.id == request_id)
                 .values(status="rejected")
             )
+
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "repository-replacement-request", "target_id": str(request_id), "vote": normalized_vote},
+        )
 
         db.commit()
     except IntegrityError as exc:

@@ -40,6 +40,7 @@ from app.models import (
     user_follows,
     users,
 )
+from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
 from app.utils.votes import required_votes
 
@@ -978,6 +979,12 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
             .where(events.c.id == event_row["id"])
             .values(member_count=events.c.member_count + 1)
         )
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="join-event",
+            metadata={"event_id": str(event_row["id"]), "event_slug": event_row["slug"]},
+        )
         db.commit()
 
     return {"ok": True, "joined": True, "slug": event_row["slug"]}
@@ -1133,6 +1140,14 @@ async def toggle_event_signal(
             )
             action = "switched"
 
+        if normalized_signal == "demand" and action in {"added", "switched"}:
+            record_meaningful_action(
+                db=db,
+                user_id=current_user_id,
+                action_type="signal-demand",
+                metadata={"event_id": str(event_row["id"]), "event_slug": event_row["slug"]},
+            )
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -1286,6 +1301,17 @@ def vote_event_value_importance(
             )
             .values(importance=importance)
         )
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={
+            "target_type": "event-value",
+            "target_id": str(value_id),
+            "event_id": str(event_row["id"]),
+            "importance": importance,
+        },
+    )
     db.commit()
 
     return {

@@ -19,6 +19,9 @@ from app.models import (
     event_updates,
     events,
 )
+from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
+from app.services.search import index_document
 from app.utils.votes import required_votes
 
 APPROVAL_THRESHOLD = 0.66
@@ -272,6 +275,13 @@ def vote_phase_change_request(
             )
             executed = True
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "event-phase-change", "target_id": str(request_id), "vote": normalized_vote},
+        )
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -282,6 +292,21 @@ def vote_phase_change_request(
     ).mappings().one()
     refreshed_event = db.execute(select(events).where(events.c.id == event_row["id"])).mappings().one()
     final_summary = _compute_votes(db, event_phase_change_votes, request_id, int(refreshed_event["member_count"] or 0))
+
+    if executed and request_row["author_id"] is not None:
+        create_notification(
+            db=db,
+            recipient_id=request_row["author_id"],
+            actor_id=current_user_id,
+            kind="evt-phase-done",
+            surface="event",
+            subject_type="phase-change",
+            subject_id=request_id,
+            target_id=event_row["id"],
+            title="Event phase change executed",
+            body=f"The event phase changed to {refreshed_event['current_phase_id']}.",
+            href=f"/events/{event_row['slug']}",
+        )
 
     return {
         "request": _serialize_phase_request(refreshed_request, final_summary),
@@ -421,6 +446,13 @@ def vote_update_request(
                 )
             )
             executed = True
+
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "event-update-request", "target_id": str(request_id), "vote": normalized_vote},
+        )
 
         db.commit()
     except IntegrityError as exc:
@@ -573,6 +605,13 @@ def vote_edit_request(
             )
             executed = True
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={"target_type": "event-edit-request", "target_id": str(request_id), "vote": normalized_vote},
+        )
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -581,7 +620,19 @@ def vote_edit_request(
     refreshed_request = db.execute(
         select(event_edit_requests).where(event_edit_requests.c.id == request_id)
     ).mappings().one()
+    refreshed_event = db.execute(select(events).where(events.c.id == event_row["id"])).mappings().one()
     final_summary = _compute_votes(db, event_edit_request_votes, request_id, int(event_row["member_count"] or 0))
+
+    if executed:
+        index_document(
+            db=db,
+            entity_type="event",
+            entity_id=event_row["id"],
+            title=str(refreshed_event["title"]),
+            summary=str(refreshed_event["description"]),
+            meta="event",
+            href=f"/events/{event_row['slug']}",
+        )
 
     return {
         "request": _serialize_edit_request(refreshed_request, final_summary),
