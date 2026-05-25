@@ -21,6 +21,7 @@ from app.services.events import (
     get_event_detail,
     join_event,
     revoke_event_editor,
+    share_event_with_user,
     toggle_event_attendance,
     toggle_event_signal,
     vote_event_value_importance,
@@ -201,6 +202,12 @@ class EventActivityCreateRequest(BaseModel):
 
 class EventActivityCommitRequest(BaseModel):
     role_id: UUID
+
+
+class ShareTargetRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    username: str = Field(min_length=1, max_length=32)
 
 
 async def _get_optional_user_id(
@@ -393,4 +400,19 @@ async def commit_event_activity_route(
         slug=slug,
         activity_id=activity_id,
         role_id=payload.role_id,
+    )
+
+
+@router.post("/{slug}/share")
+async def share_event_route(
+    slug: str,
+    payload: ShareTargetRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return share_event_with_user(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        username=payload.username,
     )

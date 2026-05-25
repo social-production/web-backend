@@ -18,6 +18,34 @@ from app.models import (
 )
 
 
+def get_onboarding(db: Session) -> dict[str, object]:
+    channel_names = db.execute(
+        select(channels.c.name).order_by(channels.c.name.asc()).limit(8)
+    ).scalars().all()
+    community_names = db.execute(
+        select(communities.c.name).order_by(communities.c.name.asc()).limit(8)
+    ).scalars().all()
+
+    return {
+        "title": "Signup / Login",
+        "intro": "Anonymous visitors can read public surfaces first. To post, follow people, or open create flows, sign up or log in.",
+        "accountModes": [
+            {
+                "value": "signup",
+                "label": "Sign up",
+                "description": "Start a fresh username and local profile.",
+            },
+            {
+                "value": "login",
+                "label": "Log in",
+                "description": "Use an existing account once authentication is wired.",
+            },
+        ],
+        "starterChannels": list(channel_names),
+        "starterCommunities": list(community_names),
+    }
+
+
 def _get_viewer_row(db: Session, current_user_id: UUID):
     row = db.execute(
         select(users.c.id, users.c.username, users.c.bio, users.c.profile_image_url).where(

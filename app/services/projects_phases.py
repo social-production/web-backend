@@ -816,3 +816,54 @@ def vote_revert_phase_change_request(
         "executed": executed,
         "current_phase_id": refreshed_project["current_phase_id"],
     }
+
+
+def advance_project_phase(
+    db: Session,
+    current_user_id: UUID,
+    project_slug: str,
+    close_note: str | None = None,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug(db, project_slug)
+    _ensure_member(db, project_row["id"], current_user_id)
+
+    current_phase_id = str(project_row["current_phase_id"])
+    current_order = PHASE_ORDER.get(current_phase_id)
+    if current_order is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project phase is invalid")
+
+    next_phase_id = next((phase_id for phase_id, order in PHASE_ORDER.items() if order == current_order + 1), None)
+    if next_phase_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project is already in the final phase")
+
+    note = (close_note or "").strip()
+    if next_phase_id == "phase-7" and not note:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="close_note is required when closing a project")
+
+    db.execute(
+        update(projects)
+        .where(projects.c.id == project_row["id"])
+        .values(
+            current_phase_id=next_phase_id,
+            stage_label=STAGE_LABEL_BY_PHASE_ID.get(next_phase_id, "proposal"),
+        )
+    )
+
+    if next_phase_id == "phase-7" and note:
+        db.execute(
+            insert(project_updates).values(
+                project_id=project_row["id"],
+                title="Closure note",
+                body=note,
+                author_id=current_user_id,
+            )
+        )
+
+    db.commit()
+
+    return {
+        "ok": True,
+        "project_slug": project_row["slug"],
+        "previous_phase_id": current_phase_id,
+        "current_phase_id": next_phase_id,
+    }

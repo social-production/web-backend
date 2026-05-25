@@ -8,7 +8,14 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import event_memberships, event_plan_votes, event_plans, events
+from app.models import (
+    event_memberships,
+    event_plan_value_votes,
+    event_plan_votes,
+    event_plans,
+    event_values,
+    events,
+)
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.utils.votes import required_votes
@@ -275,4 +282,94 @@ def cast_event_plan_vote(
         "plan": _serialize_plan(refreshed_plan, final_summary),
         "vote": normalized_vote,
         "is_leading": plan_is_leading,
+    }
+
+
+def cast_event_plan_value_vote(
+    db: Session,
+    current_user_id: UUID,
+    event_slug: str,
+    plan_id: UUID,
+    value_id: UUID,
+    vote: str,
+) -> dict[str, object]:
+    event_row = _get_event_row_by_slug(db, event_slug)
+    _ensure_member(db, event_row["id"], current_user_id)
+
+    normalized_vote = vote.strip().lower()
+    if normalized_vote not in VALID_VOTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"vote must be one of: {sorted(VALID_VOTES)}",
+        )
+
+    plan_row = db.execute(
+        select(event_plans.c.id).where(
+            event_plans.c.id == plan_id,
+            event_plans.c.event_id == event_row["id"],
+        )
+    ).first()
+    if plan_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+    value_row = db.execute(
+        select(event_values.c.id).where(
+            event_values.c.id == value_id,
+            event_values.c.event_id == event_row["id"],
+        )
+    ).first()
+    if value_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event value not found")
+
+    existing_vote = db.execute(
+        select(event_plan_value_votes.c.vote).where(
+            event_plan_value_votes.c.plan_id == plan_id,
+            event_plan_value_votes.c.value_id == value_id,
+            event_plan_value_votes.c.voter_id == current_user_id,
+        )
+    ).first()
+
+    try:
+        if existing_vote is None:
+            db.execute(
+                insert(event_plan_value_votes).values(
+                    plan_id=plan_id,
+                    value_id=value_id,
+                    voter_id=current_user_id,
+                    vote=normalized_vote,
+                )
+            )
+        else:
+            db.execute(
+                update(event_plan_value_votes)
+                .where(
+                    event_plan_value_votes.c.plan_id == plan_id,
+                    event_plan_value_votes.c.value_id == value_id,
+                    event_plan_value_votes.c.voter_id == current_user_id,
+                )
+                .values(vote=normalized_vote)
+            )
+
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={
+                "target_type": "event-plan-value",
+                "target_id": str(plan_id),
+                "value_id": str(value_id),
+                "vote": normalized_vote,
+            },
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast event plan value vote") from exc
+
+    return {
+        "ok": True,
+        "event_slug": event_row["slug"],
+        "plan_id": plan_id,
+        "value_id": value_id,
+        "vote": normalized_vote,
     }

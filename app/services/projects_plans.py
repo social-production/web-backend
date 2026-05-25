@@ -8,7 +8,14 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import project_memberships, project_plan_votes, project_plans, projects
+from app.models import (
+    project_memberships,
+    project_plan_value_votes,
+    project_plan_votes,
+    project_plans,
+    project_values,
+    projects,
+)
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.utils.votes import required_votes
@@ -313,4 +320,94 @@ def cast_project_plan_vote(
         "plan": _serialize_plan(refreshed_plan, final_summary),
         "vote": normalized_vote,
         "is_leading": plan_is_leading,
+    }
+
+
+def cast_project_plan_value_vote(
+    db: Session,
+    current_user_id: UUID,
+    project_slug: str,
+    plan_id: UUID,
+    value_id: UUID,
+    vote: str,
+) -> dict[str, object]:
+    project_row = _get_project_row_by_slug(db, project_slug)
+    _ensure_member(db, project_row["id"], current_user_id)
+
+    normalized_vote = vote.strip().lower()
+    if normalized_vote not in VALID_VOTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"vote must be one of: {sorted(VALID_VOTES)}",
+        )
+
+    plan_row = db.execute(
+        select(project_plans.c.id).where(
+            project_plans.c.id == plan_id,
+            project_plans.c.project_id == project_row["id"],
+        )
+    ).first()
+    if plan_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+    value_row = db.execute(
+        select(project_values.c.id).where(
+            project_values.c.id == value_id,
+            project_values.c.project_id == project_row["id"],
+        )
+    ).first()
+    if value_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project value not found")
+
+    existing_vote = db.execute(
+        select(project_plan_value_votes.c.vote).where(
+            project_plan_value_votes.c.plan_id == plan_id,
+            project_plan_value_votes.c.value_id == value_id,
+            project_plan_value_votes.c.voter_id == current_user_id,
+        )
+    ).first()
+
+    try:
+        if existing_vote is None:
+            db.execute(
+                insert(project_plan_value_votes).values(
+                    plan_id=plan_id,
+                    value_id=value_id,
+                    voter_id=current_user_id,
+                    vote=normalized_vote,
+                )
+            )
+        else:
+            db.execute(
+                update(project_plan_value_votes)
+                .where(
+                    project_plan_value_votes.c.plan_id == plan_id,
+                    project_plan_value_votes.c.value_id == value_id,
+                    project_plan_value_votes.c.voter_id == current_user_id,
+                )
+                .values(vote=normalized_vote)
+            )
+
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={
+                "target_type": "project-plan-value",
+                "target_id": str(plan_id),
+                "value_id": str(value_id),
+                "vote": normalized_vote,
+            },
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast plan value vote") from exc
+
+    return {
+        "ok": True,
+        "project_slug": project_row["slug"],
+        "plan_id": plan_id,
+        "value_id": value_id,
+        "vote": normalized_vote,
     }

@@ -8,7 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
-from app.services.projects_plans import cast_project_plan_vote, list_project_plans, submit_project_plan
+from app.services.projects_plans import (
+    cast_project_plan_value_vote,
+    cast_project_plan_vote,
+    list_project_plans,
+    submit_project_plan,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects-plans"])
 
@@ -28,6 +33,13 @@ class ProjectPlanSubmitRequest(BaseModel):
 class ProjectPlanVoteRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
+    vote: str = Field(pattern="^(yes|no)$")
+
+
+class ProjectPlanValueVoteRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    value_id: UUID
     vote: str = Field(pattern="^(yes|no)$")
 
 
@@ -123,5 +135,23 @@ def vote_project_plan(
         current_user_id=current_user_id,
         project_slug=slug,
         plan_id=plan_id,
+        vote=payload.vote,
+    )
+
+
+@router.post("/{slug}/plans/{plan_id}/value-votes")
+def vote_project_plan_value(
+    slug: str,
+    plan_id: UUID,
+    payload: ProjectPlanValueVoteRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return cast_project_plan_value_vote(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        plan_id=plan_id,
+        value_id=payload.value_id,
         vote=payload.vote,
     )

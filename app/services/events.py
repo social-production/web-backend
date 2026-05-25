@@ -41,6 +41,7 @@ from app.models import (
     users,
 )
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.utils.votes import required_votes
 
@@ -1463,3 +1464,38 @@ def commit_event_activity_role(
         "role_id": role_id,
         "user_id": current_user_id,
     }
+
+
+def share_event_with_user(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    username: str,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    _ensure_event_member(db, event_row["id"], current_user_id)
+
+    normalized_username = username.strip()
+    if not normalized_username:
+        return {"ok": False, "error": "Choose another user."}
+
+    target_user = db.execute(
+        select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+    ).mappings().first()
+    if target_user is None or target_user["id"] == current_user_id:
+        return {"ok": False, "error": "Choose another user."}
+
+    create_notification(
+        db=db,
+        recipient_id=target_user["id"],
+        actor_id=current_user_id,
+        kind="evt-share",
+        surface="event",
+        subject_type="event",
+        subject_id=event_row["id"],
+        target_id=event_row["id"],
+        title=event_row["title"],
+        body="An event was shared with you.",
+        href=f"/events/{event_row['slug']}",
+    )
+    return {"ok": True}

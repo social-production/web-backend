@@ -14,12 +14,14 @@ from app.auth.dependencies import bearer_scheme, get_current_user_id, get_curren
 from app.dependencies import get_cache, get_db
 from app.services.projects import (
     add_project_value,
+    add_project_update,
     commit_project_activity_role,
     create_project,
     create_project_activity,
     get_project_detail,
     join_project,
     leave_project,
+    share_project_with_user,
     toggle_project_signal,
     vote_project_value_importance,
 )
@@ -181,6 +183,19 @@ class ProjectActivityCommitRequest(BaseModel):
     role_id: UUID
 
 
+class ProjectUpdateCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1)
+
+
+class ShareTargetRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    username: str = Field(min_length=1, max_length=32)
+
+
 async def _get_optional_user_id(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> UUID | None:
@@ -334,4 +349,35 @@ async def commit_activity_role_route(
         slug=slug,
         activity_id=activity_id,
         role_id=payload.role_id,
+    )
+
+
+@router.post("/{slug}/updates")
+async def add_project_update_route(
+    slug: str,
+    payload: ProjectUpdateCreateRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return add_project_update(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        title=payload.title,
+        body=payload.body,
+    )
+
+
+@router.post("/{slug}/share")
+async def share_project_route(
+    slug: str,
+    payload: ShareTargetRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return share_project_with_user(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        username=payload.username,
     )

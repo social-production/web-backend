@@ -47,6 +47,7 @@ from app.models import (
     users,
 )
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.services.projects_software import get_project_software_governance
 from app.utils.votes import required_votes
@@ -1461,6 +1462,89 @@ def commit_project_activity_role(
         "role_id": role_id,
         "user_id": current_user_id,
     }
+
+
+def add_project_update(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    title: str,
+    body: str,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    _ensure_project_member(db, project_row["id"], current_user_id)
+
+    normalized_title = title.strip()
+    normalized_body = body.strip()
+    if not normalized_title:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
+    if not normalized_body:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="body is required")
+
+    created = db.execute(
+        insert(project_updates)
+        .values(
+            project_id=project_row["id"],
+            title=normalized_title,
+            body=normalized_body,
+            author_id=current_user_id,
+        )
+        .returning(
+            project_updates.c.id,
+            project_updates.c.project_id,
+            project_updates.c.title,
+            project_updates.c.body,
+            project_updates.c.author_id,
+            project_updates.c.created_at,
+        )
+    ).mappings().one()
+    db.commit()
+
+    return {
+        "update": {
+            "id": created["id"],
+            "project_id": created["project_id"],
+            "title": created["title"],
+            "body": created["body"],
+            "author_id": created["author_id"],
+            "created_at": created["created_at"],
+        }
+    }
+
+
+def share_project_with_user(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    username: str,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    _ensure_project_member(db, project_row["id"], current_user_id)
+
+    normalized_username = username.strip()
+    if not normalized_username:
+        return {"ok": False, "error": "Choose another user."}
+
+    target_user = db.execute(
+        select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+    ).mappings().first()
+    if target_user is None or target_user["id"] == current_user_id:
+        return {"ok": False, "error": "Choose another user."}
+
+    create_notification(
+        db=db,
+        recipient_id=target_user["id"],
+        actor_id=current_user_id,
+        kind="prj-share",
+        surface="project",
+        subject_type="project",
+        subject_id=project_row["id"],
+        target_id=project_row["id"],
+        title=project_row["title"],
+        body="A project was shared with you.",
+        href=f"/projects/{project_row['slug']}",
+    )
+    return {"ok": True}
 
 
 async def toggle_project_signal(

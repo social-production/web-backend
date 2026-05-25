@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
 from app.services.projects_phases import (
+    advance_project_phase,
     create_project_edit_request,
     create_project_update_request,
     create_revert_phase_change_request,
@@ -136,6 +137,12 @@ class ProjectEditVoteResponse(BaseModel):
     request: ProjectEditRequestOut
     vote: str
     executed: bool
+
+
+class ProjectPhaseAdvanceIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    close_note: str | None = None
 
 
 @router.post("/{slug}/phase-requests", response_model=PhaseChangeRequestResponse)
@@ -274,4 +281,19 @@ def vote_project_revert_request_route(
         project_slug=slug,
         request_id=request_id,
         vote=payload.vote,
+    )
+
+
+@router.post("/{slug}/phase-advance")
+def advance_project_phase_route(
+    slug: str,
+    payload: ProjectPhaseAdvanceIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return advance_project_phase(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        close_note=payload.close_note,
     )
