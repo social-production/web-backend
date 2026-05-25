@@ -341,17 +341,17 @@ def vote_phase_change_request(
             )
             executed = True
 
-        record_meaningful_action(
-            db=db,
-            user_id=current_user_id,
-            action_type="cast-vote",
-            metadata={"target_type": "project-phase-change", "target_id": str(request_id), "vote": normalized_vote},
-        )
-
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record phase vote") from exc
+
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={"target_type": "project-phase-change", "target_id": str(request_id), "vote": normalized_vote},
+    )
 
     refreshed_request = db.execute(
         select(project_phase_change_requests).where(project_phase_change_requests.c.id == request_id)
@@ -445,41 +445,47 @@ def vote_project_update_request(
         )
     ).first()
 
-    if existing_vote is None:
-        db.execute(
-            insert(project_update_request_votes).values(
-                request_id=request_id,
-                voter_id=current_user_id,
-                vote=normalized_vote,
+    try:
+        if existing_vote is None:
+            db.execute(
+                insert(project_update_request_votes).values(
+                    request_id=request_id,
+                    voter_id=current_user_id,
+                    vote=normalized_vote,
+                )
             )
-        )
-    else:
-        db.execute(
-            update(project_update_request_votes)
-            .where(
-                project_update_request_votes.c.request_id == request_id,
-                project_update_request_votes.c.voter_id == current_user_id,
+        else:
+            db.execute(
+                update(project_update_request_votes)
+                .where(
+                    project_update_request_votes.c.request_id == request_id,
+                    project_update_request_votes.c.voter_id == current_user_id,
+                )
+                .values(vote=normalized_vote)
             )
-            .values(vote=normalized_vote)
-        )
 
-    summary = _compute_simple_vote_summary(db, project_update_request_votes, request_id, int(project_row["member_count"] or 0))
-    executed = False
-    if summary["is_passing"]:
-        db.execute(
-            update(project_update_requests)
-            .where(project_update_requests.c.id == request_id)
-            .values(status="approved")
-        )
-        db.execute(
-            insert(project_updates).values(
-                project_id=project_row["id"],
-                title="Community update",
-                body=request_row["body"],
-                author_id=request_row["author_id"],
+        summary = _compute_simple_vote_summary(db, project_update_request_votes, request_id, int(project_row["member_count"] or 0))
+        executed = False
+        if summary["is_passing"]:
+            db.execute(
+                update(project_update_requests)
+                .where(project_update_requests.c.id == request_id)
+                .values(status="approved")
             )
-        )
-        executed = True
+            db.execute(
+                insert(project_updates).values(
+                    project_id=project_row["id"],
+                    title="Community update",
+                    body=request_row["body"],
+                    author_id=request_row["author_id"],
+                )
+            )
+            executed = True
+
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record update vote") from exc
 
     record_meaningful_action(
         db=db,
@@ -487,8 +493,6 @@ def vote_project_update_request(
         action_type="cast-vote",
         metadata={"target_type": "project-update-request", "target_id": str(request_id), "vote": normalized_vote},
     )
-
-    db.commit()
 
     refreshed_request = db.execute(
         select(project_update_requests).where(project_update_requests.c.id == request_id)
@@ -572,41 +576,47 @@ def vote_project_edit_request(
         )
     ).first()
 
-    if existing_vote is None:
-        db.execute(
-            insert(project_edit_request_votes).values(
-                request_id=request_id,
-                voter_id=current_user_id,
-                vote=normalized_vote,
+    try:
+        if existing_vote is None:
+            db.execute(
+                insert(project_edit_request_votes).values(
+                    request_id=request_id,
+                    voter_id=current_user_id,
+                    vote=normalized_vote,
+                )
             )
-        )
-    else:
-        db.execute(
-            update(project_edit_request_votes)
-            .where(
-                project_edit_request_votes.c.request_id == request_id,
-                project_edit_request_votes.c.voter_id == current_user_id,
+        else:
+            db.execute(
+                update(project_edit_request_votes)
+                .where(
+                    project_edit_request_votes.c.request_id == request_id,
+                    project_edit_request_votes.c.voter_id == current_user_id,
+                )
+                .values(vote=normalized_vote)
             )
-            .values(vote=normalized_vote)
-        )
 
-    summary = _compute_simple_vote_summary(db, project_edit_request_votes, request_id, int(project_row["member_count"] or 0))
-    executed = False
-    if summary["is_passing"]:
-        db.execute(
-            update(project_edit_requests)
-            .where(project_edit_requests.c.id == request_id)
-            .values(status="approved")
-        )
-        db.execute(
-            update(projects)
-            .where(projects.c.id == project_row["id"])
-            .values(
-                title=request_row["title"],
-                description=request_row["description"],
+        summary = _compute_simple_vote_summary(db, project_edit_request_votes, request_id, int(project_row["member_count"] or 0))
+        executed = False
+        if summary["is_passing"]:
+            db.execute(
+                update(project_edit_requests)
+                .where(project_edit_requests.c.id == request_id)
+                .values(status="approved")
             )
-        )
-        executed = True
+            db.execute(
+                update(projects)
+                .where(projects.c.id == project_row["id"])
+                .values(
+                    title=request_row["title"],
+                    description=request_row["description"],
+                )
+            )
+            executed = True
+
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record edit vote") from exc
 
     record_meaningful_action(
         db=db,
@@ -614,8 +624,6 @@ def vote_project_edit_request(
         action_type="cast-vote",
         metadata={"target_type": "project-edit-request", "target_id": str(request_id), "vote": normalized_vote},
     )
-
-    db.commit()
 
     refreshed_request = db.execute(
         select(project_edit_requests).where(project_edit_requests.c.id == request_id)
@@ -743,42 +751,48 @@ def vote_revert_phase_change_request(
         )
     ).first()
 
-    if existing_vote is None:
-        db.execute(
-            insert(project_phase_change_votes).values(
-                request_id=request_id,
-                voter_id=current_user_id,
-                vote=normalized_vote,
+    try:
+        if existing_vote is None:
+            db.execute(
+                insert(project_phase_change_votes).values(
+                    request_id=request_id,
+                    voter_id=current_user_id,
+                    vote=normalized_vote,
+                )
             )
-        )
-    else:
-        db.execute(
-            update(project_phase_change_votes)
-            .where(
-                project_phase_change_votes.c.request_id == request_id,
-                project_phase_change_votes.c.voter_id == current_user_id,
+        else:
+            db.execute(
+                update(project_phase_change_votes)
+                .where(
+                    project_phase_change_votes.c.request_id == request_id,
+                    project_phase_change_votes.c.voter_id == current_user_id,
+                )
+                .values(vote=normalized_vote)
             )
-            .values(vote=normalized_vote)
-        )
 
-    summary = _compute_vote_summary(db, request_id, int(project_row["member_count"] or 0))
-    executed = False
-    if summary["is_passing"]:
-        target_phase_id = request_row["target_phase_id"]
-        db.execute(
-            update(project_phase_change_requests)
-            .where(project_phase_change_requests.c.id == request_id)
-            .values(status="approved")
-        )
-        db.execute(
-            update(projects)
-            .where(projects.c.id == project_row["id"])
-            .values(
-                current_phase_id=target_phase_id,
-                stage_label=STAGE_LABEL_BY_PHASE_ID.get(target_phase_id, "proposal"),
+        summary = _compute_vote_summary(db, request_id, int(project_row["member_count"] or 0))
+        executed = False
+        if summary["is_passing"]:
+            target_phase_id = request_row["target_phase_id"]
+            db.execute(
+                update(project_phase_change_requests)
+                .where(project_phase_change_requests.c.id == request_id)
+                .values(status="approved")
             )
-        )
-        executed = True
+            db.execute(
+                update(projects)
+                .where(projects.c.id == project_row["id"])
+                .values(
+                    current_phase_id=target_phase_id,
+                    stage_label=STAGE_LABEL_BY_PHASE_ID.get(target_phase_id, "proposal"),
+                )
+            )
+            executed = True
+
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record phase vote") from exc
 
     record_meaningful_action(
         db=db,
@@ -786,8 +800,6 @@ def vote_revert_phase_change_request(
         action_type="cast-vote",
         metadata={"target_type": "project-phase-revert", "target_id": str(request_id), "vote": normalized_vote},
     )
-
-    db.commit()
 
     refreshed_request = db.execute(
         select(project_phase_change_requests).where(project_phase_change_requests.c.id == request_id)
@@ -840,26 +852,30 @@ def advance_project_phase(
     if next_phase_id == "phase-7" and not note:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="close_note is required when closing a project")
 
-    db.execute(
-        update(projects)
-        .where(projects.c.id == project_row["id"])
-        .values(
-            current_phase_id=next_phase_id,
-            stage_label=STAGE_LABEL_BY_PHASE_ID.get(next_phase_id, "proposal"),
-        )
-    )
-
-    if next_phase_id == "phase-7" and note:
+    try:
         db.execute(
-            insert(project_updates).values(
-                project_id=project_row["id"],
-                title="Closure note",
-                body=note,
-                author_id=current_user_id,
+            update(projects)
+            .where(projects.c.id == project_row["id"])
+            .values(
+                current_phase_id=next_phase_id,
+                stage_label=STAGE_LABEL_BY_PHASE_ID.get(next_phase_id, "proposal"),
             )
         )
 
-    db.commit()
+        if next_phase_id == "phase-7" and note:
+            db.execute(
+                insert(project_updates).values(
+                    project_id=project_row["id"],
+                    title="Closure note",
+                    body=note,
+                    author_id=current_user_id,
+                )
+            )
+
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not advance project phase") from exc
 
     return {
         "ok": True,

@@ -275,17 +275,17 @@ def vote_phase_change_request(
             )
             executed = True
 
-        record_meaningful_action(
-            db=db,
-            user_id=current_user_id,
-            action_type="cast-vote",
-            metadata={"target_type": "event-phase-change", "target_id": str(request_id), "vote": normalized_vote},
-        )
-
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record phase vote") from exc
+
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={"target_type": "event-phase-change", "target_id": str(request_id), "vote": normalized_vote},
+    )
 
     refreshed_request = db.execute(
         select(event_phase_change_requests).where(event_phase_change_requests.c.id == request_id)
@@ -447,17 +447,17 @@ def vote_update_request(
             )
             executed = True
 
-        record_meaningful_action(
-            db=db,
-            user_id=current_user_id,
-            action_type="cast-vote",
-            metadata={"target_type": "event-update-request", "target_id": str(request_id), "vote": normalized_vote},
-        )
-
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record update vote") from exc
+
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={"target_type": "event-update-request", "target_id": str(request_id), "vote": normalized_vote},
+    )
 
     refreshed_request = db.execute(
         select(event_update_requests).where(event_update_requests.c.id == request_id)
@@ -605,17 +605,17 @@ def vote_edit_request(
             )
             executed = True
 
-        record_meaningful_action(
-            db=db,
-            user_id=current_user_id,
-            action_type="cast-vote",
-            metadata={"target_type": "event-edit-request", "target_id": str(request_id), "vote": normalized_vote},
-        )
-
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record edit vote") from exc
+
+    record_meaningful_action(
+        db=db,
+        user_id=current_user_id,
+        action_type="cast-vote",
+        metadata={"target_type": "event-edit-request", "target_id": str(request_id), "vote": normalized_vote},
+    )
 
     refreshed_request = db.execute(
         select(event_edit_requests).where(event_edit_requests.c.id == request_id)
