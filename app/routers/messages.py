@@ -13,6 +13,7 @@ from app.services.messages import (
     create_group_conversation,
     get_messages_for_conversation,
     list_conversations,
+    mark_conversation_as_read,
     remove_group_member,
     rename_group_conversation,
     send_message,
@@ -97,6 +98,12 @@ class ConversationMessagesResponse(BaseModel):
     items: list[MessageOut]
 
 
+class ConversationReadResponse(BaseModel):
+    ok: bool
+    conversation_id: UUID
+    last_read_at: object
+
+
 @router.post("/direct", response_model=ConversationResponse)
 def start_direct(
     payload: StartDirectConversationRequest,
@@ -154,6 +161,19 @@ def get_conversation_messages(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return get_messages_for_conversation(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+    )
+
+
+@router.post("/conversations/{conversation_id}/read", response_model=ConversationReadResponse)
+def mark_conversation_read_route(
+    conversation_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return mark_conversation_as_read(
         db=db,
         current_user_id=current_user_id,
         conversation_id=conversation_id,

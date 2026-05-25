@@ -9,8 +9,14 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
 from app.services.projects_phases import (
+    create_project_edit_request,
+    create_project_update_request,
+    create_revert_phase_change_request,
     create_phase_change_request,
     list_phase_change_requests,
+    vote_project_edit_request,
+    vote_project_update_request,
+    vote_revert_phase_change_request,
     vote_phase_change_request,
 )
 
@@ -78,6 +84,60 @@ class PhaseChangeVoteResponse(BaseModel):
     current_phase_id: str
 
 
+class ProjectUpdateRequestCreateIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1)
+
+
+class ProjectEditRequestCreateIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1)
+
+
+class ProjectUpdateRequestOut(BaseModel):
+    id: UUID
+    project_id: UUID
+    body: str
+    author_id: UUID | None = None
+    status: str
+    created_at: object
+    vote_summary: PhaseChangeVoteSummaryOut
+
+
+class ProjectEditRequestOut(BaseModel):
+    id: UUID
+    project_id: UUID
+    title: str
+    description: str
+    author_id: UUID | None = None
+    status: str
+    created_at: object
+    vote_summary: PhaseChangeVoteSummaryOut
+
+
+class ProjectUpdateRequestResponse(BaseModel):
+    request: ProjectUpdateRequestOut
+
+
+class ProjectEditRequestResponse(BaseModel):
+    request: ProjectEditRequestOut
+
+
+class ProjectUpdateVoteResponse(BaseModel):
+    request: ProjectUpdateRequestOut
+    vote: str
+    executed: bool
+
+
+class ProjectEditVoteResponse(BaseModel):
+    request: ProjectEditRequestOut
+    vote: str
+    executed: bool
+
+
 @router.post("/{slug}/phase-requests", response_model=PhaseChangeRequestResponse)
 def create_project_phase_request(
     slug: str,
@@ -111,6 +171,104 @@ def vote_project_phase_request(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return vote_phase_change_request(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        request_id=request_id,
+        vote=payload.vote,
+    )
+
+
+@router.post("/{slug}/update-requests", response_model=ProjectUpdateRequestResponse)
+def create_project_update_request_route(
+    slug: str,
+    payload: ProjectUpdateRequestCreateIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return create_project_update_request(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        body=payload.body,
+    )
+
+
+@router.post("/{slug}/update-requests/{request_id}/vote", response_model=ProjectUpdateVoteResponse)
+def vote_project_update_request_route(
+    slug: str,
+    request_id: UUID,
+    payload: PhaseChangeVoteIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return vote_project_update_request(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        request_id=request_id,
+        vote=payload.vote,
+    )
+
+
+@router.post("/{slug}/edit-requests", response_model=ProjectEditRequestResponse)
+def create_project_edit_request_route(
+    slug: str,
+    payload: ProjectEditRequestCreateIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return create_project_edit_request(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        title=payload.title,
+        description=payload.description,
+    )
+
+
+@router.post("/{slug}/edit-requests/{request_id}/vote", response_model=ProjectEditVoteResponse)
+def vote_project_edit_request_route(
+    slug: str,
+    request_id: UUID,
+    payload: PhaseChangeVoteIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return vote_project_edit_request(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        request_id=request_id,
+        vote=payload.vote,
+    )
+
+
+@router.post("/{slug}/revert-requests", response_model=PhaseChangeRequestResponse)
+def create_project_revert_request_route(
+    slug: str,
+    payload: PhaseChangeRequestCreateIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return create_revert_phase_change_request(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        target_phase_id=payload.target_phase_id,
+        reason=payload.reason,
+    )
+
+
+@router.post("/{slug}/revert-requests/{request_id}/vote", response_model=PhaseChangeVoteResponse)
+def vote_project_revert_request_route(
+    slug: str,
+    request_id: UUID,
+    payload: PhaseChangeVoteIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return vote_revert_phase_change_request(
         db=db,
         current_user_id=current_user_id,
         project_slug=slug,

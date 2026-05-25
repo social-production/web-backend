@@ -185,6 +185,17 @@ def _get_event_by_slug_row(db: Session, slug: str) -> Mapping[str, object]:
     return row
 
 
+def _ensure_event_member(db: Session, event_id: UUID, user_id: UUID) -> None:
+    member = db.execute(
+        select(event_memberships.c.user_id).where(
+            event_memberships.c.event_id == event_id,
+            event_memberships.c.user_id == user_id,
+        )
+    ).first()
+    if member is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only event members can perform this action")
+
+
 def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
     normalized = [value.strip().lower() for value in channel_slugs if value.strip()]
     if not normalized:
@@ -1136,4 +1147,293 @@ async def toggle_event_signal(
         "action": action,
         "signal_type": normalized_signal,
         "signals": counts,
+    }
+
+
+def grant_event_editor(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    target_user_id: UUID,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    if event_row["created_by"] != current_user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors")
+
+    _ensure_event_member(db, event_row["id"], target_user_id)
+
+    try:
+        db.execute(
+            insert(event_editors).values(
+                event_id=event_row["id"],
+                user_id=target_user_id,
+                granted_by=current_user_id,
+                granted_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+    return {
+        "ok": True,
+        "slug": event_row["slug"],
+        "editor_user_id": target_user_id,
+        "granted": True,
+    }
+
+
+def revoke_event_editor(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    target_user_id: UUID,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    if event_row["created_by"] != current_user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors")
+
+    db.execute(
+        delete(event_editors).where(
+            event_editors.c.event_id == event_row["id"],
+            event_editors.c.user_id == target_user_id,
+        )
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "slug": event_row["slug"],
+        "editor_user_id": target_user_id,
+        "granted": False,
+    }
+
+
+def add_event_value(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    label: str,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    _ensure_event_member(db, event_row["id"], current_user_id)
+
+    normalized = label.strip()
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required")
+
+    created = db.execute(
+        insert(event_values)
+        .values(event_id=event_row["id"], label=normalized, author_id=current_user_id)
+        .returning(event_values.c.id, event_values.c.event_id, event_values.c.label, event_values.c.author_id, event_values.c.created_at)
+    ).mappings().one()
+    db.commit()
+
+    return {
+        "value": {
+            "id": created["id"],
+            "event_id": created["event_id"],
+            "label": created["label"],
+            "author_id": created["author_id"],
+            "created_at": created["created_at"],
+        }
+    }
+
+
+def vote_event_value_importance(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    value_id: UUID,
+    importance: int,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    _ensure_event_member(db, event_row["id"], current_user_id)
+
+    if importance < 1 or importance > 10:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="importance must be between 1 and 10")
+
+    value_row = db.execute(
+        select(event_values).where(
+            event_values.c.id == value_id,
+            event_values.c.event_id == event_row["id"],
+        )
+    ).mappings().first()
+    if value_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event value not found")
+
+    existing = db.execute(
+        select(event_value_importance_votes.c.importance).where(
+            event_value_importance_votes.c.value_id == value_id,
+            event_value_importance_votes.c.voter_id == current_user_id,
+        )
+    ).first()
+
+    if existing is None:
+        db.execute(
+            insert(event_value_importance_votes).values(
+                value_id=value_id,
+                voter_id=current_user_id,
+                importance=importance,
+            )
+        )
+    else:
+        db.execute(
+            update(event_value_importance_votes)
+            .where(
+                event_value_importance_votes.c.value_id == value_id,
+                event_value_importance_votes.c.voter_id == current_user_id,
+            )
+            .values(importance=importance)
+        )
+    db.commit()
+
+    return {
+        "ok": True,
+        "event_slug": event_row["slug"],
+        "value_id": value_id,
+        "importance": importance,
+    }
+
+
+def create_event_activity(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    title: str,
+    scheduled_at: datetime,
+    ends_at: datetime,
+    location_label: str,
+    note: str,
+    role_requirements: list[dict[str, object]],
+    linked_plan_id: UUID | None = None,
+    linked_plan_phase_id: str | None = None,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    _ensure_event_member(db, event_row["id"], current_user_id)
+
+    if ends_at <= scheduled_at:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
+
+    created = db.execute(
+        insert(event_activities)
+        .values(
+            event_id=event_row["id"],
+            linked_plan_id=linked_plan_id,
+            linked_plan_phase_id=linked_plan_phase_id,
+            title=title.strip(),
+            author_id=current_user_id,
+            scheduled_at=scheduled_at,
+            ends_at=ends_at,
+            location_label=location_label.strip(),
+            note=note.strip(),
+        )
+        .returning(
+            event_activities.c.id,
+            event_activities.c.event_id,
+            event_activities.c.title,
+            event_activities.c.author_id,
+            event_activities.c.scheduled_at,
+            event_activities.c.ends_at,
+            event_activities.c.location_label,
+            event_activities.c.note,
+            event_activities.c.linked_plan_id,
+            event_activities.c.linked_plan_phase_id,
+            event_activities.c.created_at,
+        )
+    ).mappings().one()
+
+    role_items = []
+    for req in role_requirements:
+        label = str(req.get("label", "")).strip()
+        required_count = int(req.get("required_count", 0))
+        maximum_count_raw = req.get("maximum_count")
+        maximum_count = int(maximum_count_raw) if maximum_count_raw is not None else None
+        if not label or required_count < 1:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid role requirement")
+        if maximum_count is not None and maximum_count < required_count:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="maximum_count must be >= required_count")
+
+        role = db.execute(
+            insert(event_activity_roles)
+            .values(
+                activity_id=created["id"],
+                label=label,
+                required_count=required_count,
+                maximum_count=maximum_count,
+            )
+            .returning(
+                event_activity_roles.c.id,
+                event_activity_roles.c.label,
+                event_activity_roles.c.required_count,
+                event_activity_roles.c.maximum_count,
+            )
+        ).mappings().one()
+        role_items.append(dict(role))
+
+    db.commit()
+    return {
+        "activity": {
+            **dict(created),
+            "roles": role_items,
+        }
+    }
+
+
+def commit_event_activity_role(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    activity_id: UUID,
+    role_id: UUID,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    _ensure_event_member(db, event_row["id"], current_user_id)
+
+    activity_row = db.execute(
+        select(event_activities).where(
+            event_activities.c.id == activity_id,
+            event_activities.c.event_id == event_row["id"],
+        )
+    ).mappings().first()
+    if activity_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+
+    role_row = db.execute(
+        select(event_activity_roles).where(
+            event_activity_roles.c.id == role_id,
+            event_activity_roles.c.activity_id == activity_id,
+        )
+    ).mappings().first()
+    if role_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+    existing_assignment = db.execute(
+        select(event_activity_assignments.c.role_id)
+        .select_from(event_activity_assignments.join(event_activity_roles, event_activity_roles.c.id == event_activity_assignments.c.role_id))
+        .where(
+            event_activity_roles.c.activity_id == activity_id,
+            event_activity_assignments.c.user_id == current_user_id,
+        )
+    ).first()
+    if existing_assignment is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity")
+
+    filled_count = db.execute(
+        select(event_activity_assignments.c.user_id).where(event_activity_assignments.c.role_id == role_id)
+    ).all()
+    if role_row["maximum_count"] is not None and len(filled_count) >= int(role_row["maximum_count"]):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role is already full")
+
+    db.execute(
+        insert(event_activity_assignments).values(role_id=role_id, user_id=current_user_id)
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "event_slug": event_row["slug"],
+        "activity_id": activity_id,
+        "role_id": role_id,
+        "user_id": current_user_id,
     }

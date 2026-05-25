@@ -421,3 +421,28 @@ def remove_group_member(
     refreshed = _get_conversation_row(db, conversation_id)
     participants = _get_conversation_participants(db, conversation_id)
     return {"conversation": _serialize_conversation(refreshed, participants)}
+
+
+def mark_conversation_as_read(
+    db: Session,
+    current_user_id: UUID,
+    conversation_id: UUID,
+) -> dict[str, object]:
+    _get_conversation_row(db, conversation_id)
+    _ensure_member(db, conversation_id, current_user_id)
+
+    now = datetime.now(timezone.utc)
+    db.execute(
+        update(conversation_members)
+        .where(
+            conversation_members.c.conversation_id == conversation_id,
+            conversation_members.c.user_id == current_user_id,
+        )
+        .values(last_read_at=now)
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "conversation_id": conversation_id,
+        "last_read_at": now,
+    }
