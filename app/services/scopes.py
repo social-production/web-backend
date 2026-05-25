@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
+import hashlib
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import channels, communities, scope_memberships, users
+from app.models import channels, communities, scope_invites, scope_memberships, users
 from app.services.search import index_document
 
 CHANNEL_SCOPE_KIND = "channel"
@@ -263,3 +265,54 @@ def list_scope_members(db: Session, scope_kind: str, slug: str) -> dict[str, obj
         for row in rows
     ]
     return {"scope_kind": scope_kind, "slug": scope_row["slug"], "total": len(items), "items": items}
+
+
+def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[str, object]:
+    normalized_token = token.strip()
+    if not normalized_token:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="token is required")
+
+    token_hash = hashlib.sha256(normalized_token.encode("utf-8")).hexdigest()
+    invite = db.execute(
+        select(scope_invites).where(scope_invites.c.token_hash == token_hash)
+    ).mappings().first()
+    if invite is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found")
+
+    now = datetime.now(timezone.utc)
+    if invite["expires_at"] is not None and invite["expires_at"] < now:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invite has expired")
+    if invite["max_uses"] is not None and int(invite["uses"] or 0) >= int(invite["max_uses"]):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invite has no uses remaining")
+
+    scope_kind = invite["scope_kind"]
+    if scope_kind == CHANNEL_SCOPE_KIND:
+        scope_row = db.execute(select(channels).where(channels.c.id == invite["scope_id"])).mappings().first()
+    elif scope_kind == COMMUNITY_SCOPE_KIND:
+        scope_row = db.execute(select(communities).where(communities.c.id == invite["scope_id"])).mappings().first()
+    else:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invite scope kind unsupported")
+
+    if scope_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite scope not found")
+
+    try:
+        db.execute(
+            insert(scope_memberships).values(
+                scope_kind=scope_kind,
+                scope_id=scope_row["id"],
+                user_id=current_user_id,
+                role="member",
+            )
+        )
+    except IntegrityError:
+        db.rollback()
+
+    db.execute(
+        update(scope_invites)
+        .where(scope_invites.c.id == invite["id"])
+        .values(uses=int(invite["uses"] or 0) + 1)
+    )
+    db.commit()
+
+    return {"ok": True, "joined": True, "scope_kind": scope_kind, "slug": scope_row["slug"]}

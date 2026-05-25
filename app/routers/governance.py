@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
 from app.services.governance import add_comment, cast_vote, get_comments
+from app.services.governance import submit_report, vote_report
 
 router = APIRouter(prefix="/governance", tags=["governance"])
 
@@ -61,6 +62,54 @@ class VoteCastResponse(BaseModel):
     value: int
 
 
+class ReportSubmitRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    target_type: str = Field(pattern="^(project|thread|post|comment)$")
+    target_id: UUID
+    reason: str = Field(pattern="^(spam|serious-harm)$")
+    description: str = Field(min_length=1)
+
+
+class ReportVoteRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    vote: str = Field(pattern="^(yes|no)$")
+
+
+class ReportVoteSummaryOut(BaseModel):
+    yes_count: int
+    no_count: int
+    active_vote: str | None = None
+    eligible_voter_count: int
+    votes_required: int
+
+
+class ReportOut(BaseModel):
+    id: UUID
+    subject_type: str
+    subject_id: UUID
+    target_type: str
+    target_id: UUID
+    reason: str
+    description: str
+    reporter_id: UUID | None = None
+    reported_author_id: UUID | None = None
+    resolution: str
+    created_at: object
+    updated_at: object
+    vote_summary: ReportVoteSummaryOut
+
+
+class ReportSubmitResponse(BaseModel):
+    report: ReportOut
+
+
+class ReportVoteResponse(BaseModel):
+    report: ReportOut
+    vote: str
+
+
 @router.post("/comments", response_model=CommentCreateResponse)
 def create_comment(
     payload: CommentCreateRequest,
@@ -98,4 +147,35 @@ def create_vote(
         target_type=payload.target_type,
         target_id=payload.target_id,
         direction=payload.direction,
+    )
+
+
+@router.post("/reports", response_model=ReportSubmitResponse)
+def create_report(
+    payload: ReportSubmitRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return submit_report(
+        db=db,
+        current_user_id=current_user_id,
+        target_type=payload.target_type,
+        target_id=payload.target_id,
+        reason=payload.reason,
+        description=payload.description,
+    )
+
+
+@router.post("/reports/{report_id}/vote", response_model=ReportVoteResponse)
+def cast_report_vote(
+    report_id: UUID,
+    payload: ReportVoteRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return vote_report(
+        db=db,
+        current_user_id=current_user_id,
+        report_id=report_id,
+        vote=payload.vote,
     )

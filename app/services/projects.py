@@ -1201,6 +1201,250 @@ def leave_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, ob
     return {"ok": True, "joined": False, "slug": project_row["slug"]}
 
 
+def _ensure_project_member(db: Session, project_id: UUID, user_id: UUID) -> None:
+    membership = db.execute(
+        select(project_memberships.c.user_id).where(
+            project_memberships.c.project_id == project_id,
+            project_memberships.c.user_id == user_id,
+        )
+    ).first()
+    if membership is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can perform this action")
+
+
+def add_project_value(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    label: str,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    _ensure_project_member(db, project_row["id"], current_user_id)
+
+    normalized = label.strip()
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required")
+
+    created = db.execute(
+        insert(project_values)
+        .values(project_id=project_row["id"], label=normalized, author_id=current_user_id)
+        .returning(project_values.c.id, project_values.c.project_id, project_values.c.label, project_values.c.author_id, project_values.c.created_at)
+    ).mappings().one()
+    db.commit()
+
+    return {
+        "value": {
+            "id": created["id"],
+            "project_id": created["project_id"],
+            "label": created["label"],
+            "author_id": created["author_id"],
+            "created_at": created["created_at"],
+        }
+    }
+
+
+def vote_project_value_importance(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    value_id: UUID,
+    importance: int,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    _ensure_project_member(db, project_row["id"], current_user_id)
+
+    if importance < 1 or importance > 10:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="importance must be between 1 and 10")
+
+    value_row = db.execute(
+        select(project_values).where(
+            project_values.c.id == value_id,
+            project_values.c.project_id == project_row["id"],
+        )
+    ).mappings().first()
+    if value_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project value not found")
+
+    existing = db.execute(
+        select(project_value_importance_votes.c.importance).where(
+            project_value_importance_votes.c.value_id == value_id,
+            project_value_importance_votes.c.voter_id == current_user_id,
+        )
+    ).first()
+
+    if existing is None:
+        db.execute(
+            insert(project_value_importance_votes).values(
+                value_id=value_id,
+                voter_id=current_user_id,
+                importance=importance,
+            )
+        )
+    else:
+        db.execute(
+            update(project_value_importance_votes)
+            .where(
+                project_value_importance_votes.c.value_id == value_id,
+                project_value_importance_votes.c.voter_id == current_user_id,
+            )
+            .values(importance=importance)
+        )
+    db.commit()
+
+    return {
+        "ok": True,
+        "project_slug": project_row["slug"],
+        "value_id": value_id,
+        "importance": importance,
+    }
+
+
+def create_project_activity(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    title: str,
+    scheduled_at: datetime,
+    ends_at: datetime,
+    location_label: str,
+    note: str,
+    role_requirements: list[dict[str, object]],
+    linked_plan_id: UUID | None = None,
+    linked_plan_phase_id: str | None = None,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    _ensure_project_member(db, project_row["id"], current_user_id)
+
+    if ends_at <= scheduled_at:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
+
+    created = db.execute(
+        insert(project_activities)
+        .values(
+            project_id=project_row["id"],
+            linked_plan_id=linked_plan_id,
+            linked_plan_phase_id=linked_plan_phase_id,
+            linked_request_id=None,
+            title=title.strip(),
+            author_id=current_user_id,
+            scheduled_at=scheduled_at,
+            ends_at=ends_at,
+            location_label=location_label.strip(),
+            note=note.strip(),
+            status="active",
+        )
+        .returning(
+            project_activities.c.id,
+            project_activities.c.project_id,
+            project_activities.c.title,
+            project_activities.c.author_id,
+            project_activities.c.scheduled_at,
+            project_activities.c.ends_at,
+            project_activities.c.location_label,
+            project_activities.c.note,
+            project_activities.c.linked_plan_id,
+            project_activities.c.linked_plan_phase_id,
+            project_activities.c.status,
+            project_activities.c.created_at,
+        )
+    ).mappings().one()
+
+    role_items = []
+    for req in role_requirements:
+        label = str(req.get("label", "")).strip()
+        required_count = int(req.get("required_count", 0))
+        maximum_count_raw = req.get("maximum_count")
+        maximum_count = int(maximum_count_raw) if maximum_count_raw is not None else None
+        if not label or required_count < 1:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid role requirement")
+        if maximum_count is not None and maximum_count < required_count:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="maximum_count must be >= required_count")
+
+        role = db.execute(
+            insert(project_activity_roles)
+            .values(
+                activity_id=created["id"],
+                label=label,
+                required_count=required_count,
+                maximum_count=maximum_count,
+            )
+            .returning(
+                project_activity_roles.c.id,
+                project_activity_roles.c.label,
+                project_activity_roles.c.required_count,
+                project_activity_roles.c.maximum_count,
+            )
+        ).mappings().one()
+        role_items.append(dict(role))
+
+    db.commit()
+    return {
+        "activity": {
+            **dict(created),
+            "roles": role_items,
+        }
+    }
+
+
+def commit_project_activity_role(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    activity_id: UUID,
+    role_id: UUID,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    _ensure_project_member(db, project_row["id"], current_user_id)
+
+    activity_row = db.execute(
+        select(project_activities).where(
+            project_activities.c.id == activity_id,
+            project_activities.c.project_id == project_row["id"],
+        )
+    ).mappings().first()
+    if activity_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+
+    role_row = db.execute(
+        select(project_activity_roles).where(
+            project_activity_roles.c.id == role_id,
+            project_activity_roles.c.activity_id == activity_id,
+        )
+    ).mappings().first()
+    if role_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+    existing_assignment = db.execute(
+        select(project_activity_assignments.c.role_id)
+        .select_from(project_activity_assignments.join(project_activity_roles, project_activity_roles.c.id == project_activity_assignments.c.role_id))
+        .where(
+            project_activity_roles.c.activity_id == activity_id,
+            project_activity_assignments.c.user_id == current_user_id,
+        )
+    ).first()
+    if existing_assignment is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity")
+
+    filled_count = db.execute(
+        select(project_activity_assignments.c.user_id).where(project_activity_assignments.c.role_id == role_id)
+    ).all()
+    if role_row["maximum_count"] is not None and len(filled_count) >= int(role_row["maximum_count"]):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role is already full")
+
+    db.execute(
+        insert(project_activity_assignments).values(role_id=role_id, user_id=current_user_id)
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "project_slug": project_row["slug"],
+        "activity_id": activity_id,
+        "role_id": role_id,
+        "user_id": current_user_id,
+    }
+
+
 async def toggle_project_signal(
     db: Session,
     cache: Redis,

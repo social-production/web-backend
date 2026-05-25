@@ -8,11 +8,103 @@ from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import comments, content_votes, posts, threads
+from app.models import (
+    comments,
+    content_votes,
+    platform_board_memberships,
+    posts,
+    project_memberships,
+    projects,
+    report_votes,
+    reports,
+    threads,
+)
+from app.utils.votes import required_votes
 
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post"})
 VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment"})
+REPORTABLE_TARGET_TYPES = frozenset({"project", "thread", "post", "comment"})
+REPORT_REASONS = frozenset({"spam", "serious-harm"})
+REPORT_VOTES = frozenset({"yes", "no"})
 VOTE_DIRECTIONS = {"up": 1, "down": -1, "neutral": 0}
+
+
+def _serialize_report(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": row["id"],
+        "subject_type": row["subject_type"],
+        "subject_id": row["subject_id"],
+        "target_type": row["target_type"],
+        "target_id": row["target_id"],
+        "reason": row["reason"],
+        "description": row["description"],
+        "reporter_id": row["reporter_id"],
+        "reported_author_id": row["reported_author_id"],
+        "resolution": row["resolution"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "vote_summary": vote_summary,
+    }
+
+
+def _resolve_target_author_id(db: Session, target_type: str, target_id: UUID) -> UUID | None:
+    if target_type == "project":
+        row = db.execute(select(projects.c.author_id).where(projects.c.id == target_id)).first()
+    elif target_type == "thread":
+        row = db.execute(select(threads.c.author_id).where(threads.c.id == target_id)).first()
+    elif target_type == "post":
+        row = db.execute(select(posts.c.author_id).where(posts.c.id == target_id)).first()
+    else:
+        row = db.execute(select(comments.c.author_id).where(comments.c.id == target_id)).first()
+    if row is None:
+        return None
+    return row[0]
+
+
+def _ensure_report_target_exists(db: Session, target_type: str, target_id: UUID) -> None:
+    if target_type == "project":
+        exists = db.execute(select(projects.c.id).where(projects.c.id == target_id)).first()
+    elif target_type == "thread":
+        exists = db.execute(select(threads.c.id).where(threads.c.id == target_id)).first()
+    elif target_type == "post":
+        exists = db.execute(select(posts.c.id).where(posts.c.id == target_id)).first()
+    elif target_type == "comment":
+        exists = db.execute(select(comments.c.id).where(comments.c.id == target_id)).first()
+    else:
+        exists = None
+
+    if exists is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{target_type.capitalize()} not found")
+
+
+def _report_vote_summary(db: Session, report_id: UUID, current_user_id: UUID | None = None) -> dict[str, object]:
+    rows = db.execute(
+        select(report_votes.c.vote, report_votes.c.voter_id).where(report_votes.c.report_id == report_id)
+    ).all()
+
+    yes_count = 0
+    no_count = 0
+    active_vote = None
+    for vote, voter_id in rows:
+        if vote == "yes":
+            yes_count += 1
+        elif vote == "no":
+            no_count += 1
+        if current_user_id is not None and voter_id == current_user_id:
+            active_vote = vote
+
+    member_count = db.execute(
+        select(platform_board_memberships.c.user_id).where(platform_board_memberships.c.standing_state == "member")
+    ).all()
+    eligible = len(member_count) if len(member_count) > 0 else 1
+
+    return {
+        "yes_count": yes_count,
+        "no_count": no_count,
+        "active_vote": active_vote,
+        "eligible_voter_count": eligible,
+        "votes_required": required_votes(eligible),
+    }
 
 
 def _serialize_comment(row: Mapping[str, object], replies: list[dict[str, object]] | None = None) -> dict[str, object]:
@@ -280,3 +372,130 @@ def cast_vote(
         "direction": normalized_direction,
         "value": new_value,
     }
+
+
+def submit_report(
+    db: Session,
+    current_user_id: UUID,
+    target_type: str,
+    target_id: UUID,
+    reason: str,
+    description: str,
+) -> dict[str, object]:
+    normalized_target = target_type.strip().lower()
+    normalized_reason = reason.strip().lower()
+    if normalized_target not in REPORTABLE_TARGET_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"target_type must be one of: {sorted(REPORTABLE_TARGET_TYPES)}",
+        )
+    if normalized_reason not in REPORT_REASONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"reason must be one of: {sorted(REPORT_REASONS)}",
+        )
+
+    _ensure_report_target_exists(db, normalized_target, target_id)
+    reported_author_id = _resolve_target_author_id(db, normalized_target, target_id)
+
+    existing = db.execute(
+        select(reports).where(reports.c.target_type == normalized_target, reports.c.target_id == target_id)
+    ).mappings().first()
+    if existing is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Report already exists for target")
+
+    try:
+        created = db.execute(
+            insert(reports)
+            .values(
+                subject_type=normalized_target,
+                subject_id=target_id,
+                target_type=normalized_target,
+                target_id=target_id,
+                reason=normalized_reason,
+                description=description.strip(),
+                reporter_id=current_user_id,
+                reported_author_id=reported_author_id,
+                resolution="open",
+            )
+            .returning(
+                reports.c.id,
+                reports.c.subject_type,
+                reports.c.subject_id,
+                reports.c.target_type,
+                reports.c.target_id,
+                reports.c.reason,
+                reports.c.description,
+                reports.c.reporter_id,
+                reports.c.reported_author_id,
+                reports.c.resolution,
+                reports.c.created_at,
+                reports.c.updated_at,
+            )
+        ).mappings().one()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit report") from exc
+
+    summary = _report_vote_summary(db, created["id"], current_user_id)
+    return {"report": _serialize_report(created, summary)}
+
+
+def vote_report(
+    db: Session,
+    current_user_id: UUID,
+    report_id: UUID,
+    vote: str,
+) -> dict[str, object]:
+    normalized_vote = vote.strip().lower()
+    if normalized_vote not in REPORT_VOTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"vote must be one of: {sorted(REPORT_VOTES)}",
+        )
+
+    row = db.execute(select(reports).where(reports.c.id == report_id)).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+
+    existing = db.execute(
+        select(report_votes.c.vote)
+        .where(report_votes.c.report_id == report_id, report_votes.c.voter_id == current_user_id)
+    ).first()
+
+    try:
+        if existing is None:
+            db.execute(
+                insert(report_votes).values(report_id=report_id, voter_id=current_user_id, vote=normalized_vote)
+            )
+        else:
+            db.execute(
+                update(report_votes)
+                .where(report_votes.c.report_id == report_id, report_votes.c.voter_id == current_user_id)
+                .values(vote=normalized_vote)
+            )
+
+        summary = _report_vote_summary(db, report_id, current_user_id)
+        yes_count = int(summary["yes_count"])
+        no_count = int(summary["no_count"])
+        total = yes_count + no_count
+        approval = (yes_count / total) if total > 0 else 0.0
+
+        new_resolution = row["resolution"]
+        if total >= summary["votes_required"] and approval >= 0.66:
+            new_resolution = "hidden"
+
+        db.execute(
+            update(reports)
+            .where(reports.c.id == report_id)
+            .values(resolution=new_resolution)
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on report") from exc
+
+    refreshed = db.execute(select(reports).where(reports.c.id == report_id)).mappings().one()
+    final_summary = _report_vote_summary(db, report_id, current_user_id)
+    return {"report": _serialize_report(refreshed, final_summary), "vote": normalized_vote}

@@ -16,6 +16,7 @@ from app.services.scopes import (
     join_scope,
     leave_scope,
     list_scope_members,
+    redeem_scope_invite,
 )
 
 router = APIRouter(prefix="/scopes", tags=["scopes"])
@@ -43,6 +44,12 @@ class ScopeJoinResponse(BaseModel):
     joined: bool
     scope_kind: str
     slug: str
+
+
+class InviteRedeemRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    token: str = Field(min_length=1)
 
 
 class ChannelResponse(BaseModel):
@@ -144,3 +151,12 @@ def channel_members(slug: str, db: Session = Depends(get_db)) -> dict[str, objec
 @router.get("/communities/{slug}/members", dependencies=[Depends(get_current_user_id)], response_model=ScopeMembersResponse)
 def community_members(slug: str, db: Session = Depends(get_db)) -> dict[str, object]:
     return list_scope_members(db, "community", slug)
+
+
+@router.post("/invites/redeem", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)
+def redeem_invite(
+    payload: InviteRedeemRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return redeem_scope_invite(db=db, current_user_id=current_user_id, token=payload.token)

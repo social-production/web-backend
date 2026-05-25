@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 from typing import Any
 
@@ -12,11 +13,15 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_cache, get_db
 from app.services.projects import (
+    add_project_value,
+    commit_project_activity_role,
     create_project,
+    create_project_activity,
     get_project_detail,
     join_project,
     leave_project,
     toggle_project_signal,
+    vote_project_value_importance,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -141,6 +146,41 @@ class ProjectSignalToggleResponse(BaseModel):
     signals: SignalCountsOut
 
 
+class ProjectValueCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    label: str = Field(min_length=1, max_length=200)
+
+
+class ProjectValueVoteRequest(BaseModel):
+    importance: int = Field(ge=1, le=10)
+
+
+class ProjectActivityRoleRequirementIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    label: str = Field(min_length=1, max_length=100)
+    required_count: int = Field(ge=1)
+    maximum_count: int | None = Field(default=None, ge=1)
+
+
+class ProjectActivityCreateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    scheduled_at: datetime
+    ends_at: datetime
+    location_label: str = Field(min_length=1, max_length=160)
+    note: str = Field(min_length=1)
+    role_requirements: list[ProjectActivityRoleRequirementIn] = Field(default_factory=list)
+    linked_plan_id: UUID | None = None
+    linked_plan_phase_id: str | None = None
+
+
+class ProjectActivityCommitRequest(BaseModel):
+    role_id: UUID
+
+
 async def _get_optional_user_id(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> UUID | None:
@@ -223,4 +263,75 @@ async def toggle_project_signal_route(
         current_user_id=current_user_id,
         slug=slug,
         signal_type=payload.signal_type,
+    )
+
+
+@router.post("/{slug}/values")
+async def create_value_route(
+    slug: str,
+    payload: ProjectValueCreateRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return add_project_value(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        label=payload.label,
+    )
+
+
+@router.post("/{slug}/values/{value_id}/importance")
+async def vote_value_importance_route(
+    slug: str,
+    value_id: UUID,
+    payload: ProjectValueVoteRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return vote_project_value_importance(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        value_id=value_id,
+        importance=payload.importance,
+    )
+
+
+@router.post("/{slug}/activities")
+async def create_activity_route(
+    slug: str,
+    payload: ProjectActivityCreateRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return create_project_activity(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        title=payload.title,
+        scheduled_at=payload.scheduled_at,
+        ends_at=payload.ends_at,
+        location_label=payload.location_label,
+        note=payload.note,
+        role_requirements=[item.model_dump() for item in payload.role_requirements],
+        linked_plan_id=payload.linked_plan_id,
+        linked_plan_phase_id=payload.linked_plan_phase_id,
+    )
+
+
+@router.post("/{slug}/activities/{activity_id}/commit")
+async def commit_activity_role_route(
+    slug: str,
+    activity_id: UUID,
+    payload: ProjectActivityCommitRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return commit_project_activity_role(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        activity_id=activity_id,
+        role_id=payload.role_id,
     )

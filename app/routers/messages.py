@@ -9,9 +9,12 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
 from app.services.messages import (
+    add_group_member,
     create_group_conversation,
     get_messages_for_conversation,
     list_conversations,
+    remove_group_member,
+    rename_group_conversation,
     send_message,
     start_direct_conversation,
 )
@@ -50,6 +53,18 @@ class CreateGroupConversationRequest(BaseModel):
 
     title: str = Field(min_length=1, max_length=200)
     participant_usernames: list[str] = Field(default_factory=list)
+
+
+class RenameGroupConversationRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+
+
+class GroupMemberManageRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    username: str = Field(min_length=3, max_length=32)
 
 
 class ConversationsListResponse(BaseModel):
@@ -142,4 +157,49 @@ def get_conversation_messages(
         db=db,
         current_user_id=current_user_id,
         conversation_id=conversation_id,
+    )
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationResponse)
+def rename_group(
+    conversation_id: UUID,
+    payload: RenameGroupConversationRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return rename_group_conversation(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        title=payload.title,
+    )
+
+
+@router.post("/conversations/{conversation_id}/members", response_model=ConversationResponse)
+def add_member_to_group(
+    conversation_id: UUID,
+    payload: GroupMemberManageRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return add_group_member(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        username=payload.username,
+    )
+
+
+@router.delete("/conversations/{conversation_id}/members/{username}", response_model=ConversationResponse)
+def remove_member_from_group(
+    conversation_id: UUID,
+    username: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return remove_group_member(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        username=username,
     )

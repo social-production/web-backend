@@ -6,7 +6,7 @@ from uuid import UUID
 
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -81,6 +81,13 @@ def _get_conversation_participants(db: Session, conversation_id: UUID) -> list[d
         .order_by(users.c.username.asc())
     ).mappings().all()
     return [{"id": row["id"], "username": row["username"]} for row in rows]
+
+
+def _ensure_group_manager(db: Session, conversation_row: Mapping[str, object], current_user_id: UUID) -> None:
+    if conversation_row["kind"] != "group":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Conversation is not a group")
+    if conversation_row["created_by"] != current_user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the group creator can manage members")
 
 
 def _find_existing_direct_conversation(db: Session, user_a: UUID, user_b: UUID) -> Mapping[str, object] | None:
@@ -329,3 +336,88 @@ def get_messages_for_conversation(db: Session, current_user_id: UUID, conversati
         items.append(_serialize_message(row, plaintext))
 
     return {"conversation_id": conversation_id, "total": len(items), "items": items}
+
+
+def rename_group_conversation(
+    db: Session,
+    current_user_id: UUID,
+    conversation_id: UUID,
+    title: str,
+) -> dict[str, object]:
+    conversation_row = _get_conversation_row(db, conversation_id)
+    _ensure_member(db, conversation_id, current_user_id)
+    _ensure_group_manager(db, conversation_row, current_user_id)
+
+    normalized_title = title.strip()
+    if not normalized_title:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
+
+    db.execute(
+        update(conversations)
+        .where(conversations.c.id == conversation_id)
+        .values(title=normalized_title)
+    )
+    db.commit()
+
+    refreshed = _get_conversation_row(db, conversation_id)
+    participants = _get_conversation_participants(db, conversation_id)
+    return {"conversation": _serialize_conversation(refreshed, participants)}
+
+
+def add_group_member(
+    db: Session,
+    current_user_id: UUID,
+    conversation_id: UUID,
+    username: str,
+) -> dict[str, object]:
+    conversation_row = _get_conversation_row(db, conversation_id)
+    _ensure_member(db, conversation_id, current_user_id)
+    _ensure_group_manager(db, conversation_row, current_user_id)
+
+    user_row = _get_user_by_username(db, username)
+    target_user_id = user_row["id"]
+
+    try:
+        db.execute(
+            insert(conversation_members).values(
+                conversation_id=conversation_id,
+                user_id=target_user_id,
+                joined_at=datetime.now(timezone.utc),
+                last_read_at=None,
+            )
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+
+    refreshed = _get_conversation_row(db, conversation_id)
+    participants = _get_conversation_participants(db, conversation_id)
+    return {"conversation": _serialize_conversation(refreshed, participants)}
+
+
+def remove_group_member(
+    db: Session,
+    current_user_id: UUID,
+    conversation_id: UUID,
+    username: str,
+) -> dict[str, object]:
+    conversation_row = _get_conversation_row(db, conversation_id)
+    _ensure_member(db, conversation_id, current_user_id)
+    _ensure_group_manager(db, conversation_row, current_user_id)
+
+    user_row = _get_user_by_username(db, username)
+    target_user_id = user_row["id"]
+    if target_user_id == current_user_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Creator cannot remove self")
+
+    db.execute(
+        delete(conversation_members).where(
+            conversation_members.c.conversation_id == conversation_id,
+            conversation_members.c.user_id == target_user_id,
+        )
+    )
+    db.commit()
+
+    refreshed = _get_conversation_row(db, conversation_id)
+    participants = _get_conversation_participants(db, conversation_id)
+    return {"conversation": _serialize_conversation(refreshed, participants)}
