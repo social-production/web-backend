@@ -222,14 +222,19 @@ def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -
 
 def leave_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -> dict[str, object]:
     scope_row = _get_scope_row(db, scope_kind, slug)
-    db.execute(
-        delete(scope_memberships).where(
-            scope_memberships.c.scope_kind == scope_kind,
-            scope_memberships.c.scope_id == scope_row["id"],
-            scope_memberships.c.user_id == current_user_id,
+    try:
+        db.execute(
+            delete(scope_memberships).where(
+                scope_memberships.c.scope_kind == scope_kind,
+                scope_memberships.c.scope_id == scope_row["id"],
+                scope_memberships.c.user_id == current_user_id,
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not leave scope") from exc
+
     return {"ok": True, "joined": False, "scope_kind": scope_kind, "slug": scope_row["slug"]}
 
 
@@ -305,14 +310,15 @@ def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[
                 role="member",
             )
         )
-    except IntegrityError:
-        db.rollback()
 
-    db.execute(
-        update(scope_invites)
-        .where(scope_invites.c.id == invite["id"])
-        .values(uses=int(invite["uses"] or 0) + 1)
-    )
-    db.commit()
+        db.execute(
+            update(scope_invites)
+            .where(scope_invites.c.id == invite["id"])
+            .values(uses=int(invite["uses"] or 0) + 1)
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not redeem invite") from exc
 
     return {"ok": True, "joined": True, "scope_kind": scope_kind, "slug": scope_row["slug"]}

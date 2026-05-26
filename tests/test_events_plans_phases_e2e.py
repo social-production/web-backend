@@ -207,8 +207,8 @@ def run() -> None:
     assert edit_vote["request"]["status"] == "approved"
 
     refreshed_event = _request_json(f"{base}/events/{event_slug}")
-    assert refreshed_event["event"]["title"] == "Edited Event Title"
-    assert refreshed_event["event"]["description"] == "Edited Event Description"
+    assert refreshed_event["title"] == "Edited Event Title"
+    assert refreshed_event["description"] == "Edited Event Description"
 
     phase_list = _request_json(f"{base}/events/{event_slug}/phase-requests")
     update_list = _request_json(f"{base}/events/{event_slug}/update-requests")
@@ -229,7 +229,7 @@ def run() -> None:
                 "update_executed": update_vote["executed"],
                 "edit_executed": edit_vote["executed"],
                 "current_phase_id": phase_vote["current_phase_id"],
-                "final_title": refreshed_event["event"]["title"],
+                "final_title": refreshed_event["title"],
             }
         )
     )

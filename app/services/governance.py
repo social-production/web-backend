@@ -150,42 +150,50 @@ def _ensure_vote_target_exists(db: Session, target_type: str, target_id: UUID) -
 
 
 def _update_subject_comment_count(db: Session, subject_type: str, subject_id: UUID, delta: int) -> None:
-    if subject_type == "thread":
-        db.execute(
-            update(threads)
-            .where(threads.c.id == subject_id)
-            .values(comment_count=threads.c.comment_count + delta)
-        )
-    else:
-        db.execute(
-            update(posts)
-            .where(posts.c.id == subject_id)
-            .values(comment_count=posts.c.comment_count + delta)
-        )
+    try:
+        if subject_type == "thread":
+            db.execute(
+                update(threads)
+                .where(threads.c.id == subject_id)
+                .values(comment_count=threads.c.comment_count + delta)
+            )
+        else:
+            db.execute(
+                update(posts)
+                .where(posts.c.id == subject_id)
+                .values(comment_count=posts.c.comment_count + delta)
+            )
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update comment count") from exc
 
 
 def _apply_vote_count_delta(db: Session, target_type: str, target_id: UUID, delta: int) -> None:
     if delta == 0:
         return
 
-    if target_type == "thread":
-        db.execute(
-            update(threads)
-            .where(threads.c.id == target_id)
-            .values(vote_count=threads.c.vote_count + delta)
-        )
-    elif target_type == "post":
-        db.execute(
-            update(posts)
-            .where(posts.c.id == target_id)
-            .values(vote_count=posts.c.vote_count + delta)
-        )
-    else:
-        db.execute(
-            update(comments)
-            .where(comments.c.id == target_id)
-            .values(vote_count=comments.c.vote_count + delta)
-        )
+    try:
+        if target_type == "thread":
+            db.execute(
+                update(threads)
+                .where(threads.c.id == target_id)
+                .values(vote_count=threads.c.vote_count + delta)
+            )
+        elif target_type == "post":
+            db.execute(
+                update(posts)
+                .where(posts.c.id == target_id)
+                .values(vote_count=posts.c.vote_count + delta)
+            )
+        else:
+            db.execute(
+                update(comments)
+                .where(comments.c.id == target_id)
+                .values(vote_count=comments.c.vote_count + delta)
+            )
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update vote count") from exc
 
 
 def add_comment(

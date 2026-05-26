@@ -975,18 +975,27 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
         db.rollback()
 
     if inserted:
-        db.execute(
-            update(events)
-            .where(events.c.id == event_row["id"])
-            .values(member_count=events.c.member_count + 1)
-        )
+        try:
+            db.execute(
+                update(events)
+                .where(events.c.id == event_row["id"])
+                .values(member_count=events.c.member_count + 1)
+            )
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join event") from exc
+
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
             action_type="join-event",
             metadata={"event_id": str(event_row["id"]), "event_slug": event_row["slug"]},
         )
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join event") from exc
 
     return {"ok": True, "joined": True, "slug": event_row["slug"]}
 
@@ -1238,12 +1247,16 @@ def add_event_value(
     if not normalized:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required")
 
-    created = db.execute(
-        insert(event_values)
-        .values(event_id=event_row["id"], label=normalized, author_id=current_user_id)
-        .returning(event_values.c.id, event_values.c.event_id, event_values.c.label, event_values.c.author_id, event_values.c.created_at)
-    ).mappings().one()
-    db.commit()
+    try:
+        created = db.execute(
+            insert(event_values)
+            .values(event_id=event_row["id"], label=normalized, author_id=current_user_id)
+            .returning(event_values.c.id, event_values.c.event_id, event_values.c.label, event_values.c.author_id, event_values.c.created_at)
+        ).mappings().one()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add event value") from exc
 
     return {
         "value": {
@@ -1285,23 +1298,28 @@ def vote_event_value_importance(
         )
     ).first()
 
-    if existing is None:
-        db.execute(
-            insert(event_value_importance_votes).values(
-                value_id=value_id,
-                voter_id=current_user_id,
-                importance=importance,
+    try:
+        if existing is None:
+            db.execute(
+                insert(event_value_importance_votes).values(
+                    value_id=value_id,
+                    voter_id=current_user_id,
+                    importance=importance,
+                )
             )
-        )
-    else:
-        db.execute(
-            update(event_value_importance_votes)
-            .where(
-                event_value_importance_votes.c.value_id == value_id,
-                event_value_importance_votes.c.voter_id == current_user_id,
+        else:
+            db.execute(
+                update(event_value_importance_votes)
+                .where(
+                    event_value_importance_votes.c.value_id == value_id,
+                    event_value_importance_votes.c.voter_id == current_user_id,
+                )
+                .values(importance=importance)
             )
-            .values(importance=importance)
-        )
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on event value") from exc
+
     record_meaningful_action(
         db=db,
         user_id=current_user_id,
@@ -1313,7 +1331,11 @@ def vote_event_value_importance(
             "importance": importance,
         },
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on event value") from exc
 
     return {
         "ok": True,
@@ -1342,63 +1364,70 @@ def create_event_activity(
     if ends_at <= scheduled_at:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
 
-    created = db.execute(
-        insert(event_activities)
-        .values(
-            event_id=event_row["id"],
-            linked_plan_id=linked_plan_id,
-            linked_plan_phase_id=linked_plan_phase_id,
-            title=title.strip(),
-            author_id=current_user_id,
-            scheduled_at=scheduled_at,
-            ends_at=ends_at,
-            location_label=location_label.strip(),
-            note=note.strip(),
-        )
-        .returning(
-            event_activities.c.id,
-            event_activities.c.event_id,
-            event_activities.c.title,
-            event_activities.c.author_id,
-            event_activities.c.scheduled_at,
-            event_activities.c.ends_at,
-            event_activities.c.location_label,
-            event_activities.c.note,
-            event_activities.c.linked_plan_id,
-            event_activities.c.linked_plan_phase_id,
-            event_activities.c.created_at,
-        )
-    ).mappings().one()
-
-    role_items = []
-    for req in role_requirements:
-        label = str(req.get("label", "")).strip()
-        required_count = int(req.get("required_count", 0))
-        maximum_count_raw = req.get("maximum_count")
-        maximum_count = int(maximum_count_raw) if maximum_count_raw is not None else None
-        if not label or required_count < 1:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid role requirement")
-        if maximum_count is not None and maximum_count < required_count:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="maximum_count must be >= required_count")
-
-        role = db.execute(
-            insert(event_activity_roles)
+    try:
+        created = db.execute(
+            insert(event_activities)
             .values(
-                activity_id=created["id"],
-                label=label,
-                required_count=required_count,
-                maximum_count=maximum_count,
+                event_id=event_row["id"],
+                linked_plan_id=linked_plan_id,
+                linked_plan_phase_id=linked_plan_phase_id,
+                title=title.strip(),
+                author_id=current_user_id,
+                scheduled_at=scheduled_at,
+                ends_at=ends_at,
+                location_label=location_label.strip(),
+                note=note.strip(),
             )
             .returning(
-                event_activity_roles.c.id,
-                event_activity_roles.c.label,
-                event_activity_roles.c.required_count,
-                event_activity_roles.c.maximum_count,
+                event_activities.c.id,
+                event_activities.c.event_id,
+                event_activities.c.title,
+                event_activities.c.author_id,
+                event_activities.c.scheduled_at,
+                event_activities.c.ends_at,
+                event_activities.c.location_label,
+                event_activities.c.note,
+                event_activities.c.linked_plan_id,
+                event_activities.c.linked_plan_phase_id,
+                event_activities.c.created_at,
             )
         ).mappings().one()
-        role_items.append(dict(role))
 
-    db.commit()
+        role_items = []
+        for req in role_requirements:
+            label = str(req.get("label", "")).strip()
+            required_count = int(req.get("required_count", 0))
+            maximum_count_raw = req.get("maximum_count")
+            maximum_count = int(maximum_count_raw) if maximum_count_raw is not None else None
+            if not label or required_count < 1:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid role requirement")
+            if maximum_count is not None and maximum_count < required_count:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="maximum_count must be >= required_count")
+
+            role = db.execute(
+                insert(event_activity_roles)
+                .values(
+                    activity_id=created["id"],
+                    label=label,
+                    required_count=required_count,
+                    maximum_count=maximum_count,
+                )
+                .returning(
+                    event_activity_roles.c.id,
+                    event_activity_roles.c.label,
+                    event_activity_roles.c.required_count,
+                    event_activity_roles.c.maximum_count,
+                )
+            ).mappings().one()
+            role_items.append(dict(role))
+
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create event activity") from exc
+    except HTTPException:
+        db.rollback()
+        raise
     return {
         "activity": {
             **dict(created),
@@ -1452,10 +1481,14 @@ def commit_event_activity_role(
     if role_row["maximum_count"] is not None and len(filled_count) >= int(role_row["maximum_count"]):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role is already full")
 
-    db.execute(
-        insert(event_activity_assignments).values(role_id=role_id, user_id=current_user_id)
-    )
-    db.commit()
+    try:
+        db.execute(
+            insert(event_activity_assignments).values(role_id=role_id, user_id=current_user_id)
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not commit event activity role") from exc
 
     return {
         "ok": True,

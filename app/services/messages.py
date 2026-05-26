@@ -352,12 +352,16 @@ def rename_group_conversation(
     if not normalized_title:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
 
-    db.execute(
-        update(conversations)
-        .where(conversations.c.id == conversation_id)
-        .values(title=normalized_title)
-    )
-    db.commit()
+    try:
+        db.execute(
+            update(conversations)
+            .where(conversations.c.id == conversation_id)
+            .values(title=normalized_title)
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not rename conversation") from exc
 
     refreshed = _get_conversation_row(db, conversation_id)
     participants = _get_conversation_participants(db, conversation_id)
@@ -410,13 +414,17 @@ def remove_group_member(
     if target_user_id == current_user_id:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Creator cannot remove self")
 
-    db.execute(
-        delete(conversation_members).where(
-            conversation_members.c.conversation_id == conversation_id,
-            conversation_members.c.user_id == target_user_id,
+    try:
+        db.execute(
+            delete(conversation_members).where(
+                conversation_members.c.conversation_id == conversation_id,
+                conversation_members.c.user_id == target_user_id,
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not remove group member") from exc
 
     refreshed = _get_conversation_row(db, conversation_id)
     participants = _get_conversation_participants(db, conversation_id)

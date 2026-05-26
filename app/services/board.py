@@ -120,12 +120,16 @@ def _remove_unqualified_members(db: Session) -> tuple[list[UUID], int, int]:
             remove_ids.append(member_id)
 
     if remove_ids:
-        db.execute(
-            delete(platform_board_memberships).where(
-                platform_board_memberships.c.user_id.in_(remove_ids),
-                platform_board_memberships.c.standing_state == BOARD_STATE_MEMBER,
+        try:
+            db.execute(
+                delete(platform_board_memberships).where(
+                    platform_board_memberships.c.user_id.in_(remove_ids),
+                    platform_board_memberships.c.standing_state == BOARD_STATE_MEMBER,
+                )
             )
-        )
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not prune board members") from exc
 
     return remove_ids, weekly_active_users, required_quorum
 

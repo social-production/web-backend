@@ -98,17 +98,22 @@ def update_own_profile_settings(db: Session, current_user_id: UUID, payload: dic
     if not profile_updates and not settings_updates:
         return get_own_profile(db, current_user_id)
 
-    if profile_updates:
-        db.execute(update(users).where(users.c.id == current_user_id).values(**profile_updates))
+    try:
+        if profile_updates:
+            db.execute(update(users).where(users.c.id == current_user_id).values(**profile_updates))
 
-    if settings_updates:
-        db.execute(
-            update(user_settings)
-            .where(user_settings.c.user_id == current_user_id)
-            .values(**settings_updates)
-        )
+        if settings_updates:
+            db.execute(
+                update(user_settings)
+                .where(user_settings.c.user_id == current_user_id)
+                .values(**settings_updates)
+            )
 
-    db.commit()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update profile settings") from exc
+
     return get_own_profile(db, current_user_id)
 
 
