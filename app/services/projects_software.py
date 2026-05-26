@@ -25,7 +25,7 @@ from app.models import (
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
-from app.utils.votes import required_votes
+from app.utils.votes import required_votes, resolve_project_vote_population
 
 APPROVAL_THRESHOLD_PERCENT = 66.0
 APPROVAL_THRESHOLD_RATIO = 0.66
@@ -261,7 +261,11 @@ def _stage_label(stage: str) -> str:
 
 def _governance_payload(db: Session, project_row: Mapping[str, object], current_user_id: UUID | None) -> dict[str, object]:
     project_id = project_row["id"]
-    member_count = int(project_row.get("member_count") or 0)
+    vote_context_population = resolve_project_vote_population(
+        db,
+        project_id,
+        bool(project_row.get("is_platform_tagged")),
+    )
 
     viewer_is_member = current_user_id is not None and _get_membership(db, project_id, current_user_id) is not None
     viewer_can_request_merge = viewer_is_member and current_user_id is not None and _is_merge_capable(db, project_id, current_user_id)
@@ -316,7 +320,7 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
     for row in pr_rows:
         vote_summary, passes, can_still_pass = _compute_vote_summary(
             _vote_rows(db, project_pull_request_votes, row["id"]),
-            member_count,
+            vote_context_population,
             current_user_id if viewer_is_member else None,
         )
         author_name = username_map.get(row["author_id"], "unknown")
@@ -365,7 +369,7 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
     for row in merge_request_rows:
         vote_summary, passes, can_still_pass = _compute_vote_summary(
             _vote_rows(db, project_merge_capability_change_votes, row["id"]),
-            member_count,
+            vote_context_population,
             current_user_id if viewer_is_member else None,
         )
         target_member = user_map.get(
@@ -401,7 +405,7 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
     for row in repo_request_rows:
         vote_summary, passes, can_still_pass = _compute_vote_summary(
             _vote_rows(db, project_repository_replacement_votes, row["id"]),
-            member_count,
+            vote_context_population,
             current_user_id if viewer_is_member else None,
         )
         author_name = username_map.get(row["author_id"], "unknown")
@@ -554,7 +558,7 @@ def vote_pull_request(
 
         vote_summary, passes, can_still_pass = _compute_vote_summary(
             _vote_rows(db, project_pull_request_votes, request_id),
-            int(project_row.get("member_count") or 0),
+            resolve_project_vote_population(db, project_row["id"], bool(project_row.get("is_platform_tagged"))),
             current_user_id,
         )
 
@@ -736,7 +740,7 @@ def vote_merge_capability_change(
 
         vote_summary, passes, can_still_pass = _compute_vote_summary(
             _vote_rows(db, project_merge_capability_change_votes, request_id),
-            int(project_row.get("member_count") or 0),
+            resolve_project_vote_population(db, project_row["id"], bool(project_row.get("is_platform_tagged"))),
             current_user_id,
         )
 
@@ -890,7 +894,7 @@ def vote_repository_replacement(
 
         vote_summary, passes, can_still_pass = _compute_vote_summary(
             _vote_rows(db, project_repository_replacement_votes, request_id),
-            int(project_row.get("member_count") or 0),
+            resolve_project_vote_population(db, project_row["id"], bool(project_row.get("is_platform_tagged"))),
             current_user_id,
         )
 

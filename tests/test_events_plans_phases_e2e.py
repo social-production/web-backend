@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -24,6 +25,24 @@ def _request_json(url: str, method: str = "GET", body: dict[str, object] | None 
     req = urllib.request.Request(url, data=payload, headers=headers, method=method)
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _request_json_or_closed(
+    url: str,
+    *,
+    method: str = "GET",
+    body: dict[str, object] | None = None,
+    token: str | None = None,
+    expected_closed_detail: str | None = None,
+) -> dict[str, object] | None:
+    try:
+        return _request_json(url, method=method, body=body, token=token)
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 409
+        payload = json.loads(exc.read().decode("utf-8"))
+        if expected_closed_detail is not None:
+            assert payload.get("detail") == expected_closed_detail
+        return None
 
 
 def _seed_users_and_channel() -> dict[str, str]:
@@ -122,18 +141,18 @@ def run() -> None:
     )
     plan_id = plan["plan"]["id"]
 
-    _request_json(
+    first_plan_vote = _request_json(
         f"{base}/events/{event_slug}/plans/{plan_id}/vote",
         method="POST",
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    voted_plan = _request_json(
+    voted_plan = _request_json_or_closed(
         f"{base}/events/{event_slug}/plans/{plan_id}/vote",
         method="POST",
         token=seeded["token_b"],
         body={"vote": "yes"},
-    )
+    ) or first_plan_vote
     assert voted_plan["is_leading"] is True
     assert voted_plan["plan"]["vote_summary"]["is_winning"] is True
 
@@ -145,18 +164,19 @@ def run() -> None:
     )
     phase_request_id = phase_req["request"]["id"]
 
-    _request_json(
+    first_phase_vote = _request_json(
         f"{base}/events/{event_slug}/phase-requests/{phase_request_id}/vote",
         method="POST",
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    phase_vote = _request_json(
+    phase_vote = _request_json_or_closed(
         f"{base}/events/{event_slug}/phase-requests/{phase_request_id}/vote",
         method="POST",
         token=seeded["token_b"],
         body={"vote": "yes"},
-    )
+        expected_closed_detail="Phase change request is already closed",
+    ) or first_phase_vote
     assert phase_vote["executed"] is True
     assert phase_vote["current_phase_id"] == "phase-2"
 
@@ -168,18 +188,19 @@ def run() -> None:
     )
     update_request_id = update_req["request"]["id"]
 
-    _request_json(
+    first_update_vote = _request_json(
         f"{base}/events/{event_slug}/update-requests/{update_request_id}/vote",
         method="POST",
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    update_vote = _request_json(
+    update_vote = _request_json_or_closed(
         f"{base}/events/{event_slug}/update-requests/{update_request_id}/vote",
         method="POST",
         token=seeded["token_b"],
         body={"vote": "yes"},
-    )
+        expected_closed_detail="Update request is already closed",
+    ) or first_update_vote
     assert update_vote["executed"] is True
     assert update_vote["request"]["status"] == "approved"
 
@@ -191,18 +212,19 @@ def run() -> None:
     )
     edit_request_id = edit_req["request"]["id"]
 
-    _request_json(
+    first_edit_vote = _request_json(
         f"{base}/events/{event_slug}/edit-requests/{edit_request_id}/vote",
         method="POST",
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    edit_vote = _request_json(
+    edit_vote = _request_json_or_closed(
         f"{base}/events/{event_slug}/edit-requests/{edit_request_id}/vote",
         method="POST",
         token=seeded["token_b"],
         body={"vote": "yes"},
-    )
+        expected_closed_detail="Edit request is already closed",
+    ) or first_edit_vote
     assert edit_vote["executed"] is True
     assert edit_vote["request"]["status"] == "approved"
 

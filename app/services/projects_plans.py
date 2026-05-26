@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
-from app.utils.votes import required_votes
+from app.utils.votes import required_votes, resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 
@@ -176,14 +176,22 @@ def submit_project_plan(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit plan") from exc
 
-    member_count = int(project_row["member_count"] or 0)
-    summary = _compute_vote_summary(db, created["id"], member_count)
+    vote_context_population = resolve_project_vote_population(
+        db,
+        project_row["id"],
+        bool(project_row["is_platform_tagged"]),
+    )
+    summary = _compute_vote_summary(db, created["id"], vote_context_population)
     return {"plan": _serialize_plan(created, summary)}
 
 
 def list_project_plans(db: Session, project_slug: str, plan_type: str | None = None) -> dict[str, object]:
     project_row = _get_project_row_by_slug(db, project_slug)
-    member_count = int(project_row["member_count"] or 0)
+    vote_context_population = resolve_project_vote_population(
+        db,
+        project_row["id"],
+        bool(project_row["is_platform_tagged"]),
+    )
 
     query = select(project_plans).where(project_plans.c.project_id == project_row["id"])
     if plan_type:
@@ -195,7 +203,7 @@ def list_project_plans(db: Session, project_slug: str, plan_type: str | None = N
 
     items = []
     for row in rows:
-        summary = _compute_vote_summary(db, row["id"], member_count)
+        summary = _compute_vote_summary(db, row["id"], vote_context_population)
         items.append(_serialize_plan(row, summary))
 
     return {
@@ -258,8 +266,12 @@ def cast_project_plan_vote(
                 .values(vote=normalized_vote)
             )
 
-        member_count = int(project_row["member_count"] or 0)
-        summary = _compute_vote_summary(db, plan_id, member_count)
+        vote_context_population = resolve_project_vote_population(
+            db,
+            project_row["id"],
+            bool(project_row["is_platform_tagged"]),
+        )
+        summary = _compute_vote_summary(db, plan_id, vote_context_population)
 
         if summary["is_winning"]:
             db.execute(
@@ -299,7 +311,15 @@ def cast_project_plan_vote(
     refreshed_plan = db.execute(
         select(project_plans).where(project_plans.c.id == plan_id)
     ).mappings().one()
-    final_summary = _compute_vote_summary(db, plan_id, int(project_row["member_count"] or 0))
+    final_summary = _compute_vote_summary(
+        db,
+        plan_id,
+        resolve_project_vote_population(
+            db,
+            project_row["id"],
+            bool(project_row["is_platform_tagged"]),
+        ),
+    )
 
     if plan_is_leading and plan_row["author_id"] is not None:
         create_notification(

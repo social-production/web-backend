@@ -22,7 +22,7 @@ from app.models import (
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
-from app.utils.votes import required_votes
+from app.utils.votes import required_votes, resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_PHASE_IDS = frozenset({"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"})
@@ -34,6 +34,10 @@ def _get_event_by_slug(db: Session, slug: str) -> Mapping[str, object]:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
     return row
+
+
+def _event_vote_population(db: Session, event_row: Mapping[str, object]) -> int:
+    return resolve_event_vote_population(db, event_row["id"])
 
 
 def _ensure_member(db: Session, event_id: UUID, user_id: UUID) -> None:
@@ -177,13 +181,13 @@ def create_phase_change_request(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create phase request") from exc
 
-    summary = _compute_votes(db, event_phase_change_votes, created["id"], int(event_row["member_count"] or 0))
+    summary = _compute_votes(db, event_phase_change_votes, created["id"], _event_vote_population(db, event_row))
     return {"request": _serialize_phase_request(created, summary)}
 
 
 def list_phase_change_requests(db: Session, event_slug: str) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    member_count = int(event_row["member_count"] or 0)
+    member_count = _event_vote_population(db, event_row)
 
     rows = db.execute(
         select(event_phase_change_requests)
@@ -258,7 +262,7 @@ def vote_phase_change_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_votes(db, event_phase_change_votes, request_id, int(event_row["member_count"] or 0))
+        summary = _compute_votes(db, event_phase_change_votes, request_id, _event_vote_population(db, event_row))
 
         executed = False
         if summary["is_passing"]:
@@ -291,7 +295,7 @@ def vote_phase_change_request(
         select(event_phase_change_requests).where(event_phase_change_requests.c.id == request_id)
     ).mappings().one()
     refreshed_event = db.execute(select(events).where(events.c.id == event_row["id"])).mappings().one()
-    final_summary = _compute_votes(db, event_phase_change_votes, request_id, int(refreshed_event["member_count"] or 0))
+    final_summary = _compute_votes(db, event_phase_change_votes, request_id, _event_vote_population(db, refreshed_event))
 
     if executed and request_row["author_id"] is not None:
         create_notification(
@@ -348,13 +352,13 @@ def create_update_request(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create update request") from exc
 
-    summary = _compute_votes(db, event_update_request_votes, created["id"], int(event_row["member_count"] or 0))
+    summary = _compute_votes(db, event_update_request_votes, created["id"], _event_vote_population(db, event_row))
     return {"request": _serialize_update_request(created, summary)}
 
 
 def list_update_requests(db: Session, event_slug: str) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    member_count = int(event_row["member_count"] or 0)
+    member_count = _event_vote_population(db, event_row)
 
     rows = db.execute(
         select(event_update_requests)
@@ -428,7 +432,7 @@ def vote_update_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_votes(db, event_update_request_votes, request_id, int(event_row["member_count"] or 0))
+        summary = _compute_votes(db, event_update_request_votes, request_id, _event_vote_population(db, event_row))
 
         executed = False
         if summary["is_passing"]:
@@ -462,7 +466,7 @@ def vote_update_request(
     refreshed_request = db.execute(
         select(event_update_requests).where(event_update_requests.c.id == request_id)
     ).mappings().one()
-    final_summary = _compute_votes(db, event_update_request_votes, request_id, int(event_row["member_count"] or 0))
+    final_summary = _compute_votes(db, event_update_request_votes, request_id, _event_vote_population(db, event_row))
 
     return {
         "request": _serialize_update_request(refreshed_request, final_summary),
@@ -506,13 +510,13 @@ def create_edit_request(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create edit request") from exc
 
-    summary = _compute_votes(db, event_edit_request_votes, created["id"], int(event_row["member_count"] or 0))
+    summary = _compute_votes(db, event_edit_request_votes, created["id"], _event_vote_population(db, event_row))
     return {"request": _serialize_edit_request(created, summary)}
 
 
 def list_edit_requests(db: Session, event_slug: str) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    member_count = int(event_row["member_count"] or 0)
+    member_count = _event_vote_population(db, event_row)
 
     rows = db.execute(
         select(event_edit_requests)
@@ -586,7 +590,7 @@ def vote_edit_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_votes(db, event_edit_request_votes, request_id, int(event_row["member_count"] or 0))
+        summary = _compute_votes(db, event_edit_request_votes, request_id, _event_vote_population(db, event_row))
 
         executed = False
         if summary["is_passing"]:
@@ -621,7 +625,7 @@ def vote_edit_request(
         select(event_edit_requests).where(event_edit_requests.c.id == request_id)
     ).mappings().one()
     refreshed_event = db.execute(select(events).where(events.c.id == event_row["id"])).mappings().one()
-    final_summary = _compute_votes(db, event_edit_request_votes, request_id, int(event_row["member_count"] or 0))
+    final_summary = _compute_votes(db, event_edit_request_votes, request_id, _event_vote_population(db, event_row))
 
     if executed:
         index_document(

@@ -50,7 +50,7 @@ from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.services.projects_software import get_project_software_governance
-from app.utils.votes import required_votes
+from app.utils.votes import required_votes, resolve_project_vote_population
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
@@ -416,6 +416,13 @@ async def get_project_detail(
     row = _get_project_by_slug_row(db, slug)
     project_id = row["id"]
     member_count = int(row["member_count"] or 0)
+    vote_context_population = resolve_project_vote_population(
+        db,
+        project_id,
+        bool(row["is_platform_tagged"]),
+    )
+    uses_platform_vote_context = bool(row["is_platform_tagged"])
+    vote_context_label = "Weekly active platform users" if uses_platform_vote_context else "Weekly active project members"
 
     if cache is not None:
         try:
@@ -562,7 +569,7 @@ async def get_project_detail(
         if viewer_signal_row is not None:
             viewer_signal = viewer_signal_row[0]
 
-    required_demand = required_votes(member_count)
+    required_demand = required_votes(vote_context_population)
     signal_total = signal_counts["total"]
     demand_ratio_percent = (signal_counts["demand"] / signal_total * 100.0) if signal_total > 0 else 0.0
     signal_summary = {
@@ -575,9 +582,9 @@ async def get_project_detail(
         "requiredDemandCount": required_demand,
         "demandRequirementMet": signal_counts["demand"] >= required_demand,
         "advancementUnlocked": signal_counts["demand"] >= required_demand,
-        "usesPlatformVoteContext": False,
-        "voteContextLabel": "Project members",
-        "voteContextPopulation": member_count,
+        "usesPlatformVoteContext": uses_platform_vote_context,
+        "voteContextLabel": vote_context_label,
+        "voteContextPopulation": vote_context_population,
     }
 
     plan_rows = db.execute(
@@ -593,7 +600,7 @@ async def get_project_detail(
         plan_vote_rows = db.execute(
             select(project_plan_votes.c.vote, project_plan_votes.c.voter_id).where(project_plan_votes.c.plan_id == plan["id"])
         ).all()
-        overall_summary, _, _ = _vote_summary(plan_vote_rows, member_count, current_user_id)
+        overall_summary, _, _ = _vote_summary(plan_vote_rows, vote_context_population, current_user_id)
 
         value_assessments = []
         for value_id, value_label, _ in value_rows:
@@ -604,7 +611,7 @@ async def get_project_detail(
                     project_plan_value_votes.c.value_id == value_id,
                 )
             ).all()
-            summary, _, _ = _vote_summary(value_vote_rows, member_count, current_user_id)
+            summary, _, _ = _vote_summary(value_vote_rows, vote_context_population, current_user_id)
             value_assessments.append({
                 "valueId": str(value_id),
                 "valueLabel": value_label,
@@ -766,7 +773,7 @@ async def get_project_detail(
             vote_rows = db.execute(
                 select(vote_table.c.vote, vote_table.c.voter_id).where(vote_table.c.request_id == req["id"])
             ).all()
-            summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+            summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
             payload = {
                 "id": str(req["id"]),
                 "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
@@ -796,7 +803,7 @@ async def get_project_detail(
             select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id)
             .where(project_phase_change_votes.c.request_id == req["id"])
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
         conversion_target = None
         if req["conversion_target_mode"] and req["conversion_target_subtype"]:
             conversion_target = {
@@ -886,7 +893,7 @@ async def get_project_detail(
             select(project_service_request_setting_change_votes.c.vote, project_service_request_setting_change_votes.c.voter_id)
             .where(project_service_request_setting_change_votes.c.request_id == req["id"])
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
         settings_change_requests.append(
             {
                 "id": str(req["id"]),
@@ -949,8 +956,8 @@ async def get_project_detail(
                     "yesCount": yes,
                     "noCount": no,
                     "memberCount": member_count,
-                    "approvalsRequired": required_votes(member_count),
-                    "approvalsRemaining": max(0, required_votes(member_count) - yes),
+                    "approvalsRequired": required_votes(vote_context_population),
+                    "approvalsRemaining": max(0, required_votes(vote_context_population) - yes),
                     "approvalPercent": (yes / (yes + no) * 100.0) if (yes + no) > 0 else 0.0,
                     "statusLabel": req["status"],
                     "resultNote": "",
@@ -1007,10 +1014,10 @@ async def get_project_detail(
         "supportsDemandSignals": True,
         "supportsPlanning": row["project_mode"] != "personal-service",
         "currentPhaseId": row["current_phase_id"],
-        "quorumThresholdPercent": (required_votes(member_count) / member_count * 100.0) if member_count > 0 else 0.0,
-        "quorumVotesRequired": required_votes(member_count),
-        "voteContextLabel": "Project members",
-        "voteContextPopulation": member_count,
+        "quorumThresholdPercent": (required_votes(vote_context_population) / vote_context_population * 100.0) if vote_context_population > 0 else 0.0,
+        "quorumVotesRequired": required_votes(vote_context_population),
+        "voteContextLabel": vote_context_label,
+        "voteContextPopulation": vote_context_population,
         "notes": [],
         "phases": _lifecycle_phases(row["current_phase_id"]),
         "viewerCanRequestPhaseChanges": viewer_is_member,

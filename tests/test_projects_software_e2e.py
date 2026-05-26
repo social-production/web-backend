@@ -27,6 +27,23 @@ def _request_json(url: str, method: str = "GET", body: dict[str, object] | None 
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _request_json_or_closed(
+    url: str,
+    *,
+    method: str = "GET",
+    body: dict[str, object] | None = None,
+    token: str | None = None,
+    expected_closed_detail: str,
+) -> dict[str, object] | None:
+    try:
+        return _request_json(url, method=method, body=body, token=token)
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 409
+        payload = json.loads(exc.read().decode("utf-8"))
+        assert payload.get("detail") == expected_closed_detail
+        return None
+
+
 def _request_error_code(url: str, method: str = "GET", body: dict[str, object] | None = None, token: str | None = None) -> int:
     payload = None
     headers = {"Content-Type": "application/json"}
@@ -191,18 +208,19 @@ def run() -> None:
     )
     pr_request_id = pr_submit["pullRequests"][0]["id"]
 
-    _request_json(
+    first_pr_vote = _request_json(
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/vote",
         method="POST",
         token=seeded["owner_token"],
         body={"vote": "yes"},
     )
-    pr_vote = _request_json(
+    pr_vote = _request_json_or_closed(
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/vote",
         method="POST",
         token=seeded["member_token"],
         body={"vote": "yes"},
-    )
+        expected_closed_detail="Pull request is not open for voting",
+    ) or first_pr_vote
     approved_pr = next(item for item in pr_vote["pullRequests"] if item["id"] == pr_request_id)
     assert approved_pr["stage"] == "awaiting-merge"
 
@@ -225,18 +243,19 @@ def run() -> None:
     )
     merge_cap_request_id = merge_cap_req["mergeCapabilityChangeRequests"][0]["id"]
 
-    _request_json(
+    first_merge_cap_vote = _request_json(
         f"{base}/projects/{slug}/software/merge-capability-requests/{merge_cap_request_id}/vote",
         method="POST",
         token=seeded["owner_token"],
         body={"vote": "yes"},
     )
-    merge_cap_vote = _request_json(
+    merge_cap_vote = _request_json_or_closed(
         f"{base}/projects/{slug}/software/merge-capability-requests/{merge_cap_request_id}/vote",
         method="POST",
         token=seeded["member_token"],
         body={"vote": "yes"},
-    )
+        expected_closed_detail="Request is already closed",
+    ) or first_merge_cap_vote
     merge_req = next(item for item in merge_cap_vote["mergeCapabilityChangeRequests"] if item["id"] == merge_cap_request_id)
     assert merge_req["passesApprovalThreshold"] is True
     assert any(member["id"] == seeded["member_id"] for member in merge_cap_vote["mergeCapabilityMembers"])
@@ -263,18 +282,19 @@ def run() -> None:
     )
     repo_request_id = repo_req["repositoryReplacementRequests"][0]["id"]
 
-    _request_json(
+    first_repo_vote = _request_json(
         f"{base}/projects/{slug}/software/repository-replacement-requests/{repo_request_id}/vote",
         method="POST",
         token=seeded["owner_token"],
         body={"vote": "yes"},
     )
-    repo_vote = _request_json(
+    repo_vote = _request_json_or_closed(
         f"{base}/projects/{slug}/software/repository-replacement-requests/{repo_request_id}/vote",
         method="POST",
         token=seeded["member_token"],
         body={"vote": "yes"},
-    )
+        expected_closed_detail="Request is already closed",
+    ) or first_repo_vote
     repo_decision = next(item for item in repo_vote["repositoryReplacementRequests"] if item["id"] == repo_request_id)
     assert repo_decision["passesApprovalThreshold"] is True
 

@@ -17,6 +17,14 @@ def _auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _assert_vote_or_closed(response: httpx.Response, expected_closed_detail: str) -> None:
+    if response.status_code == 200:
+        return
+    assert response.status_code == 409, response.text
+    payload = response.json()
+    assert payload.get("detail") == expected_closed_detail, response.text
+
+
 def _seed() -> dict[str, object]:
     db = SessionLocal()
     now = datetime.now(timezone.utc)
@@ -204,7 +212,7 @@ def run() -> None:
             headers=_auth_header(seeded["member_token"]),
             json={"vote": "yes"},
         )
-        assert update_vote_member.status_code == 200, update_vote_member.text
+        _assert_vote_or_closed(update_vote_member, "Project update request is already closed")
 
         edit_request = client.post(
             f"/projects/{seeded['project_slug']}/edit-requests",
@@ -225,7 +233,7 @@ def run() -> None:
             headers=_auth_header(seeded["member_token"]),
             json={"vote": "yes"},
         )
-        assert edit_vote_member.status_code == 200, edit_vote_member.text
+        _assert_vote_or_closed(edit_vote_member, "Project edit request is already closed")
 
         revert_request = client.post(
             f"/projects/{seeded['project_slug']}/revert-requests",
@@ -246,7 +254,7 @@ def run() -> None:
             headers=_auth_header(seeded["member_token"]),
             json={"vote": "yes"},
         )
-        assert revert_vote_member.status_code == 200, revert_vote_member.text
+        _assert_vote_or_closed(revert_vote_member, "Revert phase request is already closed")
 
         send = client.post(
             f"/messages/conversations/{direct.json()['conversation']['id']}/messages",
@@ -262,16 +270,23 @@ def run() -> None:
         )
         assert mark_read.status_code == 200, mark_read.text
 
+        update_executed = bool(update_vote_owner.json().get("executed") or (update_vote_member.status_code == 200 and update_vote_member.json().get("executed")))
+        edit_executed = bool(edit_vote_owner.json().get("executed") or (edit_vote_member.status_code == 200 and edit_vote_member.json().get("executed")))
+        revert_executed = bool(revert_vote_owner.json().get("executed") or (revert_vote_member.status_code == 200 and revert_vote_member.json().get("executed")))
+        phase_after_revert = revert_vote_owner.json().get("current_phase_id") or (
+            revert_vote_member.json().get("current_phase_id") if revert_vote_member.status_code == 200 else None
+        )
+
         print(
             json.dumps(
                 {
                     "event_editor_management": grant.json()["ok"] and revoke.json()["ok"],
                     "event_values_and_importance_vote": event_value_vote.json()["ok"],
                     "event_activity_and_role_commit": event_commit.json()["ok"],
-                    "project_update_request_vote_executed": update_vote_member.json()["executed"],
-                    "project_edit_request_vote_executed": edit_vote_member.json()["executed"],
-                    "project_revert_vote_executed": revert_vote_member.json()["executed"],
-                    "project_phase_after_revert": revert_vote_member.json()["current_phase_id"],
+                    "project_update_request_vote_executed": update_executed,
+                    "project_edit_request_vote_executed": edit_executed,
+                    "project_revert_vote_executed": revert_executed,
+                    "project_phase_after_revert": phase_after_revert,
                     "conversation_mark_read_ok": mark_read.json()["ok"],
                 }
             )

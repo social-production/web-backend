@@ -22,7 +22,7 @@ from app.models import (
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
-from app.utils.votes import required_votes
+from app.utils.votes import required_votes, resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_PHASE_IDS = frozenset({"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"})
@@ -63,6 +63,14 @@ def _get_project_by_slug(db: Session, slug: str) -> Mapping[str, object]:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return row
+
+
+def _project_vote_population(db: Session, project_row: Mapping[str, object]) -> int:
+    return resolve_project_vote_population(
+        db,
+        project_row["id"],
+        bool(project_row["is_platform_tagged"]),
+    )
 
 
 def _compute_simple_vote_summary(
@@ -237,7 +245,7 @@ def create_phase_change_request(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create phase request") from exc
 
-    summary = _compute_vote_summary(db, created["id"], int(project_row["member_count"] or 0))
+    summary = _compute_vote_summary(db, created["id"], _project_vote_population(db, project_row))
     return {"request": _serialize_phase_request(created, summary)}
 
 
@@ -245,7 +253,7 @@ def list_phase_change_requests(db: Session, project_slug: str) -> dict[str, obje
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_phase_requests_allowed(project_row["project_mode"])
 
-    member_count = int(project_row["member_count"] or 0)
+    member_count = _project_vote_population(db, project_row)
     rows = db.execute(
         select(project_phase_change_requests)
         .where(project_phase_change_requests.c.project_id == project_row["id"])
@@ -321,7 +329,7 @@ def vote_phase_change_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_vote_summary(db, request_id, int(project_row["member_count"] or 0))
+        summary = _compute_vote_summary(db, request_id, _project_vote_population(db, project_row))
 
         executed = False
         if summary["is_passing"]:
@@ -357,7 +365,7 @@ def vote_phase_change_request(
         select(project_phase_change_requests).where(project_phase_change_requests.c.id == request_id)
     ).mappings().one()
     refreshed_project = db.execute(select(projects).where(projects.c.id == project_row["id"])).mappings().one()
-    final_summary = _compute_vote_summary(db, request_id, int(refreshed_project["member_count"] or 0))
+    final_summary = _compute_vote_summary(db, request_id, _project_vote_population(db, refreshed_project))
 
     if executed and request_row["author_id"] is not None:
         create_notification(
@@ -409,7 +417,7 @@ def create_project_update_request(
         )
     ).mappings().one()
     db.commit()
-    summary = _compute_simple_vote_summary(db, project_update_request_votes, created["id"], int(project_row["member_count"] or 0))
+    summary = _compute_simple_vote_summary(db, project_update_request_votes, created["id"], _project_vote_population(db, project_row))
     return {"request": _serialize_update_request(created, summary)}
 
 
@@ -464,7 +472,7 @@ def vote_project_update_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_simple_vote_summary(db, project_update_request_votes, request_id, int(project_row["member_count"] or 0))
+        summary = _compute_simple_vote_summary(db, project_update_request_votes, request_id, _project_vote_population(db, project_row))
         executed = False
         if summary["is_passing"]:
             db.execute(
@@ -501,7 +509,7 @@ def vote_project_update_request(
         db,
         project_update_request_votes,
         request_id,
-        int(project_row["member_count"] or 0),
+        _project_vote_population(db, project_row),
     )
     return {
         "request": _serialize_update_request(refreshed_request, final_summary),
@@ -540,7 +548,7 @@ def create_project_edit_request(
         )
     ).mappings().one()
     db.commit()
-    summary = _compute_simple_vote_summary(db, project_edit_request_votes, created["id"], int(project_row["member_count"] or 0))
+    summary = _compute_simple_vote_summary(db, project_edit_request_votes, created["id"], _project_vote_population(db, project_row))
     return {"request": _serialize_edit_request(created, summary)}
 
 
@@ -595,7 +603,7 @@ def vote_project_edit_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_simple_vote_summary(db, project_edit_request_votes, request_id, int(project_row["member_count"] or 0))
+        summary = _compute_simple_vote_summary(db, project_edit_request_votes, request_id, _project_vote_population(db, project_row))
         executed = False
         if summary["is_passing"]:
             db.execute(
@@ -635,7 +643,7 @@ def vote_project_edit_request(
         db,
         project_edit_request_votes,
         request_id,
-        int(project_row["member_count"] or 0),
+        _project_vote_population(db, project_row),
     )
     if executed:
         index_document(
@@ -710,7 +718,7 @@ def create_revert_phase_change_request(
     ).mappings().one()
     db.commit()
 
-    summary = _compute_vote_summary(db, created["id"], int(project_row["member_count"] or 0))
+    summary = _compute_vote_summary(db, created["id"], _project_vote_population(db, project_row))
     return {"request": _serialize_phase_request(created, summary)}
 
 
@@ -770,7 +778,7 @@ def vote_revert_phase_change_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_vote_summary(db, request_id, int(project_row["member_count"] or 0))
+        summary = _compute_vote_summary(db, request_id, _project_vote_population(db, project_row))
         executed = False
         if summary["is_passing"]:
             target_phase_id = request_row["target_phase_id"]
@@ -805,7 +813,7 @@ def vote_revert_phase_change_request(
         select(project_phase_change_requests).where(project_phase_change_requests.c.id == request_id)
     ).mappings().one()
     refreshed_project = db.execute(select(projects).where(projects.c.id == project_row["id"])).mappings().one()
-    final_summary = _compute_vote_summary(db, request_id, int(refreshed_project["member_count"] or 0))
+    final_summary = _compute_vote_summary(db, request_id, _project_vote_population(db, refreshed_project))
 
     if executed and request_row["author_id"] is not None:
         create_notification(

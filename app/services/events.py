@@ -43,7 +43,7 @@ from app.models import (
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
-from app.utils.votes import required_votes
+from app.utils.votes import is_platform_event, required_votes, resolve_event_vote_population
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 EVENT_ATTENDANCE_STATES = frozenset({"going", "not-going"})
@@ -393,6 +393,9 @@ async def get_event_detail(
     row = _get_event_by_slug_row(db, slug)
     event_id = row["id"]
     member_count = int(row["member_count"] or 0)
+    uses_platform_vote_context = is_platform_event(db, event_id)
+    vote_context_population = resolve_event_vote_population(db, event_id)
+    vote_context_label = "Weekly active platform users" if uses_platform_vote_context else "Weekly active event members"
 
     if cache is not None:
         try:
@@ -511,7 +514,7 @@ async def get_event_detail(
             )
         ).scalar_one_or_none()
 
-    required_demand = required_votes(member_count)
+    required_demand = required_votes(vote_context_population)
     total_signals = signal_counts["total"]
     signal_ratio_percent = (signal_counts["demand"] / total_signals * 100.0) if total_signals > 0 else 0.0
     signal_summary = {
@@ -524,9 +527,9 @@ async def get_event_detail(
         "requiredDemandCount": required_demand,
         "demandRequirementMet": signal_counts["demand"] >= required_demand,
         "advancementUnlocked": signal_counts["demand"] >= required_demand,
-        "usesPlatformVoteContext": False,
-        "voteContextLabel": "Event members",
-        "voteContextPopulation": member_count,
+        "usesPlatformVoteContext": uses_platform_vote_context,
+        "voteContextLabel": vote_context_label,
+        "voteContextPopulation": vote_context_population,
     }
 
     value_rows = db.execute(
@@ -585,7 +588,7 @@ async def get_event_detail(
         plan_vote_rows = db.execute(
             select(event_plan_votes.c.vote, event_plan_votes.c.voter_id).where(event_plan_votes.c.plan_id == plan["id"])
         ).all()
-        overall_summary, _, _ = _vote_summary(plan_vote_rows, member_count, current_user_id)
+        overall_summary, _, _ = _vote_summary(plan_vote_rows, vote_context_population, current_user_id)
 
         value_assessments = []
         for value_id, value_label, _ in value_rows:
@@ -596,7 +599,7 @@ async def get_event_detail(
                     event_plan_value_votes.c.value_id == value_id,
                 )
             ).all()
-            summary, _, _ = _vote_summary(value_vote_rows, member_count, current_user_id)
+            summary, _, _ = _vote_summary(value_vote_rows, vote_context_population, current_user_id)
             value_assessments.append({
                 "valueId": str(value_id),
                 "valueLabel": value_label,
@@ -750,7 +753,7 @@ async def get_event_detail(
             select(event_update_request_votes.c.vote, event_update_request_votes.c.voter_id)
             .where(event_update_request_votes.c.request_id == req["id"])
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
         update_requests.append(
             {
                 "id": str(req["id"]),
@@ -773,7 +776,7 @@ async def get_event_detail(
             select(event_edit_request_votes.c.vote, event_edit_request_votes.c.voter_id)
             .where(event_edit_request_votes.c.request_id == req["id"])
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
         edit_requests.append(
             {
                 "id": str(req["id"]),
@@ -800,7 +803,7 @@ async def get_event_detail(
             select(event_phase_change_votes.c.vote, event_phase_change_votes.c.voter_id)
             .where(event_phase_change_votes.c.request_id == req["id"])
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, member_count, current_user_id)
+        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
         phase_change_requests.append(
             {
                 "id": str(req["id"]),
@@ -824,10 +827,10 @@ async def get_event_detail(
 
     lifecycle = {
         "currentPhaseId": row["current_phase_id"],
-        "quorumThresholdPercent": (required_votes(member_count) / member_count * 100.0) if member_count > 0 else 0.0,
-        "quorumVotesRequired": required_votes(member_count),
-        "voteContextLabel": "Event members",
-        "voteContextPopulation": member_count,
+        "quorumThresholdPercent": (required_votes(vote_context_population) / vote_context_population * 100.0) if vote_context_population > 0 else 0.0,
+        "quorumVotesRequired": required_votes(vote_context_population),
+        "voteContextLabel": vote_context_label,
+        "voteContextPopulation": vote_context_population,
         "phases": _event_lifecycle_phases(row["current_phase_id"]),
         "phaseOne": {
             "values": phase_one_values,
@@ -881,8 +884,8 @@ async def get_event_detail(
                 "yesCount": 0,
                 "noCount": 0,
                 "activeVote": None,
-                "eligibleVoterCount": member_count,
-                "votesRequired": required_votes(member_count),
+                "eligibleVoterCount": vote_context_population,
+                "votesRequired": required_votes(vote_context_population),
             },
         }
         is_removed = report_row["resolution"] in {"hidden", "removed"}

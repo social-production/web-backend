@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
-from app.utils.votes import required_votes
+from app.utils.votes import required_votes, resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_VOTES = {"yes", "no"}
@@ -144,14 +144,14 @@ def submit_event_plan(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit event plan") from exc
 
-    member_count = int(event_row["member_count"] or 0)
-    summary = _compute_vote_summary(db, created["id"], member_count)
+    vote_context_population = resolve_event_vote_population(db, event_row["id"])
+    summary = _compute_vote_summary(db, created["id"], vote_context_population)
     return {"plan": _serialize_plan(created, summary)}
 
 
 def list_event_plans(db: Session, event_slug: str) -> dict[str, object]:
     event_row = _get_event_row_by_slug(db, event_slug)
-    member_count = int(event_row["member_count"] or 0)
+    member_count = resolve_event_vote_population(db, event_row["id"])
 
     rows = db.execute(
         select(event_plans)
@@ -223,7 +223,7 @@ def cast_event_plan_vote(
                 .values(vote=normalized_vote)
             )
 
-        member_count = int(event_row["member_count"] or 0)
+        member_count = resolve_event_vote_population(db, event_row["id"])
         summary = _compute_vote_summary(db, plan_id, member_count)
 
         if summary["is_winning"]:
@@ -261,7 +261,7 @@ def cast_event_plan_vote(
     refreshed_plan = db.execute(
         select(event_plans).where(event_plans.c.id == plan_id)
     ).mappings().one()
-    final_summary = _compute_vote_summary(db, plan_id, int(event_row["member_count"] or 0))
+    final_summary = _compute_vote_summary(db, plan_id, resolve_event_vote_population(db, event_row["id"]))
 
     if plan_is_leading and plan_row["author_id"] is not None:
         create_notification(
