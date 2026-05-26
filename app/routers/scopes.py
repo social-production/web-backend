@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_db
 from app.services.scopes import (
     create_channel,
@@ -55,11 +56,13 @@ class InviteRedeemRequest(BaseModel):
 class ChannelResponse(BaseModel):
     channel: dict[str, object]
     member_count: int | None = None
+    viewer_is_member: bool = False
 
 
 class CommunityResponse(BaseModel):
     community: dict[str, object]
     member_count: int | None = None
+    viewer_is_member: bool = False
 
 
 class ScopeMember(BaseModel):
@@ -77,6 +80,27 @@ class ScopeMembersResponse(BaseModel):
     slug: str
     total: int
     items: list[ScopeMember]
+
+
+async def _get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> UUID | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    try:
+        payload = await get_current_user_token_payload(credentials)
+    except HTTPException:
+        return None
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None
 
 
 @router.post("/channels", dependencies=[Depends(get_current_user_id)], response_model=ChannelResponse)
@@ -98,13 +122,21 @@ def create_new_community(
 
 
 @router.get("/channels/{slug}", response_model=ChannelResponse)
-def get_channel(slug: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return get_channel_by_slug(db, slug)
+def get_channel(
+    slug: str,
+    current_user_id: UUID | None = Depends(_get_optional_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_channel_by_slug(db, slug, current_user_id)
 
 
 @router.get("/communities/{slug}", response_model=CommunityResponse)
-def get_community(slug: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return get_community_by_slug(db, slug)
+def get_community(
+    slug: str,
+    current_user_id: UUID | None = Depends(_get_optional_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_community_by_slug(db, slug, current_user_id)
 
 
 @router.post("/channels/{slug}/join", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)

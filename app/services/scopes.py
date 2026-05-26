@@ -177,26 +177,40 @@ def create_community(db: Session, current_user_id: UUID, slug: str, name: str, d
     return {"community": _serialize_community(created_row)}
 
 
-def get_channel_by_slug(db: Session, slug: str) -> dict[str, object]:
+def get_channel_by_slug(db: Session, slug: str, current_user_id: UUID | None = None) -> dict[str, object]:
     row = _get_channel_row(db, slug)
-    member_count = db.execute(
+    member_rows = db.execute(
         select(scope_memberships.c.user_id).where(
             scope_memberships.c.scope_kind == CHANNEL_SCOPE_KIND,
             scope_memberships.c.scope_id == row["id"],
         )
     ).all()
-    return {"channel": _serialize_channel(row), "member_count": len(member_count)}
+    viewer_is_member = False
+    if current_user_id is not None:
+        viewer_is_member = any(str(r[0]) == str(current_user_id) for r in member_rows)
+    return {
+        "channel": _serialize_channel(row),
+        "member_count": len(member_rows),
+        "viewer_is_member": viewer_is_member,
+    }
 
 
-def get_community_by_slug(db: Session, slug: str) -> dict[str, object]:
+def get_community_by_slug(db: Session, slug: str, current_user_id: UUID | None = None) -> dict[str, object]:
     row = _get_community_row(db, slug)
-    member_count = db.execute(
+    member_rows = db.execute(
         select(scope_memberships.c.user_id).where(
             scope_memberships.c.scope_kind == COMMUNITY_SCOPE_KIND,
             scope_memberships.c.scope_id == row["id"],
         )
     ).all()
-    return {"community": _serialize_community(row), "member_count": len(member_count)}
+    viewer_is_member = False
+    if current_user_id is not None:
+        viewer_is_member = any(str(r[0]) == str(current_user_id) for r in member_rows)
+    return {
+        "community": _serialize_community(row),
+        "member_count": len(member_rows),
+        "viewer_is_member": viewer_is_member,
+    }
 
 
 def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -> dict[str, object]:
