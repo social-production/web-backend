@@ -1451,7 +1451,7 @@ def commit_project_activity_role(
     current_user_id: UUID,
     slug: str,
     activity_id: UUID,
-    role_id: UUID,
+    role_label: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     _ensure_project_member(db, project_row["id"], current_user_id)
@@ -1467,8 +1467,8 @@ def commit_project_activity_role(
 
     role_row = db.execute(
         select(project_activity_roles).where(
-            project_activity_roles.c.id == role_id,
             project_activity_roles.c.activity_id == activity_id,
+            project_activity_roles.c.label == role_label.strip(),
         )
     ).mappings().first()
     if role_row is None:
@@ -1486,27 +1486,46 @@ def commit_project_activity_role(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity")
 
     filled_count = db.execute(
-        select(project_activity_assignments.c.user_id).where(project_activity_assignments.c.role_id == role_id)
+        select(project_activity_assignments.c.user_id).where(project_activity_assignments.c.role_id == role_row["id"])
     ).all()
     if role_row["maximum_count"] is not None and len(filled_count) >= int(role_row["maximum_count"]):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role is already full")
 
     try:
         db.execute(
-            insert(project_activity_assignments).values(role_id=role_id, user_id=current_user_id)
+            insert(project_activity_assignments).values(role_id=role_row["id"], user_id=current_user_id)
         )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not commit activity role") from exc
 
-    return {
-        "ok": True,
-        "project_slug": project_row["slug"],
-        "activity_id": activity_id,
-        "role_id": role_id,
-        "user_id": current_user_id,
-    }
+    return {"ok": True, "project_slug": project_row["slug"], "activity_id": activity_id, "role_id": role_row["id"], "user_id": current_user_id}
+
+
+def uncommit_project_activity_role(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    activity_id: UUID,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    _ensure_project_member(db, project_row["id"], current_user_id)
+
+    role_ids = db.execute(
+        select(project_activity_roles.c.id).where(project_activity_roles.c.activity_id == activity_id)
+    ).scalars().all()
+
+    if role_ids:
+        db.execute(
+            delete(project_activity_assignments).where(
+                project_activity_assignments.c.role_id.in_(role_ids),
+                project_activity_assignments.c.user_id == current_user_id,
+            )
+        )
+        db.commit()
+
+    return {"ok": True, "project_slug": project_row["slug"], "activity_id": activity_id}
 
 
 def add_project_update(

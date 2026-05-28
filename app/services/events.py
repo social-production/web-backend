@@ -1444,7 +1444,7 @@ def commit_event_activity_role(
     current_user_id: UUID,
     slug: str,
     activity_id: UUID,
-    role_id: UUID,
+    role_label: str,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
@@ -1460,8 +1460,8 @@ def commit_event_activity_role(
 
     role_row = db.execute(
         select(event_activity_roles).where(
-            event_activity_roles.c.id == role_id,
             event_activity_roles.c.activity_id == activity_id,
+            event_activity_roles.c.label == role_label.strip(),
         )
     ).mappings().first()
     if role_row is None:
@@ -1479,27 +1479,46 @@ def commit_event_activity_role(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity")
 
     filled_count = db.execute(
-        select(event_activity_assignments.c.user_id).where(event_activity_assignments.c.role_id == role_id)
+        select(event_activity_assignments.c.user_id).where(event_activity_assignments.c.role_id == role_row["id"])
     ).all()
     if role_row["maximum_count"] is not None and len(filled_count) >= int(role_row["maximum_count"]):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role is already full")
 
     try:
         db.execute(
-            insert(event_activity_assignments).values(role_id=role_id, user_id=current_user_id)
+            insert(event_activity_assignments).values(role_id=role_row["id"], user_id=current_user_id)
         )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not commit event activity role") from exc
 
-    return {
-        "ok": True,
-        "event_slug": event_row["slug"],
-        "activity_id": activity_id,
-        "role_id": role_id,
-        "user_id": current_user_id,
-    }
+    return {"ok": True, "event_slug": event_row["slug"], "activity_id": activity_id, "role_id": role_row["id"], "user_id": current_user_id}
+
+
+def uncommit_event_activity_role(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    activity_id: UUID,
+) -> dict[str, object]:
+    event_row = _get_event_by_slug_row(db, slug)
+    _ensure_event_member(db, event_row["id"], current_user_id)
+
+    role_ids = db.execute(
+        select(event_activity_roles.c.id).where(event_activity_roles.c.activity_id == activity_id)
+    ).scalars().all()
+
+    if role_ids:
+        db.execute(
+            delete(event_activity_assignments).where(
+                event_activity_assignments.c.role_id.in_(role_ids),
+                event_activity_assignments.c.user_id == current_user_id,
+            )
+        )
+        db.commit()
+
+    return {"ok": True, "event_slug": event_row["slug"], "activity_id": activity_id}
 
 
 def share_event_with_user(

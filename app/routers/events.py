@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
@@ -24,8 +25,10 @@ from app.services.events import (
     share_event_with_user,
     toggle_event_attendance,
     toggle_event_signal,
+    uncommit_event_activity_role,
     vote_event_value_importance,
 )
+from app.models import event_activity_roles
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -201,7 +204,8 @@ class EventActivityCreateRequest(BaseModel):
 
 
 class EventActivityCommitRequest(BaseModel):
-    role_id: UUID
+    role_label: str | None = Field(default=None, min_length=1, max_length=100)
+    role_id: UUID | None = None
 
 
 class ShareTargetRequest(BaseModel):
@@ -394,12 +398,41 @@ async def commit_event_activity_route(
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    role_label = payload.role_label
+    if role_label is None and payload.role_id is not None:
+        role_label = db.execute(
+            select(event_activity_roles.c.label).where(
+                event_activity_roles.c.id == payload.role_id,
+                event_activity_roles.c.activity_id == activity_id,
+            )
+        ).scalar_one_or_none()
+        if role_label is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+    if role_label is None:
+        raise HTTPException(status_code=422, detail="role_label is required")
+
     return commit_event_activity_role(
         db=db,
         current_user_id=current_user_id,
         slug=slug,
         activity_id=activity_id,
-        role_id=payload.role_id,
+        role_label=role_label,
+    )
+
+
+@router.delete("/{slug}/activities/{activity_id}/commit")
+async def uncommit_event_activity_route(
+    slug: str,
+    activity_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return uncommit_event_activity_role(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        activity_id=activity_id,
     )
 
 
