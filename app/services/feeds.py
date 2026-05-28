@@ -609,3 +609,35 @@ def get_personal_feed(
         "offset": bounded_offset,
         "items": items,
     }
+
+
+def get_scope_feed(
+    db: Session,
+    scope_kind: str,
+    slug: str,
+    sort: str = "recent",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, object]:
+    safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
+    bounded_limit = max(1, min(limit, 100))
+    bounded_offset = max(0, offset)
+    normalized_slug = slug.strip().lower()
+
+    if scope_kind == "channel":
+        row = db.execute(
+            select(channels.c.id).where(channels.c.slug == normalized_slug)
+        ).first()
+        if row is None:
+            return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[row[0]], community_ids=[])
+
+    if scope_kind == "community":
+        row = db.execute(
+            select(communities.c.id).where(communities.c.slug == normalized_slug)
+        ).first()
+        if row is None:
+            return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[], community_ids=[row[0]])
+
+    return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}

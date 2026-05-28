@@ -3,14 +3,20 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
-from app.services.feeds import get_home_feed, get_personal_feed, get_public_feed
+from app.services.feeds import get_home_feed, get_personal_feed, get_public_feed, get_scope_feed
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
+
+
+class TagRefOut(BaseModel):
+    slug: str
+    label: str
+    kind: str
 
 
 class FeedItemOut(BaseModel):
@@ -20,6 +26,7 @@ class FeedItemOut(BaseModel):
     title: str
     body: str
     author_id: UUID | None = None
+    author_username: str | None = None
     signal_count: int
     vote_count: int
     comment_count: int
@@ -27,6 +34,15 @@ class FeedItemOut(BaseModel):
     going_count: int
     last_activity_at: object
     created_at: object
+    project_mode: str | None = None
+    project_subtype: str | None = None
+    stage_label: str | None = None
+    location_label: str | None = None
+    is_private: bool = False
+    scheduled_at: object = None
+    time_label: str | None = None
+    channel_tags: list[TagRefOut] = Field(default_factory=list)
+    community_tags: list[TagRefOut] = Field(default_factory=list)
 
 
 class FeedResponse(BaseModel):
@@ -79,3 +95,15 @@ def personal_feed(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/scope", response_model=FeedResponse)
+def scope_feed(
+    kind: str = Query(pattern="^(channel|community)$"),
+    slug: str = Query(min_length=1),
+    sort: str = Query(default="recent", pattern="^(popular|recent)$"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_scope_feed(db=db, scope_kind=kind, slug=slug, sort=sort, limit=limit, offset=offset)
