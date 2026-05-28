@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
-from sqlalchemy import Boolean, Integer, literal, or_, select, union_all
+from sqlalchemy import Boolean, DateTime, Integer, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -47,7 +47,7 @@ def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] |
         projects.c.stage_label,
         projects.c.location_label,
         literal(False, Boolean).label("is_private"),
-        literal(None).label("scheduled_at"),
+        literal(None, DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     ).where(projects.c.is_closed.is_(False))
     q = q.select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
@@ -89,7 +89,7 @@ def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | 
         literal(None).label("stage_label"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
-        literal(None).label("scheduled_at"),
+        literal(None, DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
     q = q.select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
@@ -263,7 +263,7 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("stage_label"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
-        literal(None).label("scheduled_at"),
+        literal(None, DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
@@ -295,7 +295,7 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
         projects.c.stage_label,
         projects.c.location_label,
         literal(False, Boolean).label("is_private"),
-        literal(None).label("scheduled_at"),
+        literal(None, DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
         .select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
@@ -330,7 +330,7 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("stage_label"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
-        literal(None).label("scheduled_at"),
+        literal(None, DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))

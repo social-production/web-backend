@@ -9,7 +9,8 @@ from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import channels, posts, thread_tags, threads
+from app.models import channels, communities, posts, thread_tags, threads, users
+from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
 
@@ -55,6 +56,66 @@ def _get_thread_tags(db: Session, thread_id: UUID) -> list[dict[str, object]]:
         ).where(thread_tags.c.thread_id == thread_id)
     ).mappings().all()
     return [dict(row) for row in rows]
+
+
+def _attach_usernames_to_comments(
+    db: Session, items: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Recursively attach author_username to comment dicts."""
+    all_ids: set[UUID] = set()
+
+    def _collect(comments: list[dict[str, object]]) -> None:
+        for c in comments:
+            if c.get("author_id"):
+                all_ids.add(c["author_id"])
+            _collect(c.get("replies") or [])
+
+    _collect(items)
+
+    username_map: dict[UUID, str] = {}
+    if all_ids:
+        rows = db.execute(
+            select(users.c.id, users.c.username).where(users.c.id.in_(list(all_ids)))
+        ).all()
+        username_map = {row[0]: row[1] for row in rows}
+
+    def _attach(comments: list[dict[str, object]]) -> list[dict[str, object]]:
+        result = []
+        for c in comments:
+            item = dict(c)
+            item["author_username"] = username_map.get(item.get("author_id"), "")
+            item["replies"] = _attach(item.get("replies") or [])
+            result.append(item)
+        return result
+
+    return _attach(items)
+
+
+def _get_thread_tags_enriched(db: Session, thread_id: UUID) -> tuple[list[dict], list[dict]]:
+    """Returns (channel_tags, community_tags) each as [{slug, label, kind}]."""
+    rows = db.execute(
+        select(
+            thread_tags.c.tag_kind,
+            channels.c.slug.label("channel_slug"),
+            channels.c.name.label("channel_name"),
+            communities.c.slug.label("community_slug"),
+            communities.c.name.label("community_name"),
+        )
+        .select_from(thread_tags)
+        .outerjoin(channels, channels.c.id == thread_tags.c.channel_id)
+        .outerjoin(communities, communities.c.id == thread_tags.c.community_id)
+        .where(thread_tags.c.thread_id == thread_id)
+    ).mappings().all()
+
+    channel_tags = [
+        {"slug": r["channel_slug"], "label": r["channel_name"], "kind": "channel"}
+        for r in rows if r["channel_slug"]
+    ]
+    community_tags = [
+        {"slug": r["community_slug"], "label": r["community_name"], "kind": "community"}
+        for r in rows if r["community_slug"]
+    ]
+    return channel_tags, community_tags
 
 
 def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
@@ -151,12 +212,40 @@ def create_thread(
 
 def get_thread_by_slug(db: Session, slug: str) -> dict[str, object]:
     row = db.execute(
-        select(threads).where(threads.c.slug == slug.lower())
+        select(
+            threads.c.id, threads.c.slug, threads.c.title, threads.c.body,
+            threads.c.author_id, threads.c.vote_count, threads.c.comment_count,
+            threads.c.last_activity_at, threads.c.created_at, threads.c.updated_at,
+            users.c.username.label("author_username"),
+        )
+        .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
+        .where(threads.c.slug == slug.lower())
     ).mappings().first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
-    tags = _get_thread_tags(db, row["id"])
-    return {"thread": _serialize_thread(row, tags)}
+
+    channel_tags, community_tags = _get_thread_tags_enriched(db, row["id"])
+    comments_result = get_comments(db, subject_type="thread", subject_id=row["id"])
+    discussion = _attach_usernames_to_comments(db, comments_result["items"])
+
+    return {
+        "thread": {
+            "id": row["id"],
+            "slug": row["slug"],
+            "title": row["title"],
+            "body": row["body"],
+            "author_id": row["author_id"],
+            "author_username": row["author_username"] or "",
+            "vote_count": row["vote_count"],
+            "comment_count": row["comment_count"],
+            "last_activity_at": row["last_activity_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "channel_tags": channel_tags,
+            "community_tags": community_tags,
+            "discussion": discussion,
+        }
+    }
 
 
 def create_post(
@@ -207,8 +296,33 @@ def create_post(
 
 def get_post_by_id(db: Session, post_id: UUID) -> dict[str, object]:
     row = db.execute(
-        select(posts).where(posts.c.id == post_id)
+        select(
+            posts.c.id, posts.c.author_id, posts.c.body, posts.c.audience,
+            posts.c.vote_count, posts.c.comment_count, posts.c.created_at, posts.c.updated_at,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+        )
+        .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
+        .where(posts.c.id == post_id)
     ).mappings().first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
-    return {"post": _serialize_post(row)}
+
+    comments_result = get_comments(db, subject_type="post", subject_id=row["id"])
+    discussion = _attach_usernames_to_comments(db, comments_result["items"])
+
+    return {
+        "post": {
+            "id": row["id"],
+            "author_id": row["author_id"],
+            "author_username": row["author_username"] or "",
+            "author_profile_image_url": row["author_profile_image_url"],
+            "body": row["body"],
+            "audience": row["audience"],
+            "vote_count": row["vote_count"],
+            "comment_count": row["comment_count"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "discussion": discussion,
+        }
+    }

@@ -34,11 +34,22 @@ class PostCreateRequest(BaseModel):
     audience: str = Field(default="public", pattern="^(public|followers)$")
 
 
-class TagOut(BaseModel):
+class DiscussionCommentOut(BaseModel):
     id: UUID
-    tag_kind: str
-    channel_id: UUID | None = None
-    community_id: UUID | None = None
+    author_username: str = ""
+    body: str
+    vote_count: int
+    created_at: object
+    replies: list["DiscussionCommentOut"] = Field(default_factory=list)
+
+
+DiscussionCommentOut.model_rebuild()
+
+
+class ChannelTagOut(BaseModel):
+    slug: str
+    label: str
+    kind: str
 
 
 class ThreadOut(BaseModel):
@@ -47,23 +58,29 @@ class ThreadOut(BaseModel):
     title: str
     body: str
     author_id: UUID | None = None
+    author_username: str = ""
     vote_count: int
     comment_count: int
     last_activity_at: object
     created_at: object
     updated_at: object
-    tags: list[TagOut]
+    channel_tags: list[ChannelTagOut] = Field(default_factory=list)
+    community_tags: list[ChannelTagOut] = Field(default_factory=list)
+    discussion: list[DiscussionCommentOut] = Field(default_factory=list)
 
 
 class PostOut(BaseModel):
     id: UUID
     author_id: UUID | None = None
+    author_username: str = ""
+    author_profile_image_url: str | None = None
     body: str
     audience: str
     vote_count: int
     comment_count: int
     created_at: object
     updated_at: object
+    discussion: list[DiscussionCommentOut] = Field(default_factory=list)
 
 
 class ThreadResponse(BaseModel):
