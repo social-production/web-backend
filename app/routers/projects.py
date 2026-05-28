@@ -116,14 +116,10 @@ class ProjectDetailResponse(BaseModel):
     linksFrame: dict[str, Any]
     inventoryFrame: dict[str, Any] | None = None
     history: list[dict[str, Any]]
-    projectManagers: list[dict[str, Any]]
     members: list[dict[str, Any]]
     viewerIsMember: bool
     viewerCanToggleMembership: bool
     viewerCanShare: bool
-    viewerCanToggleManagerNomination: bool
-    viewerIsManagerCandidate: bool
-    viewerIsProjectManager: bool
     shareContacts: list[dict[str, Any]]
     report: dict[str, Any] | None = None
     isRemovedByReport: bool

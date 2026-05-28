@@ -485,17 +485,13 @@ async def get_project_detail(
     usernames = _username_lookup(db, member_ids | ({row["author_id"]} if row["author_id"] else set()))
 
     members = []
-    project_managers = []
     for member_id, is_manager, is_manager_candidate in member_rows:
         payload = {
             "id": str(member_id),
             "username": usernames.get(member_id, {}).get("username", "unknown"),
             "bio": usernames.get(member_id, {}).get("bio", ""),
-            "isManagerCandidate": bool(is_manager_candidate),
         }
         members.append(payload)
-        if is_manager:
-            project_managers.append(payload)
 
     share_contact_rows = db.execute(
         select(users.c.id, users.c.username, users.c.bio)
@@ -1144,14 +1140,10 @@ async def get_project_detail(
         },
         "inventoryFrame": None,
         "history": [],
-        "projectManagers": project_managers,
         "members": members,
         "viewerIsMember": viewer_is_member,
         "viewerCanToggleMembership": current_user_id is not None,
         "viewerCanShare": viewer_is_member,
-        "viewerCanToggleManagerNomination": viewer_is_member,
-        "viewerIsManagerCandidate": viewer_is_manager_candidate,
-        "viewerIsProjectManager": viewer_is_manager,
         "shareContacts": share_contacts,
         "report": report,
         "isRemovedByReport": is_removed,
