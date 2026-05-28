@@ -18,9 +18,11 @@ from app.routers.governance import router as governance_router
 from app.routers.messages import router as messages_router
 from app.routers.notifications import router as notifications_router
 from app.routers.projects import router as projects_router
+from app.routers.projects_links import router as projects_links_router
 from app.routers.projects_phases import router as projects_phases_router
 from app.routers.projects_plans import router as projects_plans_router
 from app.routers.projects_service_requests import router as projects_service_requests_router
+from app.routers.projects_service_request_settings import router as projects_service_request_settings_router
 from app.routers.projects_software import router as projects_software_router
 from app.routers.feeds import router as feeds_router
 from app.routers.platform import router as platform_router
@@ -73,9 +75,11 @@ def create_app() -> FastAPI:
     app.include_router(feeds_router)
     app.include_router(platform_router)
     app.include_router(projects_router)
+    app.include_router(projects_links_router)
     app.include_router(projects_plans_router)
     app.include_router(projects_phases_router)
     app.include_router(projects_service_requests_router)
+    app.include_router(projects_service_request_settings_router)
     app.include_router(projects_software_router)
 
     return app

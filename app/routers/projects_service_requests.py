@@ -12,6 +12,8 @@ from app.dependencies import get_db
 from app.services.projects_service_requests import (
     create_service_request,
     list_service_requests,
+    plan_service_request,
+    toggle_service_history_completion,
     update_service_request_status,
 )
 
@@ -99,4 +101,58 @@ def patch_project_service_request_status(
         project_slug=slug,
         request_id=request_id,
         status_value=payload.status,
+    )
+
+
+class ServiceRequestPlanIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    location_label: str = Field(min_length=1, max_length=160)
+    role_requirements: list[dict] = Field(default_factory=list)
+    linked_plan_phase_id: str | None = None
+    note: str = Field(min_length=1)
+
+
+class ServiceHistoryCompletionIn(BaseModel):
+    role: str = Field(pattern="^(requester|participants)$")
+    selection: str | None = Field(default=None)
+
+
+@router.post("/{slug}/service-requests/{request_id}/plan")
+def plan_project_service_request_route(
+    slug: str,
+    request_id: UUID,
+    payload: ServiceRequestPlanIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return plan_service_request(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        request_id=request_id,
+        title=payload.title,
+        location_label=payload.location_label,
+        role_requirements=payload.role_requirements,
+        linked_plan_phase_id=payload.linked_plan_phase_id,
+        note=payload.note,
+    )
+
+
+@router.post("/{slug}/service-history/{history_id}/completion")
+def toggle_service_history_completion_route(
+    slug: str,
+    history_id: str,
+    payload: ServiceHistoryCompletionIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return toggle_service_history_completion(
+        db=db,
+        current_user_id=current_user_id,
+        project_slug=slug,
+        history_item_key=history_id,
+        role=payload.role,
+        selection=payload.selection,
     )
