@@ -18,7 +18,6 @@ from app.models import (
     event_activity_assignments,
     event_activity_roles,
     event_activities,
-    event_attendance,
     event_edit_request_votes,
     event_edit_requests,
     event_editors,
@@ -46,7 +45,6 @@ from app.services.search import index_document
 from app.utils.votes import is_platform_event, required_votes, resolve_event_vote_population
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
-EVENT_ATTENDANCE_STATES = frozenset({"going", "not-going"})
 EVENT_PHASES = (
     ("proposal", 1, "P1", "Proposal", "Collect demand and define event values."),
     ("event-plan", 2, "P2", "Event Plan", "Propose and approve event plans."),
@@ -446,23 +444,7 @@ async def get_event_detail(
         if vote_row is not None:
             active_vote = int(vote_row[0])
 
-    attendees_rows = db.execute(
-        select(event_attendance.c.user_id).where(
-            event_attendance.c.event_id == event_id,
-            event_attendance.c.attendance_state == "going",
-        )
-    ).all()
-    attendee_ids = [user_id for (user_id,) in attendees_rows]
-    attendees = [usernames.get(user_id, {}).get("username", "unknown") for user_id in attendee_ids]
-
-    viewer_attendance_state = None
-    if current_user_id is not None:
-        viewer_attendance_state = db.execute(
-            select(event_attendance.c.attendance_state).where(
-                event_attendance.c.event_id == event_id,
-                event_attendance.c.user_id == current_user_id,
-            )
-        ).scalar_one_or_none()
+    attendees = [usernames.get(user_id, {}).get("username", "unknown") for user_id in member_ids]
 
     members = [
         {
@@ -927,7 +909,6 @@ async def get_event_detail(
         "voteCount": int(row["vote_count"] or 0),
         "activeVote": active_vote,
         "commentCount": int(row["comment_count"] or 0),
-        "goingCount": int(row["going_count"] or 0),
         "memberCount": member_count,
         "lastActivityAt": _iso(row["last_activity_at"]),
         "signalSummary": signal_summary,
@@ -946,8 +927,8 @@ async def get_event_detail(
         "invitedUsernames": [],
         "eventEditors": event_editors_payload,
         "members": members,
-        "viewerIsGoing": viewer_attendance_state == "going",
-        "viewerCanToggleGoing": current_user_id is not None,
+        "viewerIsMember": viewer_is_member,
+        "viewerCanToggleMembership": current_user_id is not None,
         "viewerHasEventEditAccess": viewer_has_edit_access,
         "viewerCanManageEditors": current_user_id is not None and current_user_id == row["created_by"],
         "viewerCanShare": viewer_is_member,
@@ -1003,106 +984,43 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
     return {"ok": True, "joined": True, "slug": event_row["slug"]}
 
 
-def toggle_event_attendance(
-    db: Session,
-    current_user_id: UUID,
-    slug: str,
-    attendance_state: str,
-) -> dict[str, object]:
+def leave_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
-    normalized_state = attendance_state.strip().lower()
-
-    if normalized_state not in EVENT_ATTENDANCE_STATES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"attendance_state must be one of: {sorted(EVENT_ATTENDANCE_STATES)}",
-        )
 
     existing = db.execute(
-        select(event_attendance.c.event_id, event_attendance.c.user_id, event_attendance.c.attendance_state)
+        select(event_memberships.c.event_id, event_memberships.c.user_id)
         .where(
-            event_attendance.c.event_id == event_row["id"],
-            event_attendance.c.user_id == current_user_id,
+            event_memberships.c.event_id == event_row["id"],
+            event_memberships.c.user_id == current_user_id,
         )
         .limit(1)
     ).mappings().first()
 
-    action = "none"
-    going_count_delta = 0
+    if existing is None:
+        return {"ok": True, "joined": False, "slug": event_row["slug"]}
 
     try:
-        if existing is None:
-            db.execute(
-                insert(event_attendance).values(
-                    event_id=event_row["id"],
-                    user_id=current_user_id,
-                    attendance_state=normalized_state,
-                    updated_at=datetime.now(timezone.utc),
-                )
+        db.execute(
+            delete(event_memberships).where(
+                event_memberships.c.event_id == event_row["id"],
+                event_memberships.c.user_id == current_user_id,
             )
-            action = "added"
-            if normalized_state == "going":
-                going_count_delta = 1
-        elif existing["attendance_state"] == normalized_state:
-            db.execute(
-                delete(event_attendance).where(
-                    event_attendance.c.event_id == event_row["id"],
-                    event_attendance.c.user_id == current_user_id,
-                )
-            )
-            action = "removed"
-            if normalized_state == "going":
-                going_count_delta = -1
-        else:
-            db.execute(
-                update(event_attendance)
-                .where(
-                    event_attendance.c.event_id == event_row["id"],
-                    event_attendance.c.user_id == current_user_id,
-                )
-                .values(attendance_state=normalized_state, updated_at=datetime.now(timezone.utc))
-            )
-            action = "switched"
-            if existing["attendance_state"] == "going" and normalized_state == "not-going":
-                going_count_delta = -1
-            elif existing["attendance_state"] == "not-going" and normalized_state == "going":
-                going_count_delta = 1
-
-        if going_count_delta != 0:
-            db.execute(
-                update(events)
-                .where(events.c.id == event_row["id"])
-                .values(going_count=func.greatest(events.c.going_count + going_count_delta, 0))
-            )
+        )
+        db.execute(
+            update(events)
+            .where(events.c.id == event_row["id"])
+            .values(member_count=func.greatest(events.c.member_count - 1, 0))
+        )
 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not toggle attendance",
+            detail="Could not leave event",
         ) from exc
 
-    current = db.execute(
-        select(event_attendance.c.attendance_state)
-        .where(
-            event_attendance.c.event_id == event_row["id"],
-            event_attendance.c.user_id == current_user_id,
-        )
-        .limit(1)
-    ).scalar_one_or_none()
-
-    refreshed_going = db.execute(
-        select(events.c.going_count).where(events.c.id == event_row["id"])
-    ).scalar_one()
-
-    return {
-        "ok": True,
-        "slug": event_row["slug"],
-        "action": action,
-        "attendance_state": current,
-        "going_count": int(refreshed_going),
-    }
+    return {"ok": True, "joined": False, "slug": event_row["slug"]}
 
 
 async def toggle_event_signal(

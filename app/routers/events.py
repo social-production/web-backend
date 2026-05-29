@@ -21,9 +21,9 @@ from app.services.events import (
     grant_event_editor,
     get_event_detail,
     join_event,
+    leave_event,
     revoke_event_editor,
     share_event_with_user,
-    toggle_event_attendance,
     toggle_event_signal,
     uncommit_event_activity_role,
     vote_event_value_importance,
@@ -102,7 +102,6 @@ class EventDetailResponse(BaseModel):
     voteCount: int
     activeVote: int
     commentCount: int
-    goingCount: int
     memberCount: int
     lastActivityAt: str
     signalSummary: dict[str, Any] | None = None
@@ -121,8 +120,8 @@ class EventDetailResponse(BaseModel):
     invitedUsernames: list[str]
     eventEditors: list[dict[str, Any]]
     members: list[dict[str, Any]]
-    viewerIsGoing: bool
-    viewerCanToggleGoing: bool
+    viewerIsMember: bool
+    viewerCanToggleMembership: bool
     viewerHasEventEditAccess: bool
     viewerCanManageEditors: bool
     viewerCanShare: bool
@@ -138,20 +137,6 @@ class EventMembershipResponse(BaseModel):
     ok: bool
     joined: bool
     slug: str
-
-
-class EventAttendanceToggleRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    attendance_state: str = Field(pattern="^(going|not-going)$")
-
-
-class EventAttendanceToggleResponse(BaseModel):
-    ok: bool
-    slug: str
-    action: str
-    attendance_state: str | None = None
-    going_count: int
 
 
 class EventSignalToggleRequest(BaseModel):
@@ -274,19 +259,13 @@ async def join_event_route(
     return join_event(db=db, current_user_id=current_user_id, slug=slug)
 
 
-@router.post("/{slug}/attendance", response_model=EventAttendanceToggleResponse)
-async def toggle_event_attendance_route(
+@router.delete("/{slug}/leave", response_model=EventMembershipResponse)
+async def leave_event_route(
     slug: str,
-    payload: EventAttendanceToggleRequest,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return toggle_event_attendance(
-        db=db,
-        current_user_id=current_user_id,
-        slug=slug,
-        attendance_state=payload.attendance_state,
-    )
+    return leave_event(db=db, current_user_id=current_user_id, slug=slug)
 
 
 @router.post("/{slug}/signals", response_model=EventSignalToggleResponse)
