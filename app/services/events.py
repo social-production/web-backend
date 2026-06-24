@@ -310,7 +310,7 @@ def create_event(
                 description=description.strip(),
                 created_by=current_user_id,
                 is_private=is_private,
-                current_phase_id="phase-1",
+                current_phase_id="proposal",
                 time_label=time_label.strip(),
                 location_label=location_label.strip(),
                 scheduled_at=scheduled_at,
@@ -357,6 +357,12 @@ def create_event(
                 )
             )
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="create-event",
+            metadata={"event_id": str(created["id"]), "slug": created["slug"]},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -730,12 +736,39 @@ async def get_event_detail(
         select(event_update_requests).where(event_update_requests.c.event_id == event_id).order_by(event_update_requests.c.created_at.desc())
     ).mappings().all()
     update_requests = []
+    history_entries: list[tuple[object, dict[str, object]]] = []
     for req in update_request_rows:
         vote_rows = db.execute(
             select(event_update_request_votes.c.vote, event_update_request_votes.c.voter_id)
             .where(event_update_request_votes.c.request_id == req["id"])
         ).all()
         summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
+        history_entries.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "event",
+                    "kind": "event-update",
+                    "kindLabel": "Update decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": viewer_is_member and req["status"] == "open",
+                    "payload": {
+                        "type": "update",
+                        "body": req["body"],
+                        "appliedUpdateId": None,
+                    },
+                },
+            )
+        )
+        if req["status"] != "open":
+            continue
         update_requests.append(
             {
                 "id": str(req["id"]),
@@ -759,6 +792,34 @@ async def get_event_detail(
             .where(event_edit_request_votes.c.request_id == req["id"])
         ).all()
         summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
+        history_entries.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "event",
+                    "kind": "event-edit",
+                    "kindLabel": "Edit decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": viewer_is_member and req["status"] == "open",
+                    "payload": {
+                        "type": "edit",
+                        "changes": [
+                            {"label": "Title", "before": str(row["title"]), "after": str(req["title"])},
+                            {"label": "Description", "before": str(row["description"]), "after": str(req["description"])},
+                        ],
+                    },
+                },
+            )
+        )
+        if req["status"] != "open":
+            continue
         edit_requests.append(
             {
                 "id": str(req["id"]),
@@ -786,6 +847,36 @@ async def get_event_detail(
             .where(event_phase_change_votes.c.request_id == req["id"])
         ).all()
         summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
+        history_entries.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "event",
+                    "kind": "event-phase-change",
+                    "kindLabel": "Phase decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": viewer_is_member and req["status"] == "open",
+                    "payload": {
+                        "type": "phase-change",
+                        "changeKind": req["change_kind"],
+                        "fromPhaseId": req["from_phase_id"],
+                        "fromPhaseLabel": phase_title_map.get(req["from_phase_id"], req["from_phase_id"]),
+                        "toPhaseId": req["target_phase_id"],
+                        "toPhaseLabel": phase_title_map.get(req["target_phase_id"], req["target_phase_id"]),
+                        "reason": req["reason"],
+                    },
+                },
+            )
+        )
+        if req["status"] != "open":
+            continue
         phase_change_requests.append(
             {
                 "id": str(req["id"]),
@@ -877,6 +968,17 @@ async def get_event_detail(
         .where(comments.c.subject_type == "event", comments.c.subject_id == event_id, comments.c.parent_id.is_(None))
         .order_by(comments.c.created_at.asc())
     ).all()
+    discussion_comment_ids = [comment_id for comment_id, _, _, _, _ in discussion_rows]
+    discussion_active_votes: dict[UUID, int] = {}
+    if current_user_id is not None and discussion_comment_ids:
+        dv_rows = db.execute(
+            select(content_votes.c.target_id, content_votes.c.direction).where(
+                content_votes.c.target_type == "comment",
+                content_votes.c.target_id.in_(discussion_comment_ids),
+                content_votes.c.voter_id == current_user_id,
+            )
+        ).all()
+        discussion_active_votes = {target_id: int(direction) for target_id, direction in dv_rows}
     discussion = [
         {
             "id": str(comment_id),
@@ -884,7 +986,7 @@ async def get_event_detail(
             "body": body,
             "createdAt": _iso(created_at),
             "voteCount": int(vote_count or 0),
-            "activeVote": 0,
+            "activeVote": discussion_active_votes.get(comment_id, 0),
             "report": None,
             "replies": [],
         }
@@ -922,7 +1024,7 @@ async def get_event_detail(
         "editRequests": edit_requests,
         "viewerCanRequestEdit": viewer_is_member,
         "viewerCanVoteOnEditRequests": viewer_is_member,
-        "history": [],
+        "history": [entry for _, entry in sorted(history_entries, key=lambda item: item[0], reverse=True)],
         "attendees": attendees,
         "invitedUsernames": [],
         "eventEditors": event_editors_payload,
@@ -1020,6 +1122,15 @@ def leave_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, obje
             detail="Could not leave event",
         ) from exc
 
+    # Invalidate weekly-active caches so quorum drops immediately
+    try:
+        from app.cache import get_sync_redis_client
+        redis = get_sync_redis_client()
+        redis.delete(f"governance:weekly_active:event:{event_row['id']}")
+        redis.delete("governance:weekly_active")
+    except Exception:
+        pass
+
     return {"ok": True, "joined": False, "slug": event_row["slug"]}
 
 
@@ -1071,11 +1182,11 @@ async def toggle_event_signal(
             )
             action = "switched"
 
-        if normalized_signal == "demand" and action in {"added", "switched"}:
+        if action in {"added", "switched"}:
             record_meaningful_action(
                 db=db,
                 user_id=current_user_id,
-                action_type="signal-demand",
+                action_type="signal-demand" if normalized_signal == "demand" else "signal-opposition",
                 metadata={"event_id": str(event_row["id"]), "event_slug": event_row["slug"]},
             )
 

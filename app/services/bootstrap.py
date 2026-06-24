@@ -11,7 +11,33 @@ from app.models import (
     communities,
     conversation_members,
     conversations,
+    event_activities,
+    event_activity_assignments,
+    event_activity_roles,
+    event_edit_request_votes,
+    event_edit_requests,
+    event_memberships,
+    event_phase_change_votes,
+    event_phase_change_requests,
+    event_plan_votes,
+    event_plans,
+    event_update_request_votes,
+    event_update_requests,
+    events,
     notifications,
+    project_activities,
+    project_activity_assignments,
+    project_activity_roles,
+    project_edit_request_votes,
+    project_edit_requests,
+    project_memberships,
+    project_phase_change_votes,
+    project_phase_change_requests,
+    project_plan_votes,
+    project_plans,
+    project_update_request_votes,
+    project_update_requests,
+    projects,
     scope_memberships,
     user_follows,
     users,
@@ -187,6 +213,401 @@ def _get_suggested_contacts(db: Session, current_user_id: UUID) -> list[dict[str
     ]
 
 
+def _small_iso(dt) -> str:
+    if dt is None:
+        return ""
+    return dt.isoformat()
+
+
+def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+
+    # ── Scheduled activities from projects the user is a member of ──
+    proj_activity_rows = db.execute(
+        select(
+            project_activities.c.id, project_activities.c.title, project_activities.c.scheduled_at,
+            project_activities.c.location_label,
+            projects.c.slug.label("parent_slug"), projects.c.title.label("parent_title"),
+            projects.c.project_mode,
+        )
+        .select_from(
+            project_memberships.join(projects, projects.c.id == project_memberships.c.project_id)
+            .join(project_activities, project_activities.c.project_id == projects.c.id)
+        )
+        .where(
+            project_memberships.c.user_id == current_user_id,
+            projects.c.is_closed.is_(False),
+            projects.c.current_phase_id == "phase-5",
+        )
+        .order_by(project_activities.c.scheduled_at.asc())
+        .limit(4)
+    ).mappings().all()
+
+    if proj_activity_rows:
+        activity_ids = [r["id"] for r in proj_activity_rows]
+        # Count assignments per activity
+        signup_rows = db.execute(
+            select(project_activity_roles.c.activity_id, func.count(project_activity_assignments.c.user_id))
+            .select_from(
+                project_activity_roles.outerjoin(
+                    project_activity_assignments,
+                    project_activity_assignments.c.role_id == project_activity_roles.c.id,
+                )
+            )
+            .where(project_activity_roles.c.activity_id.in_(activity_ids))
+            .group_by(project_activity_roles.c.activity_id)
+        ).all()
+        signups = {str(aid): int(cnt) for aid, cnt in signup_rows}
+
+        # Sum minimum required per activity
+        min_rows = db.execute(
+            select(project_activity_roles.c.activity_id, func.sum(project_activity_roles.c.required_count))
+            .where(project_activity_roles.c.activity_id.in_(activity_ids))
+            .group_by(project_activity_roles.c.activity_id)
+        ).all()
+        minimums = {str(aid): int(s) for aid, s in min_rows}
+
+        for r in proj_activity_rows:
+            aid = str(r["id"])
+            signed = signups.get(aid, 0)
+            needed = minimums.get(aid, 0)
+            items.append({
+                "kind": "project",
+                "id": aid,
+                "subjectId": r["parent_slug"],
+                "title": r["title"],
+                "href": f"/projects/{r['parent_slug']}",
+                "meta": r["parent_title"],
+                "timeLabel": _small_iso(r["scheduled_at"]),
+                "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
+                "projectMode": r["project_mode"],
+                "projectSlug": r["parent_slug"],
+                "activityId": aid,
+            })
+
+    # ── Scheduled activities from events the user is a member of ──
+    evt_activity_rows = db.execute(
+        select(
+            event_activities.c.id, event_activities.c.title, event_activities.c.scheduled_at,
+            event_activities.c.location_label,
+            events.c.slug.label("parent_slug"), events.c.title.label("parent_title"),
+        )
+        .select_from(
+            event_memberships.join(events, events.c.id == event_memberships.c.event_id)
+            .join(event_activities, event_activities.c.event_id == events.c.id)
+        )
+        .where(
+            event_memberships.c.user_id == current_user_id,
+            events.c.current_phase_id.in_(["event-plan", "activity"]),
+        )
+        .order_by(event_activities.c.scheduled_at.asc())
+        .limit(4)
+    ).mappings().all()
+
+    if evt_activity_rows:
+        activity_ids = [r["id"] for r in evt_activity_rows]
+        signup_rows = db.execute(
+            select(event_activity_roles.c.activity_id, func.count(event_activity_assignments.c.user_id))
+            .select_from(
+                event_activity_roles.outerjoin(
+                    event_activity_assignments,
+                    event_activity_assignments.c.role_id == event_activity_roles.c.id,
+                )
+            )
+            .where(event_activity_roles.c.activity_id.in_(activity_ids))
+            .group_by(event_activity_roles.c.activity_id)
+        ).all()
+        signups = {str(aid): int(cnt) for aid, cnt in signup_rows}
+
+        min_rows = db.execute(
+            select(event_activity_roles.c.activity_id, func.sum(event_activity_roles.c.required_count))
+            .where(event_activity_roles.c.activity_id.in_(activity_ids))
+            .group_by(event_activity_roles.c.activity_id)
+        ).all()
+        minimums = {str(aid): int(s) for aid, s in min_rows}
+
+        for r in evt_activity_rows:
+            aid = str(r["id"])
+            signed = signups.get(aid, 0)
+            needed = minimums.get(aid, 0)
+            items.append({
+                "kind": "event",
+                "id": aid,
+                "subjectId": r["parent_slug"],
+                "title": r["title"],
+                "href": f"/events/{r['parent_slug']}",
+                "meta": r["parent_title"],
+                "timeLabel": _small_iso(r["scheduled_at"]),
+                "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
+                "eventSlug": r["parent_slug"],
+                "activityId": aid,
+            })
+
+    # ── Active votes: open requests where user is a member and hasn't voted yet ──
+    vote_items: list[dict[str, object]] = []
+    limit_per_type = 3
+
+    # Helper: query yes/no counts for a set of request IDs from a vote table
+    def _vote_counts(vote_table, id_col, request_ids: list) -> dict[str, dict[str, int]]:
+        if not request_ids:
+            return {}
+        rows = db.execute(
+            select(id_col, vote_table.c.vote, func.count())
+            .where(id_col.in_(request_ids))
+            .group_by(id_col, vote_table.c.vote)
+        ).all()
+        result: dict[str, dict[str, int]] = {}
+        for rid, vote, cnt in rows:
+            result.setdefault(str(rid), {"yes": 0, "no": 0})
+            result[str(rid)][str(vote)] = int(cnt)
+        return result
+
+    def _build_count_label(yes: int, no: int) -> str:
+        return f"{yes} yes / {no} no"
+
+    # Project phase change requests
+    rows = db.execute(
+        select(project_phase_change_requests.c.id, project_phase_change_requests.c.created_at,
+               projects.c.slug, projects.c.title, project_phase_change_requests.c.target_phase_id)
+        .select_from(
+            project_phase_change_requests.join(
+                projects, projects.c.id == project_phase_change_requests.c.project_id
+            ).join(
+                project_memberships,
+                and_(project_memberships.c.project_id == projects.c.id,
+                     project_memberships.c.user_id == current_user_id),
+            ).outerjoin(
+                project_phase_change_votes,
+                and_(project_phase_change_votes.c.request_id == project_phase_change_requests.c.id,
+                     project_phase_change_votes.c.voter_id == current_user_id),
+            )
+        )
+        .where(project_phase_change_requests.c.status == "open",
+               project_phase_change_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(project_phase_change_votes, project_phase_change_votes.c.request_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": f"Phase change: {r['title']}",
+                "href": f"/projects/{r['slug']}?open=governance",
+                "meta": f"Phase change → {r['target_phase_id']}",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "project", "voteKindLabel": "phase_change",
+                "voteTargetId": str(r["id"])})
+
+    # Project plans
+    rows = db.execute(
+        select(project_plans.c.id, project_plans.c.created_at,
+               projects.c.slug, projects.c.title, project_plans.c.title.label("plan_title"))
+        .select_from(
+            project_plans.join(projects, projects.c.id == project_plans.c.project_id)
+            .join(project_memberships, and_(project_memberships.c.project_id == projects.c.id,
+                                             project_memberships.c.user_id == current_user_id))
+            .outerjoin(project_plan_votes, and_(project_plan_votes.c.plan_id == project_plans.c.id,
+                                                  project_plan_votes.c.voter_id == current_user_id))
+        )
+        .where(project_plans.c.status == "open", project_plan_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(project_plan_votes, project_plan_votes.c.plan_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": r['title'],
+                "href": f"/projects/{r['slug']}?open=governance",
+                "meta": f"Plan vote",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "project", "voteKindLabel": "plan",
+                "voteTargetId": str(r["id"])})
+
+    # Project update requests
+    rows = db.execute(
+        select(project_update_requests.c.id, project_update_requests.c.created_at,
+               projects.c.slug, projects.c.title, project_update_requests.c.body)
+        .select_from(
+            project_update_requests.join(projects, projects.c.id == project_update_requests.c.project_id)
+            .join(project_memberships, and_(project_memberships.c.project_id == projects.c.id,
+                                             project_memberships.c.user_id == current_user_id))
+            .outerjoin(project_update_request_votes,
+                       and_(project_update_request_votes.c.request_id == project_update_requests.c.id,
+                            project_update_request_votes.c.voter_id == current_user_id))
+        )
+        .where(project_update_requests.c.status == "open", project_update_request_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(project_update_request_votes, project_update_request_votes.c.request_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": r['title'],
+                "href": f"/projects/{r['slug']}?open=governance",
+                "meta": "Update request",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "project", "voteKindLabel": "update",
+                "voteTargetId": str(r["id"])})
+
+    # Project edit requests
+    rows = db.execute(
+        select(project_edit_requests.c.id, project_edit_requests.c.created_at,
+               projects.c.slug, projects.c.title)
+        .select_from(
+            project_edit_requests.join(projects, projects.c.id == project_edit_requests.c.project_id)
+            .join(project_memberships, and_(project_memberships.c.project_id == projects.c.id,
+                                             project_memberships.c.user_id == current_user_id))
+            .outerjoin(project_edit_request_votes,
+                       and_(project_edit_request_votes.c.request_id == project_edit_requests.c.id,
+                            project_edit_request_votes.c.voter_id == current_user_id))
+        )
+        .where(project_edit_requests.c.status == "open", project_edit_request_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(project_edit_request_votes, project_edit_request_votes.c.request_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": r['title'],
+                "href": f"/projects/{r['slug']}?open=governance",
+                "meta": "Edit request",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "project", "voteKindLabel": "edit",
+                "voteTargetId": str(r["id"])})
+
+    # Event phase change requests
+    rows = db.execute(
+        select(event_phase_change_requests.c.id, event_phase_change_requests.c.created_at,
+               events.c.slug, events.c.title, event_phase_change_requests.c.target_phase_id)
+        .select_from(
+            event_phase_change_requests.join(events, events.c.id == event_phase_change_requests.c.event_id)
+            .join(event_memberships, and_(event_memberships.c.event_id == events.c.id,
+                                           event_memberships.c.user_id == current_user_id))
+            .outerjoin(event_phase_change_votes,
+                       and_(event_phase_change_votes.c.request_id == event_phase_change_requests.c.id,
+                            event_phase_change_votes.c.voter_id == current_user_id))
+        )
+        .where(event_phase_change_requests.c.status == "open", event_phase_change_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(event_phase_change_votes, event_phase_change_votes.c.request_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": f"Phase change: {r['title']}",
+                "href": f"/events/{r['slug']}?open=governance",
+                "meta": f"Phase change → {r['target_phase_id']}",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "event", "voteKindLabel": "phase_change",
+                "voteTargetId": str(r["id"])})
+
+    # Event plans
+    rows = db.execute(
+        select(event_plans.c.id, event_plans.c.created_at,
+               events.c.slug, events.c.title, event_plans.c.title.label("plan_title"))
+        .select_from(
+            event_plans.join(events, events.c.id == event_plans.c.event_id)
+            .join(event_memberships, and_(event_memberships.c.event_id == events.c.id,
+                                           event_memberships.c.user_id == current_user_id))
+            .outerjoin(event_plan_votes, and_(event_plan_votes.c.plan_id == event_plans.c.id,
+                                                event_plan_votes.c.voter_id == current_user_id))
+        )
+        .where(event_plans.c.status == "open", event_plan_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(event_plan_votes, event_plan_votes.c.plan_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": r['title'],
+                "href": f"/events/{r['slug']}?open=governance",
+                "meta": "Plan vote",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "event", "voteKindLabel": "plan",
+                "voteTargetId": str(r["id"])})
+
+    # Event update requests
+    rows = db.execute(
+        select(event_update_requests.c.id, event_update_requests.c.created_at,
+               events.c.slug, events.c.title)
+        .select_from(
+            event_update_requests.join(events, events.c.id == event_update_requests.c.event_id)
+            .join(event_memberships, and_(event_memberships.c.event_id == events.c.id,
+                                           event_memberships.c.user_id == current_user_id))
+            .outerjoin(event_update_request_votes,
+                       and_(event_update_request_votes.c.request_id == event_update_requests.c.id,
+                            event_update_request_votes.c.voter_id == current_user_id))
+        )
+        .where(event_update_requests.c.status == "open", event_update_request_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(event_update_request_votes, event_update_request_votes.c.request_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": r['title'],
+                "href": f"/events/{r['slug']}?open=governance",
+                "meta": "Update request",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "event", "voteKindLabel": "update",
+                "voteTargetId": str(r["id"])})
+
+    # Event edit requests
+    rows = db.execute(
+        select(event_edit_requests.c.id, event_edit_requests.c.created_at,
+               events.c.slug, events.c.title)
+        .select_from(
+            event_edit_requests.join(events, events.c.id == event_edit_requests.c.event_id)
+            .join(event_memberships, and_(event_memberships.c.event_id == events.c.id,
+                                           event_memberships.c.user_id == current_user_id))
+            .outerjoin(event_edit_request_votes,
+                       and_(event_edit_request_votes.c.request_id == event_edit_requests.c.id,
+                            event_edit_request_votes.c.voter_id == current_user_id))
+        )
+        .where(event_edit_requests.c.status == "open", event_edit_request_votes.c.voter_id.is_(None))
+        .limit(limit_per_type)
+    ).mappings().all()
+    if rows:
+        counts = _vote_counts(event_edit_request_votes, event_edit_request_votes.c.request_id,
+                              [r["id"] for r in rows])
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append({"kind": "vote", "id": str(r["id"]),
+                "title": r['title'],
+                "href": f"/events/{r['slug']}?open=governance",
+                "meta": "Edit request",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": _build_count_label(c["yes"], c["no"]),
+                "voteEntityKind": "event", "voteKindLabel": "edit",
+                "voteTargetId": str(r["id"])})
+
+    # Limit total vote items to 8, newest first (by created_at, fallback to id)
+    vote_items.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
+    items.extend(vote_items[:8])
+
+    return items
+
+
 def get_bootstrap(db: Session, current_user_id: UUID) -> dict[str, object]:
     viewer = _get_viewer_row(db, current_user_id)
 
@@ -212,5 +633,5 @@ def get_bootstrap(db: Session, current_user_id: UUID) -> dict[str, object]:
             "communities": _get_community_directory_items(db, current_user_id),
         },
         "suggestedContacts": _get_suggested_contacts(db, current_user_id),
-        "activityRail": [],
+        "activityRail": _build_activity_rail(db, current_user_id),
     }

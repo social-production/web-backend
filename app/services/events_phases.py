@@ -25,7 +25,7 @@ from app.services.search import index_document
 from app.utils.votes import required_votes, resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
-VALID_PHASE_IDS = frozenset({"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"})
+VALID_PHASE_IDS = frozenset({"proposal", "event-plan", "activity", "closed"})
 VALID_VOTES = frozenset({"yes", "no"})
 
 
@@ -74,6 +74,14 @@ def _compute_votes(
     votes_required = required_votes(member_count)
     meets_quorum = total_votes >= votes_required
     meets_approval = approval_ratio >= APPROVAL_THRESHOLD
+    is_passing = meets_quorum and meets_approval
+
+    remaining_eligible = max(0, member_count - total_votes)
+    max_yes = yes_count + remaining_eligible
+    max_total = total_votes + remaining_eligible
+    can_meet_quorum = max_total >= votes_required
+    can_meet_approval = (max_yes / max_total * 100.0) >= (APPROVAL_THRESHOLD * 100.0) if max_total > 0 else False
+    can_still_pass = (not is_passing) and can_meet_quorum and can_meet_approval
 
     return {
         "yes_count": yes_count,
@@ -85,7 +93,8 @@ def _compute_votes(
         "member_count": member_count,
         "meets_quorum": meets_quorum,
         "meets_approval": meets_approval,
-        "is_passing": meets_quorum and meets_approval,
+        "is_passing": is_passing,
+        "can_still_pass": can_still_pass,
     }
 
 
@@ -273,11 +282,26 @@ def vote_phase_change_request(
                 .values(status="approved")
             )
             db.execute(
+                update(event_phase_change_requests)
+                .where(
+                    event_phase_change_requests.c.event_id == event_row["id"],
+                    event_phase_change_requests.c.id != request_id,
+                    event_phase_change_requests.c.status == "open",
+                )
+                .values(status="closed")
+            )
+            db.execute(
                 update(events)
                 .where(events.c.id == event_row["id"])
                 .values(current_phase_id=target_phase_id)
             )
             executed = True
+        elif not summary.get("can_still_pass", True):
+            db.execute(
+                update(event_phase_change_requests)
+                .where(event_phase_change_requests.c.id == request_id)
+                .values(status="rejected")
+            )
 
         db.commit()
     except IntegrityError as exc:
@@ -328,6 +352,7 @@ def create_update_request(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
     _ensure_member(db, event_row["id"], current_user_id)
+    member_count = _event_vote_population(db, event_row)
 
     try:
         created = db.execute(
@@ -347,13 +372,32 @@ def create_update_request(
                 event_update_requests.c.created_at,
             )
         ).mappings().one()
+
+        executed = False
+        if member_count <= 1:
+            db.execute(
+                update(event_update_requests)
+                .where(event_update_requests.c.id == created["id"])
+                .values(status="approved")
+            )
+            db.execute(
+                insert(event_updates).values(
+                    event_id=event_row["id"],
+                    title="Approved update request",
+                    body=created["body"],
+                    author_id=created["author_id"],
+                )
+            )
+            created = {**created, "status": "approved"}
+            executed = True
+
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create update request") from exc
 
-    summary = _compute_votes(db, event_update_request_votes, created["id"], _event_vote_population(db, event_row))
-    return {"request": _serialize_update_request(created, summary)}
+    summary = _compute_votes(db, event_update_request_votes, created["id"], member_count)
+    return {"request": _serialize_update_request(created, summary), "executed": executed}
 
 
 def list_update_requests(db: Session, event_slug: str) -> dict[str, object]:
@@ -450,6 +494,12 @@ def vote_update_request(
                 )
             )
             executed = True
+        elif not summary.get("can_still_pass", True):
+            db.execute(
+                update(event_update_requests)
+                .where(event_update_requests.c.id == request_id)
+                .values(status="rejected")
+            )
 
         db.commit()
     except IntegrityError as exc:
@@ -608,6 +658,12 @@ def vote_edit_request(
                 )
             )
             executed = True
+        elif not summary.get("can_still_pass", True):
+            db.execute(
+                update(event_edit_requests)
+                .where(event_edit_requests.c.id == request_id)
+                .values(status="rejected")
+            )
 
         db.commit()
     except IntegrityError as exc:

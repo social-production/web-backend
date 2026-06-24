@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_db
 from app.services.governance import add_comment, cast_vote, get_comments
 from app.services.governance import submit_report, vote_report
@@ -14,10 +15,31 @@ from app.services.governance import submit_report, vote_report
 router = APIRouter(prefix="/governance", tags=["governance"])
 
 
+async def _get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> UUID | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    try:
+        payload = await get_current_user_token_payload(credentials)
+    except HTTPException:
+        return None
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None
+
+
 class CommentCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    subject_type: str = Field(pattern="^(thread|post)$")
+    subject_type: str = Field(pattern="^(thread|post|event|project)$")
     subject_id: UUID
     body: str = Field(min_length=1)
     parent_id: UUID | None = None
@@ -26,7 +48,7 @@ class CommentCreateRequest(BaseModel):
 class VoteCastRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    target_type: str = Field(pattern="^(thread|post|comment)$")
+    target_type: str = Field(pattern="^(thread|post|comment|event|project)$")
     target_id: UUID
     direction: str = Field(pattern="^(up|down|neutral)$")
 
@@ -37,8 +59,10 @@ class CommentOut(BaseModel):
     subject_id: UUID
     parent_id: UUID | None = None
     author_id: UUID | None = None
+    author_username: str = ""
     body: str
     vote_count: int
+    active_vote: int = 0
     created_at: object
     updated_at: object
     replies: list["CommentOut"] = Field(default_factory=list)
@@ -128,11 +152,12 @@ def create_comment(
 
 @router.get("/comments", response_model=CommentsListResponse)
 def list_comments(
-    subject_type: str = Query(pattern="^(thread|post)$"),
+    subject_type: str = Query(pattern="^(thread|post|event|project)$"),
     subject_id: UUID = Query(),
     db: Session = Depends(get_db),
+    current_user_id: UUID | None = Depends(_get_optional_user_id),
 ) -> dict[str, object]:
-    return get_comments(db=db, subject_type=subject_type, subject_id=subject_id)
+    return get_comments(db=db, subject_type=subject_type, subject_id=subject_id, current_user_id=current_user_id)
 
 
 @router.post("/votes", response_model=VoteCastResponse)

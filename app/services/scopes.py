@@ -218,6 +218,17 @@ def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -
     if scope_kind == COMMUNITY_SCOPE_KIND and scope_row["join_policy"] == "closed":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Community is closed")
 
+    # Check if already a member before inserting
+    existing = db.execute(
+        select(scope_memberships.c.user_id).where(
+            scope_memberships.c.scope_kind == scope_kind,
+            scope_memberships.c.scope_id == scope_row["id"],
+            scope_memberships.c.user_id == current_user_id,
+        )
+    ).first()
+    if existing is not None:
+        return {"ok": True, "joined": False, "scope_kind": scope_kind, "slug": scope_row["slug"], "detail": "Already a member"}
+
     try:
         db.execute(
             insert(scope_memberships).values(
@@ -230,6 +241,18 @@ def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -
         db.commit()
     except IntegrityError:
         db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join scope")
+
+    # Record the meaningful action AFTER the commit, so it can't roll back the membership
+    try:
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="join-scope",
+            metadata={"scope_kind": scope_kind, "scope_id": str(scope_row["id"]), "slug": slug},
+        )
+    except Exception:
+        pass
 
     return {"ok": True, "joined": True, "scope_kind": scope_kind, "slug": scope_row["slug"]}
 

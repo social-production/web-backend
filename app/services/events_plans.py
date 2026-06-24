@@ -139,6 +139,12 @@ def submit_event_plan(
                 event_plans.c.created_at,
             )
         ).mappings().one()
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="submit-event-plan",
+            metadata={"event_slug": event_slug, "plan_id": str(created["id"])},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()

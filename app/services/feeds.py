@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Integer, literal, or_, select, union_all
+from sqlalchemy import Boolean, DateTime, Integer, and_, cast, literal, null, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models import (
     channels,
     communities,
+    content_votes,
     event_tags,
     events,
     posts,
@@ -33,6 +34,7 @@ def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] |
         projects.c.slug,
         projects.c.title,
         projects.c.description.label("body"),
+        literal(None).label("audience"),
         projects.c.author_id,
         users.c.username.label("author_username"),
         projects.c.signal_count,
@@ -47,7 +49,7 @@ def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] |
         projects.c.stage_label,
         projects.c.location_label,
         literal(False, Boolean).label("is_private"),
-        literal(None, DateTime(timezone=True)).label("scheduled_at"),
+        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     ).where(projects.c.is_closed.is_(False))
     q = q.select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
@@ -75,6 +77,7 @@ def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | 
         threads.c.slug,
         threads.c.title,
         threads.c.body,
+        literal(None).label("audience"),
         threads.c.author_id,
         users.c.username.label("author_username"),
         _ZERO_INT.label("signal_count"),
@@ -89,7 +92,7 @@ def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | 
         literal(None).label("stage_label"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
-        literal(None, DateTime(timezone=True)).label("scheduled_at"),
+        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
     q = q.select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
@@ -117,6 +120,7 @@ def _events_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | N
         events.c.slug,
         events.c.title,
         events.c.description.label("body"),
+        literal(None).label("audience"),
         events.c.created_by.label("author_id"),
         users.c.username.label("author_username"),
         _ZERO_INT.label("signal_count"),
@@ -165,15 +169,17 @@ def _get_user_scope_ids(db: Session, user_id: UUID) -> tuple[list[UUID], list[UU
     return channel_ids, community_ids
 
 
-def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[dict[str, str]]]]) -> dict[str, object]:
+def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[dict[str, str]]]], active_votes: dict[str, int] | None = None) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
+    vote_key = f"{row['entity_type']}:{row['id']}"
     return {
         "id": item_id,
         "entity_type": row["entity_type"],
         "slug": row["slug"],
         "title": row["title"],
         "body": row["body"],
+        "audience": row["audience"],
         "author_id": row["author_id"],
         "author_username": row["author_username"],
         "signal_count": int(row["signal_count"] or 0),
@@ -190,6 +196,7 @@ def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[di
         "is_private": bool(row["is_private"]),
         "scheduled_at": row["scheduled_at"],
         "time_label": row["time_label"],
+        "active_vote": int((active_votes or {}).get(vote_key, 0)),
         "channel_tags": tag_data["channels"],
         "community_tags": tag_data["communities"],
     }
@@ -198,15 +205,18 @@ def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[di
 def _serialize_personal_item(
     row: Mapping[str, object],
     tags: dict[str, dict[str, list[dict[str, str]]]],
+    active_votes: dict[str, int] | None = None,
 ) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
+    vote_key = f"{row['entity_type']}:{row['id']}"
     return {
         "id": item_id,
         "entity_type": row["entity_type"],
         "slug": row["slug"],
         "title": row["title"],
         "body": row["body"],
+        "audience": row["audience"],
         "author_id": row["author_id"],
         "author_username": row["author_username"],
         "signal_count": int(row["signal_count"] or 0),
@@ -223,9 +233,42 @@ def _serialize_personal_item(
         "is_private": bool(row["is_private"]),
         "scheduled_at": row["scheduled_at"],
         "time_label": row["time_label"],
+        "active_vote": int((active_votes or {}).get(vote_key, 0)),
         "channel_tags": tag_data["channels"],
         "community_tags": tag_data["communities"],
     }
+
+
+def _fetch_active_votes_for_rows(
+    db: Session,
+    rows: list[Mapping[str, object]],
+    current_user_id: UUID | None,
+) -> dict[str, int]:
+    if current_user_id is None or not rows:
+        return {}
+
+    item_ids_by_type: dict[str, list[UUID]] = {"post": [], "thread": [], "project": [], "event": []}
+    for row in rows:
+        entity_type = row["entity_type"]
+        if entity_type in item_ids_by_type:
+            item_ids_by_type[entity_type].append(row["id"])
+
+    vote_filters = [
+        and_(content_votes.c.target_type == entity_type, content_votes.c.target_id.in_(item_ids))
+        for entity_type, item_ids in item_ids_by_type.items()
+        if item_ids
+    ]
+    if not vote_filters:
+        return {}
+
+    vote_rows = db.execute(
+        select(content_votes.c.target_type, content_votes.c.target_id, content_votes.c.direction).where(
+            content_votes.c.voter_id == current_user_id,
+            or_(*vote_filters),
+        )
+    ).all()
+
+    return {f"{row[0]}:{row[1]}": int(row[2]) for row in vote_rows}
 
 
 def _get_followed_user_ids(db: Session, current_user_id: UUID) -> list[UUID]:
@@ -249,6 +292,7 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("slug"),
         literal("Post").label("title"),
         posts.c.body,
+        posts.c.audience,
         posts.c.author_id,
         users.c.username.label("author_username"),
         _ZERO_INT.label("signal_count"),
@@ -263,7 +307,7 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("stage_label"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
-        literal(None, DateTime(timezone=True)).label("scheduled_at"),
+        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
@@ -281,6 +325,7 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
         projects.c.slug,
         projects.c.title,
         projects.c.description.label("body"),
+        literal(None).label("audience"),
         projects.c.author_id,
         users.c.username.label("author_username"),
         projects.c.signal_count,
@@ -295,7 +340,7 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
         projects.c.stage_label,
         projects.c.location_label,
         literal(False, Boolean).label("is_private"),
-        literal(None, DateTime(timezone=True)).label("scheduled_at"),
+        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
         .select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
@@ -316,6 +361,7 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
         threads.c.slug,
         threads.c.title,
         threads.c.body,
+        literal(None).label("audience"),
         threads.c.author_id,
         users.c.username.label("author_username"),
         _ZERO_INT.label("signal_count"),
@@ -330,7 +376,7 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("stage_label"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
-        literal(None, DateTime(timezone=True)).label("scheduled_at"),
+        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
     )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
@@ -348,6 +394,7 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
         events.c.slug,
         events.c.title,
         events.c.description.label("body"),
+        literal(None).label("audience"),
         events.c.created_by.label("author_id"),
         users.c.username.label("author_username"),
         _ZERO_INT.label("signal_count"),
@@ -485,6 +532,7 @@ def _build_feed(
     offset: int,
     channel_ids: list[UUID] | None = None,
     community_ids: list[UUID] | None = None,
+    current_user_id: UUID | None = None,
 ) -> dict[str, object]:
     p_q = _projects_select(channel_ids, community_ids)
     t_q = _threads_select(channel_ids, community_ids)
@@ -521,7 +569,8 @@ def _build_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
-    items = [_serialize_item(row, tags) for row in rows]
+    active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
+    items = [_serialize_item(row, tags, active_votes) for row in rows]
     return {"total": len(items), "sort": sort, "limit": limit, "offset": offset, "items": items}
 
 
@@ -530,9 +579,10 @@ def get_public_feed(
     sort: str = "recent",
     limit: int = 20,
     offset: int = 0,
+    current_user_id: UUID | None = None,
 ) -> dict[str, object]:
     safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
-    return _build_feed(db, safe_sort, max(1, min(limit, 100)), max(0, offset))
+    return _build_feed(db, safe_sort, max(1, min(limit, 100)), max(0, offset), current_user_id=current_user_id)
 
 
 def get_home_feed(
@@ -548,6 +598,7 @@ def get_home_feed(
         db, safe_sort, max(1, min(limit, 100)), max(0, offset),
         channel_ids=channel_ids,
         community_ids=community_ids,
+        current_user_id=current_user_id,
     )
 
 
@@ -563,11 +614,11 @@ def get_personal_feed(
     bounded_offset = max(0, offset)
 
     followed_user_ids = _get_followed_user_ids(db, current_user_id)
-    if not followed_user_ids:
-        return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+    # Always include the viewer's own posts alongside posts from followed users.
+    post_author_ids = list({current_user_id, *followed_user_ids})
 
     parts = [
-        _posts_select_for_followed(followed_user_ids),
+        _posts_select_for_followed(post_author_ids),
         _projects_select_for_followed(followed_user_ids),
         _threads_select_for_followed(followed_user_ids),
         _events_select_for_followed(followed_user_ids),
@@ -601,7 +652,183 @@ def get_personal_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
-    items = [_serialize_personal_item(row, tags) for row in rows]
+    active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
+    items = [_serialize_personal_item(row, tags, active_votes) for row in rows]
+    return {
+        "total": len(items),
+        "sort": safe_sort,
+        "limit": bounded_limit,
+        "offset": bounded_offset,
+        "items": items,
+    }
+
+
+def get_user_feed(
+    db: Session,
+    username: str,
+    viewer_user_id: UUID | None = None,
+    sort: str = "recent",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, object]:
+    safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
+    bounded_limit = max(1, min(limit, 100))
+    bounded_offset = max(0, offset)
+
+    user_row = db.execute(
+        select(users.c.id).where(users.c.username == username.strip().lower())
+    ).first()
+    if user_row is None:
+        return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+
+    user_id: UUID = user_row[0]
+    viewer_is_owner = viewer_user_id is not None and viewer_user_id == user_id
+
+    posts_q = (
+        select(
+            posts.c.id,
+            literal("post").label("entity_type"),
+            literal(None).label("slug"),
+            literal("Post").label("title"),
+            posts.c.body,
+            posts.c.audience,
+            posts.c.author_id,
+            users.c.username.label("author_username"),
+            _ZERO_INT.label("signal_count"),
+            posts.c.vote_count,
+            posts.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            posts.c.updated_at.label("last_activity_at"),
+            posts.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("location_label"),
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+        )
+        .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
+        .where(
+            posts.c.author_id == user_id,
+            posts.c.audience.in_(["public", "followers"]) if viewer_is_owner else posts.c.audience == "public",
+        )
+    )
+
+    threads_q = (
+        select(
+            threads.c.id,
+            literal("thread").label("entity_type"),
+            threads.c.slug,
+            threads.c.title,
+            threads.c.body,
+            literal(None).label("audience"),
+            threads.c.author_id,
+            users.c.username.label("author_username"),
+            _ZERO_INT.label("signal_count"),
+            threads.c.vote_count,
+            threads.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            threads.c.last_activity_at,
+            threads.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("location_label"),
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+        )
+        .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
+        .where(threads.c.author_id == user_id)
+    )
+
+    events_q = (
+        select(
+            events.c.id,
+            literal("event").label("entity_type"),
+            events.c.slug,
+            events.c.title,
+            events.c.description.label("body"),
+            literal(None).label("audience"),
+            events.c.created_by.label("author_id"),
+            users.c.username.label("author_username"),
+            _ZERO_INT.label("signal_count"),
+            events.c.vote_count,
+            events.c.comment_count,
+            events.c.member_count,
+            events.c.going_count,
+            events.c.last_activity_at,
+            events.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            events.c.location_label,
+            events.c.is_private,
+            events.c.scheduled_at,
+            events.c.time_label,
+        )
+        .select_from(events.outerjoin(users, users.c.id == events.c.created_by))
+        .where(events.c.created_by == user_id)
+    )
+
+    projects_q = (
+        select(
+            projects.c.id,
+            literal("project").label("entity_type"),
+            projects.c.slug,
+            projects.c.title,
+            projects.c.description.label("body"),
+            literal(None).label("audience"),
+            projects.c.author_id,
+            users.c.username.label("author_username"),
+            projects.c.signal_count,
+            projects.c.vote_count,
+            projects.c.comment_count,
+            projects.c.member_count,
+            _ZERO_INT.label("going_count"),
+            projects.c.last_activity_at,
+            projects.c.created_at,
+            projects.c.project_mode,
+            projects.c.project_subtype,
+            projects.c.stage_label,
+            projects.c.location_label,
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+        )
+        .select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
+        .where(projects.c.author_id == user_id, projects.c.is_closed.is_(False))
+    )
+
+    combined = union_all(posts_q, threads_q, events_q, projects_q).subquery("user_feed")
+
+    if safe_sort == "popular":
+        sort_col = (
+            combined.c.signal_count
+            + combined.c.vote_count
+            + combined.c.comment_count
+            + combined.c.member_count
+            + combined.c.going_count
+        ).desc()
+    else:
+        sort_col = combined.c.last_activity_at.desc()
+
+    rows = db.execute(
+        select(combined)
+        .order_by(sort_col, combined.c.created_at.desc())
+        .limit(bounded_limit)
+        .offset(bounded_offset)
+    ).mappings().all()
+
+    project_ids = [row["id"] for row in rows if row["entity_type"] == "project"]
+    thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
+    event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
+    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
+    active_votes = _fetch_active_votes_for_rows(db, rows, viewer_user_id)
+    items = [_serialize_personal_item(row, tags, active_votes) for row in rows]
     return {
         "total": len(items),
         "sort": safe_sort,
@@ -618,6 +845,7 @@ def get_scope_feed(
     sort: str = "recent",
     limit: int = 20,
     offset: int = 0,
+    current_user_id: UUID | None = None,
 ) -> dict[str, object]:
     safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
     bounded_limit = max(1, min(limit, 100))
@@ -630,7 +858,7 @@ def get_scope_feed(
         ).first()
         if row is None:
             return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
-        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[row[0]], community_ids=[])
+        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[row[0]], community_ids=[], current_user_id=current_user_id)
 
     if scope_kind == "community":
         row = db.execute(
@@ -638,6 +866,6 @@ def get_scope_feed(
         ).first()
         if row is None:
             return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
-        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[], community_ids=[row[0]])
+        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[], community_ids=[row[0]], current_user_id=current_user_id)
 
     return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}

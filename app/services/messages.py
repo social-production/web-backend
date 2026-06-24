@@ -11,7 +11,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.crypto.messages import decrypt_message, encrypt_message
-from app.models import conversation_members, conversations, messages, users
+from app.models import (
+    comments,
+    conversation_members,
+    conversations,
+    event_memberships,
+    events,
+    messages,
+    project_memberships,
+    projects,
+    users,
+)
 
 
 def _serialize_conversation(row: Mapping[str, object], participants: list[dict[str, object]]) -> dict[str, object]:
@@ -366,6 +376,93 @@ def rename_group_conversation(
     refreshed = _get_conversation_row(db, conversation_id)
     participants = _get_conversation_participants(db, conversation_id)
     return {"conversation": _serialize_conversation(refreshed, participants)}
+
+
+def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
+    event_rows = db.execute(
+        select(
+            events.c.id,
+            events.c.slug,
+            events.c.title,
+            events.c.last_activity_at,
+            events.c.comment_count,
+        )
+        .select_from(
+            event_memberships.join(events, event_memberships.c.event_id == events.c.id)
+        )
+        .where(event_memberships.c.user_id == current_user_id)
+        .order_by(events.c.last_activity_at.desc())
+    ).mappings().all()
+
+    project_rows = db.execute(
+        select(
+            projects.c.id,
+            projects.c.slug,
+            projects.c.title,
+            projects.c.last_activity_at,
+            projects.c.comment_count,
+        )
+        .select_from(
+            project_memberships.join(projects, project_memberships.c.project_id == projects.c.id)
+        )
+        .where(project_memberships.c.user_id == current_user_id)
+        .order_by(projects.c.last_activity_at.desc())
+    ).mappings().all()
+
+    items = []
+
+    for row in event_rows:
+        last_comment = db.execute(
+            select(comments.c.body, comments.c.created_at)
+            .where(
+                comments.c.subject_type == "event",
+                comments.c.subject_id == row["id"],
+            )
+            .order_by(comments.c.created_at.desc())
+            .limit(1)
+        ).mappings().first()
+
+        items.append({
+            "id": str(row["id"]),
+            "kind": "event",
+            "entity_id": str(row["id"]),
+            "entity_slug": row["slug"],
+            "title": row["title"],
+            "preview": last_comment["body"][:200] if last_comment else "",
+            "last_message_at": _iso(last_comment["created_at"]) if last_comment else _iso(row["last_activity_at"]),
+            "comment_count": row["comment_count"],
+        })
+
+    for row in project_rows:
+        last_comment = db.execute(
+            select(comments.c.body, comments.c.created_at)
+            .where(
+                comments.c.subject_type == "project",
+                comments.c.subject_id == row["id"],
+            )
+            .order_by(comments.c.created_at.desc())
+            .limit(1)
+        ).mappings().first()
+
+        items.append({
+            "id": str(row["id"]),
+            "kind": "project",
+            "entity_id": str(row["id"]),
+            "entity_slug": row["slug"],
+            "title": row["title"],
+            "preview": last_comment["body"][:200] if last_comment else "",
+            "last_message_at": _iso(last_comment["created_at"]) if last_comment else _iso(row["last_activity_at"]),
+            "comment_count": row["comment_count"],
+        })
+
+    items.sort(key=lambda x: x["last_message_at"], reverse=True)
+    return {"total": len(items), "items": items}
+
+
+def _iso(dt) -> str:
+    if dt is None:
+        return ""
+    return dt.isoformat()
 
 
 def add_group_member(

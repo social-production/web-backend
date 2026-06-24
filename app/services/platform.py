@@ -156,7 +156,7 @@ def get_platform_page(
 
     channel = _get_platform_channel(db)
     channel_id = channel["id"] if channel is not None else None
-    board = list_board_standing(db)
+    board = list_board_standing(db, viewer_user_id=viewer_user_id)
 
     candidacy_options: dict[str, object] | None = None
     if viewer_user_id is not None:
@@ -168,7 +168,7 @@ def get_platform_page(
         viewer_state = membership_row["standing_state"] if membership_row is not None else None
         candidacy_options = {
             "viewer_state": viewer_state,
-            "can_volunteer": viewer_state != "member",
+            "can_volunteer": viewer_state is None,
         }
 
     return {
@@ -178,9 +178,9 @@ def get_platform_page(
             "name": channel["name"],
             "description": channel["description"],
         } if channel is not None else None,
-        "board_members": board["members"],
-        "board_candidates": board["candidates"],
-        "board_candidacy_options": candidacy_options,
+        "moderators": board["members"],
+        "moderator_candidates": board["candidates"],
+        "moderator_candidacy_options": candidacy_options,
         "feed": _build_platform_feed(
             db=db,
             channel_id=channel_id,

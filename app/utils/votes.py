@@ -9,11 +9,11 @@ from redis import Redis as SyncRedis
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.cache import get_sync_redis_client
 from app.models import channels, event_memberships, event_tags, meaningful_actions, project_memberships
 
 WEEKLY_ACTIVE_CACHE_KEY = "governance:weekly_active"
-WEEKLY_ACTIVE_CACHE_TTL_SECONDS = 3600
+WEEKLY_ACTIVE_CACHE_TTL_SECONDS = 300
 PLATFORM_CHANNEL_SLUG = "platform"
 
 
@@ -35,8 +35,7 @@ def required_votes(n: int) -> int:
 
 @lru_cache(maxsize=1)
 def _redis_client() -> SyncRedis:
-    settings = get_settings()
-    return SyncRedis.from_url(settings.redis_url, decode_responses=True)
+    return get_sync_redis_client()
 
 
 def _week_ago() -> datetime:
@@ -52,7 +51,7 @@ def weekly_active_users_global(db: Session) -> int:
         pass
 
     total = db.execute(
-        select(func.count(func.distinct(meaningful_actions.c.user_id))).where(
+        select(func.count(meaningful_actions.c.user_id.distinct())).where(
             meaningful_actions.c.occurred_at >= _week_ago()
         )
     ).scalar_one()
@@ -76,7 +75,7 @@ def weekly_active_project_members(db: Session, project_id: UUID) -> int:
         pass
 
     total = db.execute(
-        select(func.count(func.distinct(meaningful_actions.c.user_id)))
+        select(func.count(meaningful_actions.c.user_id.distinct()))
         .select_from(
             meaningful_actions.join(
                 project_memberships,
@@ -108,7 +107,7 @@ def weekly_active_event_members(db: Session, event_id: UUID) -> int:
         pass
 
     total = db.execute(
-        select(func.count(func.distinct(meaningful_actions.c.user_id)))
+        select(func.count(meaningful_actions.c.user_id.distinct()))
         .select_from(
             meaningful_actions.join(
                 event_memberships,

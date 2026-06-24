@@ -14,6 +14,7 @@ from app.models import (
     project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
+    project_plans,
     project_update_request_votes,
     project_update_requests,
     project_updates,
@@ -28,13 +29,13 @@ APPROVAL_THRESHOLD = 0.66
 VALID_PHASE_IDS = frozenset({"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"})
 VALID_VOTES = frozenset({"yes", "no"})
 STAGE_LABEL_BY_PHASE_ID = {
-    "phase-1": "proposal",
-    "phase-2": "production-plan",
-    "phase-3": "distribution-plan",
-    "phase-4": "acquisition",
-    "phase-5": "activity",
-    "phase-6": "pending-execution",
-    "phase-7": "closed",
+    "phase-1": "Discovery",
+    "phase-2": "Production Plan",
+    "phase-3": "Distribution Plan",
+    "phase-4": "Acquisition",
+    "phase-5": "Activity",
+    "phase-6": "Pending Execution",
+    "phase-7": "Closed",
 }
 
 PHASE_ORDER = {phase_id: index for index, phase_id in enumerate(sorted(VALID_PHASE_IDS), start=1)}
@@ -94,6 +95,15 @@ def _compute_simple_vote_summary(
     votes_required = required_votes(member_count)
     meets_quorum = total_votes >= votes_required
     meets_approval = approval_ratio >= APPROVAL_THRESHOLD
+    is_passing = meets_quorum and meets_approval
+
+    remaining_eligible = max(0, member_count - total_votes)
+    max_yes = yes_count + remaining_eligible
+    max_total = total_votes + remaining_eligible
+    can_meet_quorum = max_total >= votes_required
+    can_meet_approval = (max_yes / max_total * 100.0) >= (APPROVAL_THRESHOLD * 100.0) if max_total > 0 else False
+    can_still_pass = (not is_passing) and can_meet_quorum and can_meet_approval
+
     return {
         "yes_count": yes_count,
         "no_count": no_count,
@@ -104,7 +114,8 @@ def _compute_simple_vote_summary(
         "member_count": member_count,
         "meets_quorum": meets_quorum,
         "meets_approval": meets_approval,
-        "is_passing": meets_quorum and meets_approval,
+        "is_passing": is_passing,
+        "can_still_pass": can_still_pass,
     }
 
 
@@ -170,6 +181,14 @@ def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> d
     votes_required = required_votes(member_count)
     meets_quorum = total_votes >= votes_required
     meets_approval = approval_ratio >= APPROVAL_THRESHOLD
+    is_passing = meets_quorum and meets_approval
+
+    remaining_eligible = max(0, member_count - total_votes)
+    max_yes = yes_count + remaining_eligible
+    max_total = total_votes + remaining_eligible
+    can_meet_quorum = max_total >= votes_required
+    can_meet_approval = (max_yes / max_total * 100.0) >= (APPROVAL_THRESHOLD * 100.0) if max_total > 0 else False
+    can_still_pass = (not is_passing) and can_meet_quorum and can_meet_approval
 
     return {
         "yes_count": yes_count,
@@ -181,7 +200,8 @@ def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> d
         "member_count": member_count,
         "meets_quorum": meets_quorum,
         "meets_approval": meets_approval,
-        "is_passing": meets_quorum and meets_approval,
+        "is_passing": is_passing,
+        "can_still_pass": can_still_pass,
     }
 
 
@@ -340,6 +360,15 @@ def vote_phase_change_request(
                 .values(status="approved")
             )
             db.execute(
+                update(project_phase_change_requests)
+                .where(
+                    project_phase_change_requests.c.project_id == project_row["id"],
+                    project_phase_change_requests.c.id != request_id,
+                    project_phase_change_requests.c.status == "open",
+                )
+                .values(status="closed")
+            )
+            db.execute(
                 update(projects)
                 .where(projects.c.id == project_row["id"])
                 .values(
@@ -348,6 +377,12 @@ def vote_phase_change_request(
                 )
             )
             executed = True
+        elif not summary.get("can_still_pass", True):
+            db.execute(
+                update(project_phase_change_requests)
+                .where(project_phase_change_requests.c.id == request_id)
+                .values(status="rejected")
+            )
 
         db.commit()
     except IntegrityError as exc:
@@ -489,6 +524,12 @@ def vote_project_update_request(
                 )
             )
             executed = True
+        elif not summary.get("can_still_pass", True):
+            db.execute(
+                update(project_update_requests)
+                .where(project_update_requests.c.id == request_id)
+                .values(status="rejected")
+            )
 
         db.commit()
     except IntegrityError as exc:
@@ -620,6 +661,12 @@ def vote_project_edit_request(
                 )
             )
             executed = True
+        elif not summary.get("can_still_pass", True):
+            db.execute(
+                update(project_edit_requests)
+                .where(project_edit_requests.c.id == request_id)
+                .values(status="rejected")
+            )
 
         db.commit()
     except IntegrityError as exc:
@@ -861,13 +908,31 @@ def advance_project_phase(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="close_note is required when closing a project")
 
     try:
+        update_values: dict[str, object] = {
+            "current_phase_id": next_phase_id,
+            "stage_label": STAGE_LABEL_BY_PHASE_ID.get(next_phase_id, "proposal"),
+        }
+
+        # When advancing from proposal to production-plan, copy the subtype from
+        # the winning plan's payload into the project record.
+        if current_phase_id == "phase-1" and next_phase_id == "phase-2":
+            winning_plan = db.execute(
+                select(project_plans.c.plan_payload)
+                .where(
+                    project_plans.c.project_id == project_row["id"],
+                    project_plans.c.is_leading.is_(True),
+                )
+                .limit(1)
+            ).mappings().first()
+            if winning_plan:
+                plan_subtype = winning_plan["plan_payload"].get("projectSubtype")
+                if plan_subtype:
+                    update_values["project_subtype"] = plan_subtype
+
         db.execute(
             update(projects)
             .where(projects.c.id == project_row["id"])
-            .values(
-                current_phase_id=next_phase_id,
-                stage_label=STAGE_LABEL_BY_PHASE_ID.get(next_phase_id, "proposal"),
-            )
+            .values(**update_values)
         )
 
         if next_phase_id == "phase-7" and note:
@@ -880,6 +945,12 @@ def advance_project_phase(
                 )
             )
 
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="advance-project-phase",
+            metadata={"project_slug": project_slug, "from": current_phase_id, "to": next_phase_id},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()

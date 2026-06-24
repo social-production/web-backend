@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     comments,
     content_votes,
+    events,
     platform_board_memberships,
     posts,
     project_memberships,
@@ -18,12 +19,13 @@ from app.models import (
     report_votes,
     reports,
     threads,
+    users,
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.utils.votes import required_votes
 
-COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post"})
-VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment"})
+COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project"})
+VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "event", "project"})
 REPORTABLE_TARGET_TYPES = frozenset({"project", "thread", "post", "comment"})
 REPORT_REASONS = frozenset({"spam", "serious-harm"})
 REPORT_VOTES = frozenset({"yes", "no"})
@@ -108,15 +110,17 @@ def _report_vote_summary(db: Session, report_id: UUID, current_user_id: UUID | N
     }
 
 
-def _serialize_comment(row: Mapping[str, object], replies: list[dict[str, object]] | None = None) -> dict[str, object]:
+def _serialize_comment(row: Mapping[str, object], replies: list[dict[str, object]] | None = None, active_vote: int = 0) -> dict[str, object]:
     return {
         "id": row["id"],
         "subject_type": row["subject_type"],
         "subject_id": row["subject_id"],
         "parent_id": row["parent_id"],
         "author_id": row["author_id"],
+        "author_username": row.get("author_username", "") or "",
         "body": row["body"],
         "vote_count": row["vote_count"],
+        "active_vote": active_vote,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "replies": replies or [],
@@ -128,6 +132,10 @@ def _ensure_subject_exists(db: Session, subject_type: str, subject_id: UUID) -> 
         exists = db.execute(select(threads.c.id).where(threads.c.id == subject_id)).first()
     elif subject_type == "post":
         exists = db.execute(select(posts.c.id).where(posts.c.id == subject_id)).first()
+    elif subject_type == "event":
+        exists = db.execute(select(events.c.id).where(events.c.id == subject_id)).first()
+    elif subject_type == "project":
+        exists = db.execute(select(projects.c.id).where(projects.c.id == subject_id)).first()
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid subject_type")
 
@@ -142,6 +150,10 @@ def _ensure_vote_target_exists(db: Session, target_type: str, target_id: UUID) -
         exists = db.execute(select(posts.c.id).where(posts.c.id == target_id)).first()
     elif target_type == "comment":
         exists = db.execute(select(comments.c.id).where(comments.c.id == target_id)).first()
+    elif target_type == "event":
+        exists = db.execute(select(events.c.id).where(events.c.id == target_id)).first()
+    elif target_type == "project":
+        exists = db.execute(select(projects.c.id).where(projects.c.id == target_id)).first()
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid target_type")
 
@@ -156,6 +168,18 @@ def _update_subject_comment_count(db: Session, subject_type: str, subject_id: UU
                 update(threads)
                 .where(threads.c.id == subject_id)
                 .values(comment_count=threads.c.comment_count + delta)
+            )
+        elif subject_type == "event":
+            db.execute(
+                update(events)
+                .where(events.c.id == subject_id)
+                .values(comment_count=events.c.comment_count + delta)
+            )
+        elif subject_type == "project":
+            db.execute(
+                update(projects)
+                .where(projects.c.id == subject_id)
+                .values(comment_count=projects.c.comment_count + delta)
             )
         else:
             db.execute(
@@ -184,6 +208,18 @@ def _apply_vote_count_delta(db: Session, target_type: str, target_id: UUID, delt
                 update(posts)
                 .where(posts.c.id == target_id)
                 .values(vote_count=posts.c.vote_count + delta)
+            )
+        elif target_type == "event":
+            db.execute(
+                update(events)
+                .where(events.c.id == target_id)
+                .values(vote_count=events.c.vote_count + delta)
+            )
+        elif target_type == "project":
+            db.execute(
+                update(projects)
+                .where(projects.c.id == target_id)
+                .values(vote_count=projects.c.vote_count + delta)
             )
         else:
             db.execute(
@@ -221,11 +257,6 @@ def add_comment(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Parent comment must belong to the same subject",
-            )
-        if parent["parent_id"] is not None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Comments support only one level of replies",
             )
 
     try:
@@ -274,6 +305,7 @@ def get_comments(
     db: Session,
     subject_type: str,
     subject_id: UUID,
+    current_user_id: UUID | None = None,
 ) -> dict[str, object]:
     normalized_subject_type = subject_type.strip().lower()
     if normalized_subject_type not in COMMENTABLE_SUBJECT_TYPES:
@@ -285,7 +317,8 @@ def get_comments(
     _ensure_subject_exists(db, normalized_subject_type, subject_id)
 
     rows = db.execute(
-        select(comments)
+        select(comments, users.c.username.label("author_username"))
+        .select_from(comments.outerjoin(users, users.c.id == comments.c.author_id))
         .where(
             comments.c.subject_type == normalized_subject_type,
             comments.c.subject_id == subject_id,
@@ -293,24 +326,42 @@ def get_comments(
         .order_by(comments.c.created_at.asc())
     ).mappings().all()
 
+    # Bulk-query the viewer's votes on all comments
+    active_votes: dict[UUID, int] = {}
+    if current_user_id is not None and rows:
+        vote_rows = db.execute(
+            select(content_votes.c.target_id, content_votes.c.direction).where(
+                content_votes.c.target_type == "comment",
+                content_votes.c.target_id.in_([row["id"] for row in rows]),
+                content_votes.c.voter_id == current_user_id,
+            )
+        ).all()
+        active_votes = {target_id: int(direction) for target_id, direction in vote_rows}
+
     top_level: dict[UUID, dict[str, object]] = {}
-    ordered_top_level_ids: list[UUID] = []
+    all_comments: dict[UUID, dict[str, object]] = {}
+    children: dict[UUID | None, list[UUID]] = {}
+    ordered_ids: list[UUID] = []
 
     for row in rows:
-        if row["parent_id"] is None:
-            item = _serialize_comment(row, replies=[])
-            top_level[row["id"]] = item
-            ordered_top_level_ids.append(row["id"])
+        item = _serialize_comment(row, replies=[], active_vote=active_votes.get(row["id"], 0))
+        all_comments[row["id"]] = item
+        parent_key = row["parent_id"]
+        if parent_key not in children:
+            children[parent_key] = []
+        children[parent_key].append(row["id"])
 
-    for row in rows:
-        parent_id = row["parent_id"]
-        if parent_id is None:
-            continue
-        parent = top_level.get(parent_id)
-        if parent is not None:
-            parent["replies"].append(_serialize_comment(row))
+    def build_tree(node_id: UUID) -> dict[str, object]:
+        node = all_comments[node_id]
+        for child_id in children.get(node_id, []):
+            node["replies"].append(build_tree(child_id))
+        return node
 
-    items = [top_level[item_id] for item_id in ordered_top_level_ids]
+    for root_id in children.get(None, []):
+        ordered_ids.append(root_id)
+        top_level[root_id] = all_comments[root_id]
+
+    items = [build_tree(item_id) for item_id in ordered_ids]
     total = len(rows)
 
     return {

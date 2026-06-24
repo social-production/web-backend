@@ -11,7 +11,7 @@ from sqlalchemy import case, delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.cache import get_sync_redis_client
 from app.models import board_standing_votes, meaningful_actions, platform_board_memberships, users
 from app.services.meaningful_actions import record_meaningful_action
 from app.utils.votes import required_votes
@@ -21,14 +21,12 @@ BOARD_STATE_CANDIDATE = "candidate"
 VALID_BOARD_STATES = frozenset({BOARD_STATE_MEMBER, BOARD_STATE_CANDIDATE})
 MIN_APPROVAL_RATIO = 0.66
 VOTE_VALUE_MAP = {"yes": 1, "no": -1}
-WEEKLY_ACTIVE_CACHE_KEY = "governance:weekly_active"
+WEEKLY_ACTIVE_CACHE_KEY = "board:weekly_active"
 WEEKLY_ACTIVE_CACHE_TTL_SECONDS = 3600
 
 
-@lru_cache(maxsize=1)
 def _redis_client() -> SyncRedis:
-    settings = get_settings()
-    return SyncRedis.from_url(settings.redis_url, decode_responses=True)
+    return get_sync_redis_client()
 
 
 def _weekly_active_users(db: Session) -> int:
@@ -41,12 +39,15 @@ def _weekly_active_users(db: Session) -> int:
         pass
 
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    total = db.execute(
-        select(func.count(func.distinct(meaningful_actions.c.user_id))).where(
-            meaningful_actions.c.occurred_at >= week_ago
-        )
-    ).scalar_one()
-    computed = int(total or 0)
+    try:
+        total = db.execute(
+            select(func.count(meaningful_actions.c.user_id.distinct())).where(
+                meaningful_actions.c.occurred_at >= week_ago
+            )
+        ).scalar_one()
+        computed = int(total or 0)
+    except Exception:
+        computed = 0
 
     try:
         _redis_client().setex(WEEKLY_ACTIVE_CACHE_KEY, WEEKLY_ACTIVE_CACHE_TTL_SECONDS, computed)
@@ -79,7 +80,7 @@ def _vote_stats_map(db: Session, target_user_ids: list[UUID]) -> dict[UUID, dict
         yes_count = int(row["yes_count"] or 0)
         no_count = int(row["no_count"] or 0)
         vote_count = yes_count + no_count
-        approval_ratio = (yes_count / vote_count) if vote_count > 0 else 1.0
+        approval_ratio = (yes_count / vote_count) if vote_count > 0 else 0.0
         stats[row["target_user_id"]] = {
             "yes_count": yes_count,
             "no_count": no_count,
@@ -111,7 +112,7 @@ def _remove_unqualified_members(db: Session) -> tuple[list[UUID], int, int]:
     for member_id in member_ids:
         member_stats = stats.get(
             member_id,
-            {"yes_count": 0, "no_count": 0, "vote_count": 0, "approval_ratio": 1.0},
+            {"yes_count": 0, "no_count": 0, "vote_count": 0, "approval_ratio": 0.0},
         )
         vote_count = int(member_stats["vote_count"])
         approval_ratio = float(member_stats["approval_ratio"])
@@ -137,11 +138,14 @@ def _remove_unqualified_members(db: Session) -> tuple[list[UUID], int, int]:
 def _serialize_board_profile(
     row: Mapping[str, object],
     stats_map: dict[UUID, dict[str, object]],
+    required_quorum: int = 0,
+    weekly_active_users: int = 0,
+    active_vote: str | None = None,
 ) -> dict[str, object]:
     user_id = row["user_id"]
     stats = stats_map.get(
         user_id,
-        {"yes_count": 0, "no_count": 0, "vote_count": 0, "approval_ratio": 1.0},
+        {"yes_count": 0, "no_count": 0, "vote_count": 0, "approval_ratio": 0.0},
     )
 
     return {
@@ -153,6 +157,9 @@ def _serialize_board_profile(
         "no_count": int(stats["no_count"]),
         "vote_count": int(stats["vote_count"]),
         "approval_ratio": float(stats["approval_ratio"]),
+        "required_quorum": required_quorum,
+        "weekly_active_users": weekly_active_users,
+        "active_vote": {"1": "yes", "-1": "no", "yes": "yes", "no": "no"}.get(str(active_vote)) if active_vote else None,
     }
 
 
@@ -194,6 +201,12 @@ def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, obje
             )
 
         removed_member_ids, weekly_active_users, required_quorum = _remove_unqualified_members(db)
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="volunteer-board",
+            metadata={"standing_state": BOARD_STATE_CANDIDATE},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -213,6 +226,26 @@ def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, obje
     }
 
 
+def remove_volunteer(db: Session, current_user_id: UUID) -> dict[str, object]:
+    row = db.execute(
+        select(platform_board_memberships.c.user_id).where(
+            platform_board_memberships.c.user_id == current_user_id,
+            platform_board_memberships.c.standing_state == "candidate",
+        )
+    ).first()
+    if row is None:
+        return {"removed": False, "detail": "Not a volunteer candidate"}
+
+    db.execute(
+        delete(platform_board_memberships).where(
+            platform_board_memberships.c.user_id == current_user_id,
+            platform_board_memberships.c.standing_state == "candidate",
+        )
+    )
+    db.commit()
+    return {"removed": True}
+
+
 def cast_standing_vote(
     db: Session,
     current_user_id: UUID,
@@ -220,6 +253,33 @@ def cast_standing_vote(
     vote: str,
 ) -> dict[str, object]:
     normalized_vote = vote.strip().lower()
+    if normalized_vote == "neutral":
+        # Remove existing vote
+        try:
+            db.execute(
+                delete(board_standing_votes).where(
+                    board_standing_votes.c.target_user_id == target_user_id,
+                    board_standing_votes.c.voter_id == current_user_id,
+                )
+            )
+            removed_member_ids, weekly_active_users, required_quorum = _remove_unqualified_members(db)
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not remove vote") from exc
+
+        return {
+            "target_user_id": target_user_id,
+            "vote": "neutral",
+            "yes_count": 0,
+            "no_count": 0,
+            "vote_count": 0,
+            "approval_ratio": 0.0,
+            "weekly_active_users": weekly_active_users,
+            "required_quorum": required_quorum,
+            "removed_member_ids": removed_member_ids,
+        }
+
     if normalized_vote not in VOTE_VALUE_MAP:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -279,7 +339,7 @@ def cast_standing_vote(
     stats_map = _vote_stats_map(db, [target_user_id])
     target_stats = stats_map.get(
         target_user_id,
-        {"yes_count": 0, "no_count": 0, "vote_count": 0, "approval_ratio": 1.0},
+        {"yes_count": 0, "no_count": 0, "vote_count": 0, "approval_ratio": 0.0},
     )
 
     return {
@@ -295,7 +355,10 @@ def cast_standing_vote(
     }
 
 
-def list_board_standing(db: Session) -> dict[str, object]:
+def list_board_standing(
+    db: Session,
+    viewer_user_id: UUID | None = None,
+) -> dict[str, object]:
     removed_member_ids, weekly_active_users, required_quorum = _remove_unqualified_members(db)
     if removed_member_ids:
         db.commit()
@@ -303,11 +366,26 @@ def list_board_standing(db: Session) -> dict[str, object]:
     rows = _board_rows_with_users(db)
     stats_map = _vote_stats_map(db, [row["user_id"] for row in rows])
 
+    # Build a map of viewer's votes per target user
+    active_votes: dict[UUID, str] = {}
+    if viewer_user_id is not None:
+        vote_rows = db.execute(
+            select(board_standing_votes.c.target_user_id, board_standing_votes.c.vote)
+            .where(board_standing_votes.c.voter_id == viewer_user_id)
+        ).all()
+        for target_user_id, vote in vote_rows:
+            active_votes[target_user_id] = vote
+
     members: list[dict[str, object]] = []
     candidates: list[dict[str, object]] = []
 
     for row in rows:
-        serialized = _serialize_board_profile(row, stats_map)
+        serialized = _serialize_board_profile(
+            row, stats_map,
+            required_quorum=required_quorum,
+            weekly_active_users=weekly_active_users,
+            active_vote=active_votes.get(row["user_id"]),
+        )
         if row["standing_state"] == BOARD_STATE_MEMBER:
             members.append(serialized)
         elif row["standing_state"] == BOARD_STATE_CANDIDATE:

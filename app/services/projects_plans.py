@@ -171,6 +171,12 @@ def submit_project_plan(
                 project_plans.c.updated_at,
             )
         ).mappings().one()
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="submit-project-plan",
+            metadata={"project_slug": project_slug, "plan_id": str(created["id"])},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()

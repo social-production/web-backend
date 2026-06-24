@@ -11,6 +11,7 @@ from app.dependencies import get_db
 from app.services.messages import (
     add_group_member,
     create_group_conversation,
+    get_linked_chats,
     get_messages_for_conversation,
     list_conversations,
     mark_conversation_as_read,
@@ -102,6 +103,22 @@ class ConversationReadResponse(BaseModel):
     ok: bool
     conversation_id: UUID
     last_read_at: object
+
+
+class LinkedChatOut(BaseModel):
+    id: str
+    kind: str
+    entity_id: str
+    entity_slug: str
+    title: str
+    preview: str
+    last_message_at: str
+    comment_count: int
+
+
+class LinkedChatsListResponse(BaseModel):
+    total: int
+    items: list[LinkedChatOut]
 
 
 @router.post("/direct", response_model=ConversationResponse)
@@ -223,3 +240,11 @@ def remove_member_from_group(
         conversation_id=conversation_id,
         username=username,
     )
+
+
+@router.get("/linked-chats", response_model=LinkedChatsListResponse)
+def list_linked_chats(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_linked_chats(db=db, current_user_id=current_user_id)

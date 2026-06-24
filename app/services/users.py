@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import user_follows, user_settings, users
+from app.services.meaningful_actions import record_meaningful_action
 
 
 USER_SETTINGS_FIELDS = {
@@ -131,6 +132,12 @@ def follow_user(db: Session, current_user_id: UUID, username: str) -> dict[str, 
                 followed_id=target_user_id,
                 status="accepted",
             )
+        )
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="follow-user",
+            metadata={"target_user_id": str(target_user_id), "target_username": target_user["username"]},
         )
         db.commit()
     except IntegrityError:

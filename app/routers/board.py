@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
-from app.services.board import cast_standing_vote, list_board_standing, volunteer_as_candidate
+from app.services.board import cast_standing_vote, list_board_standing, remove_volunteer, volunteer_as_candidate
 
 router = APIRouter(prefix="/board", tags=["board"])
 
@@ -22,6 +22,9 @@ class BoardProfileOut(BaseModel):
     no_count: int
     vote_count: int
     approval_ratio: float
+    required_quorum: int = 0
+    weekly_active_users: int = 0
+    active_vote: str | None = None
 
 
 class VolunteerResponse(BaseModel):
@@ -35,7 +38,7 @@ class StandingVoteRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     target_user_id: UUID
-    vote: str = Field(pattern="^(yes|no)$")
+    vote: str = Field(pattern="^(yes|no|neutral)$")
 
 
 class StandingVoteResponse(BaseModel):
@@ -68,6 +71,14 @@ def volunteer(
     return volunteer_as_candidate(db=db, current_user_id=current_user_id)
 
 
+@router.delete("/volunteer", response_model=dict)
+def unvolunteer(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return remove_volunteer(db=db, current_user_id=current_user_id)
+
+
 @router.post("/votes", response_model=StandingVoteResponse)
 def cast_vote(
     payload: StandingVoteRequest,
@@ -83,5 +94,8 @@ def cast_vote(
 
 
 @router.get("", response_model=BoardStandingListResponse)
-def list_board(db: Session = Depends(get_db)) -> dict[str, object]:
-    return list_board_standing(db=db)
+def list_board(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return list_board_standing(db=db, viewer_user_id=current_user_id)

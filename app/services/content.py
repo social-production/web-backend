@@ -9,7 +9,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import channels, communities, posts, thread_tags, threads, users
+from app.models import channels, communities, content_votes, posts, thread_tags, threads, users
 from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
@@ -136,6 +136,24 @@ def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
     return [row["id"] for row in rows]
 
 
+def _resolve_community_ids(db: Session, community_slugs: list[str]) -> list[UUID]:
+    """Return the UUIDs for the given community slugs, raising 422 for any unknown slug."""
+    normalized = [s.strip().lower() for s in community_slugs if s.strip()]
+    if not normalized:
+        return []
+    rows = db.execute(
+        select(communities.c.id, communities.c.slug).where(communities.c.slug.in_(normalized))
+    ).mappings().all()
+    found_slugs = {row["slug"] for row in rows}
+    missing = set(normalized) - found_slugs
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown community slugs: {sorted(missing)}",
+        )
+    return [row["id"] for row in rows]
+
+
 def create_thread(
     db: Session,
     current_user_id: UUID,
@@ -143,18 +161,21 @@ def create_thread(
     title: str,
     body: str,
     channel_slugs: list[str],
+    community_slugs: list[str] | None = None,
 ) -> dict[str, object]:
     normalized_slug = slug.strip().lower()
     if not normalized_slug:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required")
 
-    if not channel_slugs:
+    community_slugs = community_slugs or []
+    if not channel_slugs and not community_slugs:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Threads require at least one channel tag",
+            detail="Threads require at least one channel or community tag",
         )
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
+    community_ids = _resolve_community_ids(db, community_slugs)
 
     now = datetime.now(timezone.utc)
 
@@ -192,6 +213,22 @@ def create_thread(
                 )
             )
 
+        for community_id in community_ids:
+            db.execute(
+                insert(thread_tags).values(
+                    thread_id=thread_row["id"],
+                    tag_kind="community",
+                    channel_id=None,
+                    community_id=community_id,
+                )
+            )
+
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="create-thread",
+            metadata={"thread_id": str(thread_row["id"]), "slug": thread_row["slug"]},
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -210,7 +247,7 @@ def create_thread(
     return {"thread": _serialize_thread(thread_row, tags)}
 
 
-def get_thread_by_slug(db: Session, slug: str) -> dict[str, object]:
+def get_thread_by_slug(db: Session, slug: str, current_user_id: UUID | None = None) -> dict[str, object]:
     row = db.execute(
         select(
             threads.c.id, threads.c.slug, threads.c.title, threads.c.body,
@@ -224,8 +261,20 @@ def get_thread_by_slug(db: Session, slug: str) -> dict[str, object]:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
+    active_vote = 0
+    if current_user_id is not None:
+        vote_row = db.execute(
+            select(content_votes.c.direction).where(
+                content_votes.c.target_type == "thread",
+                content_votes.c.target_id == row["id"],
+                content_votes.c.voter_id == current_user_id,
+            )
+        ).first()
+        if vote_row is not None:
+            active_vote = int(vote_row[0])
+
     channel_tags, community_tags = _get_thread_tags_enriched(db, row["id"])
-    comments_result = get_comments(db, subject_type="thread", subject_id=row["id"])
+    comments_result = get_comments(db, subject_type="thread", subject_id=row["id"], current_user_id=current_user_id)
     discussion = _attach_usernames_to_comments(db, comments_result["items"])
 
     return {
@@ -241,6 +290,7 @@ def get_thread_by_slug(db: Session, slug: str) -> dict[str, object]:
             "last_activity_at": row["last_activity_at"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "active_vote": active_vote,
             "channel_tags": channel_tags,
             "community_tags": community_tags,
             "discussion": discussion,
@@ -294,7 +344,7 @@ def create_post(
     return {"post": _serialize_post(post_row)}
 
 
-def get_post_by_id(db: Session, post_id: UUID) -> dict[str, object]:
+def get_post_by_id(db: Session, post_id: UUID, current_user_id: UUID | None = None) -> dict[str, object]:
     row = db.execute(
         select(
             posts.c.id, posts.c.author_id, posts.c.body, posts.c.audience,
@@ -308,7 +358,19 @@ def get_post_by_id(db: Session, post_id: UUID) -> dict[str, object]:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
 
-    comments_result = get_comments(db, subject_type="post", subject_id=row["id"])
+    active_vote = 0
+    if current_user_id is not None:
+        vote_row = db.execute(
+            select(content_votes.c.direction).where(
+                content_votes.c.target_type == "post",
+                content_votes.c.target_id == row["id"],
+                content_votes.c.voter_id == current_user_id,
+            )
+        ).first()
+        if vote_row is not None:
+            active_vote = int(vote_row[0])
+
+    comments_result = get_comments(db, subject_type="post", subject_id=row["id"], current_user_id=current_user_id)
     discussion = _attach_usernames_to_comments(db, comments_result["items"])
 
     return {
@@ -323,6 +385,7 @@ def get_post_by_id(db: Session, post_id: UUID) -> dict[str, object]:
             "comment_count": row["comment_count"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "active_vote": active_vote,
             "discussion": discussion,
         }
     }

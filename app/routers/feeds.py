@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_db
-from app.services.feeds import get_home_feed, get_personal_feed, get_public_feed, get_scope_feed
+from app.services.feeds import get_home_feed, get_personal_feed, get_public_feed, get_scope_feed, get_user_feed
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
 
@@ -25,6 +26,7 @@ class FeedItemOut(BaseModel):
     slug: str | None = None
     title: str
     body: str
+    audience: str | None = None
     author_id: UUID | None = None
     author_username: str | None = None
     signal_count: int
@@ -41,6 +43,7 @@ class FeedItemOut(BaseModel):
     is_private: bool = False
     scheduled_at: object = None
     time_label: str | None = None
+    active_vote: int = 0
     channel_tags: list[TagRefOut] = Field(default_factory=list)
     community_tags: list[TagRefOut] = Field(default_factory=list)
 
@@ -53,14 +56,36 @@ class FeedResponse(BaseModel):
     items: list[FeedItemOut]
 
 
+async def _get_optional_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> UUID | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    try:
+        payload = await get_current_user_token_payload(credentials)
+    except HTTPException:
+        return None
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None
+
+
 @router.get("/public", response_model=FeedResponse)
 def public_feed(
     sort: str = Query(default="recent", pattern="^(popular|recent)$"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    current_user_id: UUID | None = Depends(_get_optional_user_id),
 ) -> dict[str, object]:
-    return get_public_feed(db=db, sort=sort, limit=limit, offset=offset)
+    return get_public_feed(db=db, sort=sort, limit=limit, offset=offset, current_user_id=current_user_id)
 
 
 @router.get("/home", response_model=FeedResponse)
@@ -105,5 +130,25 @@ def scope_feed(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    current_user_id: UUID | None = Depends(_get_optional_user_id),
 ) -> dict[str, object]:
-    return get_scope_feed(db=db, scope_kind=kind, slug=slug, sort=sort, limit=limit, offset=offset)
+    return get_scope_feed(db=db, scope_kind=kind, slug=slug, sort=sort, limit=limit, offset=offset, current_user_id=current_user_id)
+
+
+@router.get("/user/{username}", response_model=FeedResponse)
+def user_feed(
+    username: str,
+    sort: str = Query(default="recent", pattern="^(popular|recent)$"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    viewer_user_id: UUID | None = Depends(_get_optional_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_user_feed(
+        db=db,
+        username=username,
+        viewer_user_id=viewer_user_id,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )

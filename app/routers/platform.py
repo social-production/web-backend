@@ -30,6 +30,9 @@ class PlatformBoardPersonOut(BaseModel):
     no_count: int
     vote_count: int
     approval_ratio: float
+    required_quorum: int = 0
+    weekly_active_users: int = 0
+    active_vote: str | None = None
 
 
 class PlatformCandidacyOptionsOut(BaseModel):
@@ -63,9 +66,9 @@ class PlatformFeedOut(BaseModel):
 
 class PlatformPageResponse(BaseModel):
     channel: PlatformChannelOut | None = None
-    board_members: list[PlatformBoardPersonOut]
-    board_candidates: list[PlatformBoardPersonOut]
-    board_candidacy_options: PlatformCandidacyOptionsOut | None = None
+    moderators: list[PlatformBoardPersonOut]
+    moderator_candidates: list[PlatformBoardPersonOut]
+    moderator_candidacy_options: PlatformCandidacyOptionsOut | None = None
     feed: PlatformFeedOut
 
 
