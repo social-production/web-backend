@@ -24,7 +24,7 @@ from app.models.events import (
     events,
 )
 from app.models.governance import board_standing_votes, governance_decision_history, platform_board_memberships
-from app.models.messages import conversation_members, conversations, messages
+from app.models.messages import conversation_members, conversations, messages, subject_chat_reads
 from app.models.notifications import notifications
 from app.models.projects import (
     project_activity_assignments,
@@ -151,6 +151,7 @@ __all__ = [
     "conversations",
     "conversation_members",
     "messages",
+    "subject_chat_reads",
     "notifications",
     "searchable_documents",
     "platform_board_memberships",

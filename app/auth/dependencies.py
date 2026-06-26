@@ -54,3 +54,28 @@ async def get_current_user_id(payload: dict[str, object] = Depends(get_current_u
         return UUID(subject)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject") from exc
+
+
+async def get_optional_current_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> UUID | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    try:
+        payload = get_access_token_payload(credentials.credentials)
+    except JWTError:
+        return None
+
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti or await _is_blacklisted_jti(jti):
+        return None
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        return None
+
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None

@@ -1,5 +1,7 @@
-# Environment secrets
+# Environment secrets (copy from .env.example; never commit real values)
 .env
+.env.*
+!.env.example
 
 # Python cache/bytecode
 __pycache__/

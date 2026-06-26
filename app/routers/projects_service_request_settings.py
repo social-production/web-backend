@@ -19,7 +19,7 @@ router = APIRouter(prefix="/projects", tags=["projects-service-request-settings"
 class SettingsChangeRequestCreateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    reason: str = Field(min_length=1)
+    reason: str = ""
     enabled: bool
     request_mode: str = Field(pattern="^(calendar|direct|both)$")
     allow_off_schedule_requests: bool

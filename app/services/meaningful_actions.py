@@ -20,6 +20,11 @@ def record_meaningful_action(
     action_type: str,
     metadata: dict[str, object] | None = None,
 ) -> None:
+    """Record an action in the caller's current transaction.
+
+    Callers that invoke this after an earlier commit must commit again so the
+    meaningful action is persisted.
+    """
     db.execute(
         insert(meaningful_actions).values(
             user_id=user_id,

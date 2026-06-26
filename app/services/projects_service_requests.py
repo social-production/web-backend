@@ -14,9 +14,12 @@ from app.models import (
     project_activity_roles,
     project_memberships,
     project_service_history_completions,
+    project_service_request_settings,
     project_service_requests,
     projects,
+    users,
 )
+from app.services.messages import send_message, start_direct_conversation
 
 VALID_SERVICE_REQUEST_STATUS = frozenset({"open", "planned", "accepted", "declined"})
 
@@ -44,23 +47,112 @@ def _get_project_by_slug(db: Session, slug: str) -> Mapping[str, object]:
     return row
 
 
-def _ensure_collective_service(project_mode: str) -> None:
-    if project_mode != "collective-service":
+def _ensure_service_project(project_mode: str) -> None:
+    if project_mode not in {"collective-service", "personal-service"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Only collective-service projects support service requests",
+            detail="Only service projects support service requests",
         )
 
 
-def _ensure_project_member(db: Session, project_id: UUID, user_id: UUID) -> None:
-    membership = db.execute(
-        select(project_memberships.c.user_id).where(
+def _get_project_membership(db: Session, project_id: UUID, user_id: UUID) -> Mapping[str, object] | None:
+    return db.execute(
+        select(project_memberships).where(
             project_memberships.c.project_id == project_id,
             project_memberships.c.user_id == user_id,
         )
-    ).first()
+    ).mappings().first()
+
+
+def _ensure_project_member(db: Session, project_id: UUID, user_id: UUID) -> Mapping[str, object]:
+    membership = _get_project_membership(db, project_id, user_id)
     if membership is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can update request status")
+    return membership
+
+
+def _ensure_request_reviewer(db: Session, project_row: Mapping[str, object], user_id: UUID) -> None:
+    membership = _ensure_project_member(db, project_row["id"], user_id)
+    if bool(membership["is_manager"]) or (project_row["project_mode"] == "personal-service" and project_row["author_id"] == user_id):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only request reviewers can update service requests")
+
+
+def _get_request_settings(db: Session, project_id: UUID) -> Mapping[str, object] | None:
+    return db.execute(
+        select(project_service_request_settings).where(project_service_request_settings.c.project_id == project_id)
+    ).mappings().first()
+
+
+def _ensure_can_submit_service_request(
+    db: Session,
+    project_row: Mapping[str, object],
+    user_id: UUID,
+) -> None:
+    if project_row["project_mode"] == "personal-service":
+        if project_row["author_id"] == user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The service creator cannot request their own service",
+            )
+        return
+
+    _ensure_project_member(db, project_row["id"], user_id)
+
+
+def _format_personal_service_request_message(
+    project_slug: str,
+    request_id: UUID,
+    title: str,
+    body: str,
+    scheduled_at: datetime | None,
+    ends_at: datetime | None,
+) -> str:
+    lines = [
+        f"New service request: {title}",
+        "",
+        body.strip(),
+    ]
+
+    if scheduled_at is not None and ends_at is not None:
+        lines.extend(["", f"When: {scheduled_at.isoformat()} – {ends_at.isoformat()}"])
+
+    lines.extend(["", f"View request: /projects/{project_slug}?request={request_id}"])
+    return "\n".join(lines)
+
+
+def _open_personal_service_request_conversation(
+    db: Session,
+    requester_id: UUID,
+    creator_id: UUID,
+    message_body: str,
+) -> UUID | None:
+    creator_row = db.execute(
+        select(users.c.username).where(users.c.id == creator_id)
+    ).first()
+    if creator_row is None:
+        return None
+
+    conversation_payload = start_direct_conversation(db, requester_id, creator_row[0])
+    conversation_id = conversation_payload["conversation"]["id"]
+    send_message(db, requester_id, conversation_id, message_body)
+    return conversation_id
+
+
+def _ensure_requests_enabled(db: Session, project_row: Mapping[str, object], scheduled_at: datetime | None, ends_at: datetime | None) -> None:
+    settings = _get_request_settings(db, project_row["id"])
+    enabled = bool(settings["enabled"]) if settings is not None else project_row["project_mode"] == "personal-service"
+    request_mode = str(settings["request_mode"]) if settings is not None else "both"
+    allow_off_schedule = bool(settings["allow_off_schedule_requests"]) if settings is not None else project_row["project_mode"] == "personal-service"
+
+    if not enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Requests are currently turned off for this project")
+
+    if request_mode == "calendar" and (scheduled_at is None or ends_at is None):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Calendar requests require a start and finish time")
+
+    if request_mode == "direct" and (scheduled_at is not None or ends_at is not None) and not allow_off_schedule:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="This service only accepts direct unscheduled requests")
 
 
 def create_service_request(
@@ -73,7 +165,9 @@ def create_service_request(
     ends_at: datetime | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_collective_service(project_row["project_mode"])
+    _ensure_service_project(project_row["project_mode"])
+    _ensure_can_submit_service_request(db, project_row, current_user_id)
+    _ensure_requests_enabled(db, project_row, scheduled_at, ends_at)
 
     try:
         created = db.execute(
@@ -107,12 +201,32 @@ def create_service_request(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create service request") from exc
 
-    return {"request": _serialize_service_request(created)}
+    conversation_id: UUID | None = None
+    if project_row["project_mode"] == "personal-service":
+        message_body = _format_personal_service_request_message(
+            project_slug=project_row["slug"],
+            request_id=created["id"],
+            title=title,
+            body=body,
+            scheduled_at=scheduled_at,
+            ends_at=ends_at,
+        )
+        conversation_id = _open_personal_service_request_conversation(
+            db=db,
+            requester_id=current_user_id,
+            creator_id=project_row["author_id"],
+            message_body=message_body,
+        )
+
+    return {
+        "request": _serialize_service_request(created),
+        "conversation_id": conversation_id,
+    }
 
 
 def list_service_requests(db: Session, project_slug: str, status_filter: str | None = None) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_collective_service(project_row["project_mode"])
+    _ensure_service_project(project_row["project_mode"])
 
     query = select(project_service_requests).where(project_service_requests.c.project_id == project_row["id"])
 
@@ -144,8 +258,8 @@ def update_service_request_status(
     status_value: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_collective_service(project_row["project_mode"])
-    _ensure_project_member(db, project_row["id"], current_user_id)
+    _ensure_service_project(project_row["project_mode"])
+    _ensure_request_reviewer(db, project_row, current_user_id)
 
     normalized_status = status_value.strip().lower()
     if normalized_status not in VALID_SERVICE_REQUEST_STATUS:
@@ -193,8 +307,8 @@ def plan_service_request(
     note: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_collective_service(project_row["project_mode"])
-    _ensure_project_member(db, project_row["id"], current_user_id)
+    _ensure_service_project(project_row["project_mode"])
+    _ensure_request_reviewer(db, project_row, current_user_id)
 
     request_row = db.execute(
         select(project_service_requests).where(

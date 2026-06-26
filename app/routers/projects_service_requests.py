@@ -51,6 +51,7 @@ class ServiceRequestOut(BaseModel):
 
 class ServiceRequestResponse(BaseModel):
     request: ServiceRequestOut
+    conversation_id: UUID | None = None
 
 
 class ServiceRequestListResponse(BaseModel):

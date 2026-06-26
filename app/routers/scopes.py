@@ -16,6 +16,7 @@ from app.services.scopes import (
     get_community_by_slug,
     join_scope,
     leave_scope,
+    list_taggable_scopes,
     list_scope_members,
     redeem_scope_invite,
 )
@@ -82,6 +83,19 @@ class ScopeMembersResponse(BaseModel):
     items: list[ScopeMember]
 
 
+class TaggableScopeItem(BaseModel):
+    slug: str
+    label: str
+    href: str
+    visibility: str
+    viewer_is_member: bool
+
+
+class TaggableScopesResponse(BaseModel):
+    channels: list[TaggableScopeItem]
+    communities: list[TaggableScopeItem]
+
+
 async def _get_optional_user_id(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> UUID | None:
@@ -119,6 +133,17 @@ def create_new_community(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return create_community(db, current_user_id, payload.slug, payload.name, payload.description, payload.join_policy)
+
+
+@router.get("/taggable", dependencies=[Depends(get_current_user_id)], response_model=TaggableScopesResponse)
+def get_taggable_scopes(
+    q: str = "",
+    kind: str | None = None,
+    limit: int = 8,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return list_taggable_scopes(db=db, current_user_id=current_user_id, query=q, kind=kind, limit=limit)
 
 
 @router.get("/channels/{slug}", response_model=ChannelResponse)

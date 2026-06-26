@@ -117,6 +117,54 @@ def create_settings_change_request(
             detail=f"request_mode must be one of: {sorted(VALID_REQUEST_MODES)}",
         )
 
+    if project_row["project_mode"] == "personal-service":
+        if project_row["author_id"] != current_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the service creator can update personal service request settings",
+            )
+
+        try:
+            db.execute(
+                pg_insert(project_service_request_settings)
+                .values(
+                    project_id=project_row["id"],
+                    enabled=enabled,
+                    request_mode=normalized_mode,
+                    allow_off_schedule_requests=allow_off_schedule_requests,
+                )
+                .on_conflict_do_update(
+                    index_elements=["project_id"],
+                    set_={
+                        "enabled": enabled,
+                        "request_mode": normalized_mode,
+                        "allow_off_schedule_requests": allow_off_schedule_requests,
+                    },
+                )
+            )
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not update request settings",
+            ) from exc
+
+        return {
+            "applied": True,
+            "settings": {
+                "enabled": enabled,
+                "request_mode": normalized_mode,
+                "allow_off_schedule_requests": allow_off_schedule_requests,
+            },
+        }
+
+    if not reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A reason is required for governed request settings changes",
+        )
+
     try:
         created = db.execute(
             insert(project_service_request_setting_changes)

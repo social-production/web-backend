@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
 from app.services.users import (
     follow_user,
@@ -48,6 +48,9 @@ class UserSettings(BaseModel):
 
 class PublicProfileResponse(BaseModel):
     user: UserSummary
+    viewer_is_following: bool
+    is_own_profile: bool
+    can_view_personal_feed: bool
 
 
 class OwnProfileResponse(BaseModel):
@@ -117,8 +120,12 @@ def unfollow(username: str, current_user_id: UUID = Depends(get_current_user_id)
 
 
 @router.get("/{username}", response_model=PublicProfileResponse)
-def get_profile(username: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return get_profile_by_username(db, username)
+def get_profile(
+    username: str,
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_profile_by_username(db, username, current_user_id)
 
 
 @router.get("/{username}/followers", response_model=FollowListResponse)

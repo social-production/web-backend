@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, func, not_, or_, select
+from sqlalchemy import and_, func, literal, not_, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -32,9 +32,31 @@ from app.models import (
     project_edit_requests,
     project_memberships,
     project_phase_change_votes,
+    event_activities,
+    event_activity_assignments,
+    event_activity_roles,
+    event_edit_request_votes,
+    event_edit_requests,
+    event_phase_change_votes,
+    event_phase_change_requests,
+    event_plan_votes,
+    event_plans,
+    event_update_request_votes,
+    event_update_requests,
+    project_activities,
+    project_activity_assignments,
+    project_activity_roles,
+    project_edit_request_votes,
+    project_edit_requests,
+    project_phase_change_votes,
+    project_plan_votes,
+    project_plans,
+    project_update_request_votes,
+    project_update_requests,
     project_phase_change_requests,
     project_plan_votes,
     project_plans,
+    project_service_requests,
     project_update_request_votes,
     project_update_requests,
     projects,
@@ -42,6 +64,7 @@ from app.models import (
     user_follows,
     users,
 )
+from app.services.messages import find_direct_conversation_between, get_total_unread_message_count
 
 
 def get_onboarding(db: Session) -> dict[str, object]:
@@ -96,24 +119,7 @@ def _get_unread_notification_count(db: Session, current_user_id: UUID) -> int:
 
 
 def _get_unread_message_count(db: Session, current_user_id: UUID) -> int:
-    count = db.execute(
-        select(func.count())
-        .select_from(
-            conversation_members.join(
-                conversations,
-                conversations.c.id == conversation_members.c.conversation_id,
-            )
-        )
-        .where(
-            conversation_members.c.user_id == current_user_id,
-            conversations.c.last_message_at.is_not(None),
-            or_(
-                conversation_members.c.last_read_at.is_(None),
-                conversations.c.last_message_at > conversation_members.c.last_read_at,
-            ),
-        )
-    ).scalar_one()
-    return int(count or 0)
+    return get_total_unread_message_count(db, current_user_id)
 
 
 def _get_platform_directory_item(db: Session) -> dict[str, object] | None:
@@ -276,7 +282,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "id": aid,
                 "subjectId": r["parent_slug"],
                 "title": r["title"],
-                "href": f"/projects/{r['parent_slug']}",
+                "href": f"/projects/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
                 "timeLabel": _small_iso(r["scheduled_at"]),
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
@@ -335,7 +341,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "id": aid,
                 "subjectId": r["parent_slug"],
                 "title": r["title"],
-                "href": f"/events/{r['parent_slug']}",
+                "href": f"/events/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
                 "timeLabel": _small_iso(r["scheduled_at"]),
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
@@ -365,6 +371,78 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
     def _build_count_label(yes: int, no: int) -> str:
         return f"{yes} yes / {no} no"
 
+    def _vote_href(surface: str, slug: str, vote_kind: str, target_id: object) -> str:
+        return f"/{surface}/{slug}?open=vote&voteKind={vote_kind}&voteTarget={target_id}"
+
+    # ── Open service requests the user can review ──
+    request_rows = db.execute(
+        select(
+            project_service_requests.c.id,
+            project_service_requests.c.created_at,
+            project_service_requests.c.title,
+            project_service_requests.c.body,
+            project_service_requests.c.scheduled_at,
+            project_service_requests.c.requester_id,
+            projects.c.slug,
+            projects.c.title.label("project_title"),
+            projects.c.project_mode,
+            users.c.username.label("requester_username"),
+        )
+        .select_from(
+            project_service_requests.join(projects, projects.c.id == project_service_requests.c.project_id)
+            .outerjoin(
+                project_memberships,
+                and_(
+                    project_memberships.c.project_id == projects.c.id,
+                    project_memberships.c.user_id == current_user_id,
+                ),
+            )
+            .outerjoin(users, users.c.id == project_service_requests.c.requester_id)
+        )
+        .where(
+            project_service_requests.c.status == "open",
+            or_(
+                and_(
+                    project_memberships.c.user_id == current_user_id,
+                    project_memberships.c.is_manager.is_(True),
+                ),
+                and_(
+                    projects.c.project_mode == "personal-service",
+                    projects.c.author_id == current_user_id,
+                ),
+            ),
+        )
+        .order_by(project_service_requests.c.created_at.desc())
+        .limit(6)
+    ).mappings().all()
+
+    for r in request_rows:
+        request_id = str(r["id"])
+        requester = r["requester_username"] or "Unknown requester"
+        conversation_id: str | None = None
+        if r["project_mode"] == "personal-service" and r["requester_id"] is not None:
+            direct_conversation = find_direct_conversation_between(db, current_user_id, r["requester_id"])
+            if direct_conversation is not None:
+                conversation_id = str(direct_conversation["id"])
+
+        href = f"/projects/{r['slug']}?request={request_id}"
+        items.append({
+            "kind": "request",
+            "id": request_id,
+            "subjectId": r["slug"],
+            "title": r["title"],
+            "href": href,
+            "meta": r["project_title"],
+            "createdAt": _small_iso(r["created_at"]),
+            "timeLabel": _small_iso(r["scheduled_at"]),
+            "countLabel": f"Requested by {requester}",
+            "projectMode": r["project_mode"],
+            "projectSlug": r["slug"],
+            "requestId": request_id,
+            "requesterUsername": requester,
+            "conversationId": conversation_id,
+        })
+
     # Project phase change requests
     rows = db.execute(
         select(project_phase_change_requests.c.id, project_phase_change_requests.c.created_at,
@@ -393,7 +471,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": f"Phase change: {r['title']}",
-                "href": f"/projects/{r['slug']}?open=governance",
+                "href": _vote_href("projects", r["slug"], "phase_change", r["id"]),
                 "meta": f"Phase change → {r['target_phase_id']}",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
@@ -421,7 +499,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['title'],
-                "href": f"/projects/{r['slug']}?open=governance",
+                "href": _vote_href("projects", r["slug"], "plan", r["id"]),
                 "meta": f"Plan vote",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
@@ -450,7 +528,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['title'],
-                "href": f"/projects/{r['slug']}?open=governance",
+                "href": _vote_href("projects", r["slug"], "update", r["id"]),
                 "meta": "Update request",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
@@ -479,7 +557,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['title'],
-                "href": f"/projects/{r['slug']}?open=governance",
+                "href": _vote_href("projects", r["slug"], "edit", r["id"]),
                 "meta": "Edit request",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
@@ -508,7 +586,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": f"Phase change: {r['title']}",
-                "href": f"/events/{r['slug']}?open=governance",
+                "href": _vote_href("events", r["slug"], "phase_change", r["id"]),
                 "meta": f"Phase change → {r['target_phase_id']}",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
@@ -536,7 +614,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['title'],
-                "href": f"/events/{r['slug']}?open=governance",
+                "href": _vote_href("events", r["slug"], "plan", r["id"]),
                 "meta": "Plan vote",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
@@ -565,7 +643,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['title'],
-                "href": f"/events/{r['slug']}?open=governance",
+                "href": _vote_href("events", r["slug"], "update", r["id"]),
                 "meta": "Update request",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
@@ -594,7 +672,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['title'],
-                "href": f"/events/{r['slug']}?open=governance",
+                "href": _vote_href("events", r["slug"], "edit", r["id"]),
                 "meta": "Edit request",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),

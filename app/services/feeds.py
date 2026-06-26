@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Integer, and_, cast, literal, null, or_, select, union_all
+from sqlalchemy import Boolean, DateTime, Integer, and_, cast, func, literal, null, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -11,9 +11,11 @@ from app.models import (
     communities,
     content_votes,
     event_tags,
+    event_updates,
     events,
     posts,
     project_tags,
+    project_updates,
     projects,
     scope_memberships,
     thread_tags,
@@ -22,9 +24,33 @@ from app.models import (
     users,
 )
 
+from app.services.projects_phases import display_stage_label as project_display_stage_label
+
 VALID_SORTS = frozenset({"popular", "recent"})
 
+EVENT_STAGE_LABEL_BY_PHASE_ID = {
+    "proposal": "Proposal",
+    "event-plan": "Event Plan",
+    "activity": "Activity",
+    "closed": "Closed",
+}
+
 _ZERO_INT = literal(0, Integer)
+
+
+def _resolved_feed_stage_label(row: Mapping[str, object]) -> str | None:
+    entity_type = row["entity_type"]
+    if entity_type == "project":
+        return project_display_stage_label(
+            str(row["project_mode"] or "productive"),
+            str(row["project_subtype"]) if row.get("project_subtype") else None,
+            str(row.get("current_phase_id") or "phase-1"),
+        )
+    if entity_type == "event":
+        phase_id = str(row.get("current_phase_id") or "proposal")
+        return EVENT_STAGE_LABEL_BY_PHASE_ID.get(phase_id, "Proposal")
+    stage_label = row.get("stage_label")
+    return str(stage_label) if stage_label else None
 
 
 def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | None):
@@ -47,6 +73,7 @@ def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] |
         projects.c.project_mode,
         projects.c.project_subtype,
         projects.c.stage_label,
+        projects.c.current_phase_id,
         projects.c.location_label,
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -90,6 +117,7 @@ def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | 
         literal(None).label("project_mode"),
         literal(None).label("project_subtype"),
         literal(None).label("stage_label"),
+        literal(None).label("current_phase_id"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -133,6 +161,7 @@ def _events_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | N
         literal(None).label("project_mode"),
         literal(None).label("project_subtype"),
         literal(None).label("stage_label"),
+        events.c.current_phase_id,
         events.c.location_label,
         events.c.is_private,
         events.c.scheduled_at,
@@ -169,10 +198,80 @@ def _get_user_scope_ids(db: Session, user_id: UUID) -> tuple[list[UUID], list[UU
     return channel_ids, community_ids
 
 
-def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[dict[str, str]]]], active_votes: dict[str, int] | None = None) -> dict[str, object]:
+def _truncate_update_body(body: str, limit: int = 200) -> str:
+    trimmed = body.strip()
+    if len(trimmed) <= limit:
+        return trimmed
+    return f"{trimmed[:limit].rstrip()}…"
+
+
+def _fetch_latest_updates_for_items(
+    db: Session,
+    project_ids: list[UUID],
+    event_ids: list[UUID],
+) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+
+    if project_ids:
+        ranked_projects = (
+            select(
+                project_updates.c.project_id,
+                project_updates.c.body,
+                project_updates.c.created_at,
+                func.row_number()
+                .over(
+                    partition_by=project_updates.c.project_id,
+                    order_by=project_updates.c.created_at.desc(),
+                )
+                .label("rn"),
+            )
+            .where(project_updates.c.project_id.in_(project_ids))
+            .subquery()
+        )
+        project_rows = db.execute(
+            select(ranked_projects).where(ranked_projects.c.rn == 1)
+        ).mappings().all()
+        for row in project_rows:
+            key = str(row["project_id"])
+            result[key] = {
+                "last_update_at": row["created_at"],
+                "latest_update_body": _truncate_update_body(str(row["body"])),
+            }
+
+    if event_ids:
+        ranked_events = (
+            select(
+                event_updates.c.event_id,
+                event_updates.c.body,
+                event_updates.c.created_at,
+                func.row_number()
+                .over(
+                    partition_by=event_updates.c.event_id,
+                    order_by=event_updates.c.created_at.desc(),
+                )
+                .label("rn"),
+            )
+            .where(event_updates.c.event_id.in_(event_ids))
+            .subquery()
+        )
+        event_rows = db.execute(
+            select(ranked_events).where(ranked_events.c.rn == 1)
+        ).mappings().all()
+        for row in event_rows:
+            key = str(row["event_id"])
+            result[key] = {
+                "last_update_at": row["created_at"],
+                "latest_update_body": _truncate_update_body(str(row["body"])),
+            }
+
+    return result
+
+
+def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[dict[str, str]]]], active_votes: dict[str, int] | None = None, updates: dict[str, dict[str, object]] | None = None) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
     vote_key = f"{row['entity_type']}:{row['id']}"
+    update_data = (updates or {}).get(item_id, {})
     return {
         "id": item_id,
         "entity_type": row["entity_type"],
@@ -191,7 +290,8 @@ def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[di
         "created_at": row["created_at"],
         "project_mode": row["project_mode"],
         "project_subtype": row["project_subtype"],
-        "stage_label": row["stage_label"],
+        "stage_label": _resolved_feed_stage_label(row),
+        "current_phase_id": row.get("current_phase_id"),
         "location_label": row["location_label"],
         "is_private": bool(row["is_private"]),
         "scheduled_at": row["scheduled_at"],
@@ -199,6 +299,8 @@ def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[di
         "active_vote": int((active_votes or {}).get(vote_key, 0)),
         "channel_tags": tag_data["channels"],
         "community_tags": tag_data["communities"],
+        "last_update_at": update_data.get("last_update_at"),
+        "latest_update_body": update_data.get("latest_update_body"),
     }
 
 
@@ -206,10 +308,12 @@ def _serialize_personal_item(
     row: Mapping[str, object],
     tags: dict[str, dict[str, list[dict[str, str]]]],
     active_votes: dict[str, int] | None = None,
+    updates: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
     vote_key = f"{row['entity_type']}:{row['id']}"
+    update_data = (updates or {}).get(item_id, {})
     return {
         "id": item_id,
         "entity_type": row["entity_type"],
@@ -228,7 +332,8 @@ def _serialize_personal_item(
         "created_at": row["created_at"],
         "project_mode": row["project_mode"],
         "project_subtype": row["project_subtype"],
-        "stage_label": row["stage_label"],
+        "stage_label": _resolved_feed_stage_label(row),
+        "current_phase_id": row.get("current_phase_id"),
         "location_label": row["location_label"],
         "is_private": bool(row["is_private"]),
         "scheduled_at": row["scheduled_at"],
@@ -236,6 +341,8 @@ def _serialize_personal_item(
         "active_vote": int((active_votes or {}).get(vote_key, 0)),
         "channel_tags": tag_data["channels"],
         "community_tags": tag_data["communities"],
+        "last_update_at": update_data.get("last_update_at"),
+        "latest_update_body": update_data.get("latest_update_body"),
     }
 
 
@@ -305,6 +412,7 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("project_mode"),
         literal(None).label("project_subtype"),
         literal(None).label("stage_label"),
+        literal(None).label("current_phase_id"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -338,6 +446,7 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
         projects.c.project_mode,
         projects.c.project_subtype,
         projects.c.stage_label,
+        projects.c.current_phase_id,
         projects.c.location_label,
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -374,6 +483,7 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("project_mode"),
         literal(None).label("project_subtype"),
         literal(None).label("stage_label"),
+        literal(None).label("current_phase_id"),
         literal(None).label("location_label"),
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -407,6 +517,7 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("project_mode"),
         literal(None).label("project_subtype"),
         literal(None).label("stage_label"),
+        events.c.current_phase_id,
         events.c.location_label,
         events.c.is_private,
         events.c.scheduled_at,
@@ -569,8 +680,9 @@ def _build_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
+    updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
-    items = [_serialize_item(row, tags, active_votes) for row in rows]
+    items = [_serialize_item(row, tags, active_votes, updates) for row in rows]
     return {"total": len(items), "sort": sort, "limit": limit, "offset": offset, "items": items}
 
 
@@ -652,8 +764,9 @@ def get_personal_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
+    updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
-    items = [_serialize_personal_item(row, tags, active_votes) for row in rows]
+    items = [_serialize_personal_item(row, tags, active_votes, updates) for row in rows]
     return {
         "total": len(items),
         "sort": safe_sort,
@@ -704,6 +817,7 @@ def get_user_feed(
             literal(None).label("project_mode"),
             literal(None).label("project_subtype"),
             literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
             literal(None).label("location_label"),
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -736,6 +850,7 @@ def get_user_feed(
             literal(None).label("project_mode"),
             literal(None).label("project_subtype"),
             literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
             literal(None).label("location_label"),
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -765,6 +880,7 @@ def get_user_feed(
             literal(None).label("project_mode"),
             literal(None).label("project_subtype"),
             literal(None).label("stage_label"),
+            events.c.current_phase_id,
             events.c.location_label,
             events.c.is_private,
             events.c.scheduled_at,
@@ -794,6 +910,7 @@ def get_user_feed(
             projects.c.project_mode,
             projects.c.project_subtype,
             projects.c.stage_label,
+            projects.c.current_phase_id,
             projects.c.location_label,
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
@@ -827,8 +944,9 @@ def get_user_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
+    updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, viewer_user_id)
-    items = [_serialize_personal_item(row, tags, active_votes) for row in rows]
+    items = [_serialize_personal_item(row, tags, active_votes, updates) for row in rows]
     return {
         "total": len(items),
         "sort": safe_sort,

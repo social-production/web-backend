@@ -39,6 +39,7 @@ class FeedItemOut(BaseModel):
     project_mode: str | None = None
     project_subtype: str | None = None
     stage_label: str | None = None
+    current_phase_id: str | None = None
     location_label: str | None = None
     is_private: bool = False
     scheduled_at: object = None
@@ -46,6 +47,8 @@ class FeedItemOut(BaseModel):
     active_vote: int = 0
     channel_tags: list[TagRefOut] = Field(default_factory=list)
     community_tags: list[TagRefOut] = Field(default_factory=list)
+    last_update_at: object = None
+    latest_update_body: str | None = None
 
 
 class FeedResponse(BaseModel):

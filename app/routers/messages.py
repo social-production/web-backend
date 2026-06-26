@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -15,8 +15,10 @@ from app.services.messages import (
     get_messages_for_conversation,
     list_conversations,
     mark_conversation_as_read,
+    mark_linked_chat_read,
     remove_group_member,
     rename_group_conversation,
+    search_message_contacts,
     send_message,
     start_direct_conversation,
 )
@@ -37,6 +39,8 @@ class ConversationOut(BaseModel):
     created_at: object
     updated_at: object
     last_message_at: object
+    preview: str = ""
+    unread_count: int = 0
     participants: list[ParticipantOut]
 
 
@@ -114,11 +118,39 @@ class LinkedChatOut(BaseModel):
     preview: str
     last_message_at: str
     comment_count: int
+    unread_count: int = 0
 
 
 class LinkedChatsListResponse(BaseModel):
     total: int
     items: list[LinkedChatOut]
+
+
+class MessageContactOut(BaseModel):
+    id: UUID
+    username: str
+    bio: str | None = None
+    profileImageUrl: str | None = None
+
+
+class MessageContactsResponse(BaseModel):
+    total: int
+    items: list[MessageContactOut]
+
+
+@router.get("/contacts", response_model=MessageContactsResponse)
+def list_message_contacts(
+    q: str = Query(default="", max_length=32),
+    limit: int = Query(default=8, ge=1, le=25),
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return search_message_contacts(
+        db=db,
+        current_user_id=current_user_id,
+        query=q,
+        limit=limit,
+    )
 
 
 @router.post("/direct", response_model=ConversationResponse)
@@ -248,3 +280,18 @@ def list_linked_chats(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return get_linked_chats(db=db, current_user_id=current_user_id)
+
+
+@router.post("/linked-chats/{subject_type}/{subject_id}/read")
+def mark_linked_chat_read_route(
+    subject_type: str,
+    subject_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return mark_linked_chat_read(
+        db=db,
+        current_user_id=current_user_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+    )

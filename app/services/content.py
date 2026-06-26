@@ -9,7 +9,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import channels, communities, content_votes, posts, thread_tags, threads, users
+from app.models import channels, communities, content_votes, posts, scope_memberships, thread_tags, threads, users
 from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
@@ -136,13 +136,13 @@ def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
     return [row["id"] for row in rows]
 
 
-def _resolve_community_ids(db: Session, community_slugs: list[str]) -> list[UUID]:
+def _resolve_community_ids(db: Session, community_slugs: list[str], current_user_id: UUID) -> list[UUID]:
     """Return the UUIDs for the given community slugs, raising 422 for any unknown slug."""
     normalized = [s.strip().lower() for s in community_slugs if s.strip()]
     if not normalized:
         return []
     rows = db.execute(
-        select(communities.c.id, communities.c.slug).where(communities.c.slug.in_(normalized))
+        select(communities.c.id, communities.c.slug, communities.c.join_policy).where(communities.c.slug.in_(normalized))
     ).mappings().all()
     found_slugs = {row["slug"] for row in rows}
     missing = set(normalized) - found_slugs
@@ -151,6 +151,23 @@ def _resolve_community_ids(db: Session, community_slugs: list[str]) -> list[UUID
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown community slugs: {sorted(missing)}",
         )
+    closed_ids = [row["id"] for row in rows if row["join_policy"] == "closed"]
+    if closed_ids:
+        membership_rows = db.execute(
+            select(scope_memberships.c.scope_id).where(
+                scope_memberships.c.scope_kind == "community",
+                scope_memberships.c.scope_id.in_(closed_ids),
+                scope_memberships.c.user_id == current_user_id,
+            )
+        ).all()
+        member_ids = {row[0] for row in membership_rows}
+        forbidden = sorted(row["slug"] for row in rows if row["id"] in closed_ids and row["id"] not in member_ids)
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You must be a member to tag private communities: {forbidden}",
+            )
+
     return [row["id"] for row in rows]
 
 
@@ -175,7 +192,7 @@ def create_thread(
         )
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
-    community_ids = _resolve_community_ids(db, community_slugs)
+    community_ids = _resolve_community_ids(db, community_slugs, current_user_id)
 
     now = datetime.now(timezone.utc)
 

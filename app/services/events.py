@@ -36,6 +36,7 @@ from app.models import (
     event_values,
     events,
     reports,
+    scope_memberships,
     user_follows,
     users,
 )
@@ -215,6 +216,42 @@ def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
     return [row["id"] for row in rows]
 
 
+def _resolve_community_ids(db: Session, community_slugs: list[str], current_user_id: UUID) -> list[UUID]:
+    normalized = [value.strip().lower() for value in community_slugs if value.strip()]
+    if not normalized:
+        return []
+
+    rows = db.execute(
+        select(communities.c.id, communities.c.slug, communities.c.join_policy).where(communities.c.slug.in_(normalized))
+    ).mappings().all()
+    found = {row["slug"] for row in rows}
+    missing = sorted(set(normalized) - found)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown community slugs: {missing}",
+        )
+
+    closed_ids = [row["id"] for row in rows if row["join_policy"] == "closed"]
+    if closed_ids:
+        membership_rows = db.execute(
+            select(scope_memberships.c.scope_id).where(
+                scope_memberships.c.scope_kind == "community",
+                scope_memberships.c.scope_id.in_(closed_ids),
+                scope_memberships.c.user_id == current_user_id,
+            )
+        ).all()
+        member_ids = {row[0] for row in membership_rows}
+        forbidden = sorted(row["slug"] for row in rows if row["id"] in closed_ids and row["id"] not in member_ids)
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You must be a member to tag private communities: {forbidden}",
+            )
+
+    return [row["id"] for row in rows]
+
+
 def _get_event_tags(db: Session, event_id: UUID) -> list[dict[str, object]]:
     rows = db.execute(
         select(
@@ -286,6 +323,7 @@ def create_event(
     time_label: str,
     location_label: str,
     channel_slugs: list[str],
+    community_slugs: list[str] | None = None,
     scheduled_at: datetime | None = None,
 ) -> dict[str, object]:
     normalized_slug = slug.strip().lower()
@@ -293,6 +331,7 @@ def create_event(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required")
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
+    community_ids = _resolve_community_ids(db, community_slugs or [], current_user_id)
     if not is_private and not channel_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -357,6 +396,16 @@ def create_event(
                 )
             )
 
+        for community_id in community_ids:
+            db.execute(
+                insert(event_tags).values(
+                    event_id=created["id"],
+                    tag_kind="community",
+                    channel_id=None,
+                    community_id=community_id,
+                )
+            )
+
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
@@ -416,6 +465,8 @@ async def get_event_detail(
     usernames = _username_lookup(db, member_ids | ({row["created_by"]} if row["created_by"] else set()))
 
     viewer_is_member = current_user_id is not None and current_user_id in member_ids
+    if row["is_private"] and not viewer_is_member:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
     editor_rows = db.execute(
         select(event_editors.c.user_id).where(event_editors.c.event_id == event_id)
@@ -968,6 +1019,10 @@ async def get_event_detail(
         .where(comments.c.subject_type == "event", comments.c.subject_id == event_id, comments.c.parent_id.is_(None))
         .order_by(comments.c.created_at.asc())
     ).all()
+    discussion_author_ids = {author_id for _, author_id, _, _, _ in discussion_rows if author_id}
+    missing_discussion_author_ids = discussion_author_ids - set(usernames.keys())
+    if missing_discussion_author_ids:
+        usernames.update(_username_lookup(db, missing_discussion_author_ids))
     discussion_comment_ids = [comment_id for comment_id, _, _, _, _ in discussion_rows]
     discussion_active_votes: dict[UUID, int] = {}
     if current_user_id is not None and discussion_comment_ids:
@@ -1045,6 +1100,18 @@ async def get_event_detail(
 
 def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
+
+    existing = db.execute(
+        select(event_memberships.c.event_id).where(
+            event_memberships.c.event_id == event_row["id"],
+            event_memberships.c.user_id == current_user_id,
+        )
+    ).first()
+    if existing is not None:
+        return {"ok": True, "joined": True, "slug": event_row["slug"]}
+
+    if event_row["is_private"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Private events are invite-only")
 
     inserted = False
     try:
@@ -1568,6 +1635,28 @@ def share_event_with_user(
     ).mappings().first()
     if target_user is None or target_user["id"] == current_user_id:
         return {"ok": False, "error": "Choose another user."}
+
+    if event_row["is_private"]:
+        existing_membership = db.execute(
+            select(event_memberships.c.event_id).where(
+                event_memberships.c.event_id == event_row["id"],
+                event_memberships.c.user_id == target_user["id"],
+            )
+        ).first()
+        if existing_membership is None:
+            db.execute(
+                insert(event_memberships).values(
+                    event_id=event_row["id"],
+                    user_id=target_user["id"],
+                    role="member",
+                    joined_at=datetime.now(timezone.utc),
+                )
+            )
+            db.execute(
+                update(events)
+                .where(events.c.id == event_row["id"])
+                .values(member_count=events.c.member_count + 1)
+            )
 
     create_notification(
         db=db,

@@ -25,6 +25,7 @@ from app.services.projects import (
     share_project_with_user,
     toggle_project_signal,
     uncommit_project_activity_role,
+    update_project_details,
     vote_project_value_importance,
 )
 from app.models import project_activity_roles
@@ -42,6 +43,8 @@ class ProjectCreateRequest(BaseModel):
     project_subtype: str | None = Field(default=None, pattern="^(standard|software)$")
     location_label: str = Field(min_length=1, max_length=160)
     channel_slugs: list[str] = Field(default_factory=list)
+    community_slugs: list[str] = Field(default_factory=list)
+    request_mode: str | None = Field(default=None, pattern="^(calendar|direct|both)$")
 
 
 class ProjectTagOut(BaseModel):
@@ -186,8 +189,15 @@ class ProjectActivityCommitRequest(BaseModel):
 class ProjectUpdateCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    title: str = Field(min_length=1, max_length=200)
+    title: str = Field(default="Update", max_length=200)
     body: str = Field(min_length=1)
+
+
+class ProjectDetailsUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1)
 
 
 class ShareTargetRequest(BaseModel):
@@ -233,6 +243,8 @@ async def create_new_project(
         project_subtype=payload.project_subtype,
         location_label=payload.location_label,
         channel_slugs=payload.channel_slugs,
+        community_slugs=payload.community_slugs,
+        request_mode=payload.request_mode,
     )
 
 
@@ -394,6 +406,22 @@ async def add_project_update_route(
         slug=slug,
         title=payload.title,
         body=payload.body,
+    )
+
+
+@router.patch("/{slug}/details")
+async def update_project_details_route(
+    slug: str,
+    payload: ProjectDetailsUpdateRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return update_project_details(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        title=payload.title,
+        description=payload.description,
     )
 
 

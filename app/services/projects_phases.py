@@ -29,7 +29,7 @@ APPROVAL_THRESHOLD = 0.66
 VALID_PHASE_IDS = frozenset({"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"})
 VALID_VOTES = frozenset({"yes", "no"})
 STAGE_LABEL_BY_PHASE_ID = {
-    "phase-1": "Discovery",
+    "phase-1": "Proposal",
     "phase-2": "Production Plan",
     "phase-3": "Distribution Plan",
     "phase-4": "Acquisition",
@@ -39,6 +39,121 @@ STAGE_LABEL_BY_PHASE_ID = {
 }
 
 PHASE_ORDER = {phase_id: index for index, phase_id in enumerate(sorted(VALID_PHASE_IDS), start=1)}
+
+
+def effective_phase_id_for_progress(phase_id: str) -> str:
+    if phase_id == "phase-4":
+        return "phase-3"
+    if phase_id == "phase-6":
+        return "phase-5"
+    return phase_id
+
+
+def display_stage_label(project_mode: str, project_subtype: str | None, phase_id: str) -> str:
+    if project_mode == "personal-service":
+        if phase_id == "phase-1":
+            return "Activity"
+        if phase_id == "phase-2":
+            return "Closed"
+        return "Activity"
+
+    normalized_phase_id = effective_phase_id_for_progress(phase_id)
+    return STAGE_LABEL_BY_PHASE_ID.get(normalized_phase_id, "Proposal")
+
+
+def lifecycle_phase_title(project_mode: str, phase_id: str, default_title: str) -> str:
+    if project_mode == "personal-service":
+        if phase_id == "phase-1":
+            return "Activity"
+        if phase_id == "phase-2":
+            return "Closed"
+    if project_mode == "collective-service":
+        if phase_id == "phase-2":
+            return "Operations Plan"
+        if phase_id == "phase-3":
+            return "Access Plan"
+    return default_title
+
+
+def visible_phase_ids_for_project(
+    project_mode: str,
+    project_subtype: str | None,
+    current_phase_id: str,
+) -> list[str]:
+    if project_mode == "personal-service":
+        return ["phase-1", "phase-2"]
+
+    return ["phase-1", "phase-2", "phase-3", "phase-5", "phase-7"]
+
+
+def next_phase_id_for_project(
+    project_mode: str,
+    project_subtype: str | None,
+    current_phase_id: str,
+) -> str | None:
+    if project_mode == "personal-service":
+        if current_phase_id == "phase-1":
+            return "phase-2"
+        return None
+
+    if current_phase_id == "phase-6":
+        return "phase-7"
+
+    current_order = PHASE_ORDER.get(current_phase_id)
+    if current_order is None:
+        return None
+
+    next_order = current_order + 1
+    while next_order <= PHASE_ORDER["phase-7"]:
+        next_phase_id = next((phase_id for phase_id, order in PHASE_ORDER.items() if order == next_order), None)
+        if next_phase_id is None:
+            return None
+
+        if next_phase_id == "phase-4":
+            next_order += 1
+            continue
+
+        if next_phase_id == "phase-6":
+            next_order += 1
+            continue
+
+        return next_phase_id
+
+    return None
+
+
+def _required_leading_plan_kind(project_mode: str, current_phase_id: str) -> str | None:
+    if current_phase_id == "phase-2":
+        return "organisation" if project_mode == "collective-service" else "production"
+    if current_phase_id == "phase-3":
+        return "access" if project_mode == "collective-service" else "distribution"
+    return None
+
+
+def _ensure_project_phase_plan_gate(db: Session, project_row: Mapping[str, object], target_phase_id: str) -> None:
+    current_phase_id = str(project_row["current_phase_id"])
+    current_order = PHASE_ORDER.get(current_phase_id)
+    target_order = PHASE_ORDER.get(target_phase_id)
+    if current_order is None or target_order is None or target_order <= current_order:
+        return
+
+    required_kind = _required_leading_plan_kind(str(project_row["project_mode"]), current_phase_id)
+    if required_kind is None:
+        return
+
+    leading_plan = db.execute(
+        select(project_plans.c.id).where(
+            project_plans.c.project_id == project_row["id"],
+            project_plans.c.phase_kind == required_kind,
+            project_plans.c.is_leading.is_(True),
+            project_plans.c.status == "approved",
+        )
+    ).first()
+    if leading_plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An approved plan is required before advancing this project phase",
+        )
 
 
 def _serialize_phase_request(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
@@ -163,6 +278,25 @@ def _ensure_phase_requests_allowed(project_mode: str) -> None:
         )
 
 
+def _ensure_governance_requests_allowed(project_mode: str) -> None:
+    if project_mode == "personal-service":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="personal-service projects do not allow governance vote requests",
+        )
+
+
+def _ensure_manager(db: Session, project_id: UUID, user_id: UUID) -> None:
+    membership = db.execute(
+        select(project_memberships.c.is_manager).where(
+            project_memberships.c.project_id == project_id,
+            project_memberships.c.user_id == user_id,
+        )
+    ).first()
+    if membership is None or not bool(membership[0]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project managers can perform this action")
+
+
 def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> dict[str, object]:
     rows = db.execute(
         select(project_phase_change_votes.c.vote).where(project_phase_change_votes.c.request_id == request_id)
@@ -223,12 +357,21 @@ def create_phase_change_request(
             detail=f"target_phase_id must be one of: {sorted(VALID_PHASE_IDS)}",
         )
 
+    # Phase 1 has no asset holding — acquisition (phase-4) is not available yet
+    if normalized_target == "phase-4":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Acquisition phase is not available in Phase 1",
+        )
+
     current_phase_id = project_row["current_phase_id"]
     if normalized_target == current_phase_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="target_phase_id must differ from current_phase_id",
         )
+
+    _ensure_project_phase_plan_gate(db, project_row, normalized_target)
 
     try:
         created = db.execute(
@@ -373,7 +516,11 @@ def vote_phase_change_request(
                 .where(projects.c.id == project_row["id"])
                 .values(
                     current_phase_id=target_phase_id,
-                    stage_label=STAGE_LABEL_BY_PHASE_ID.get(target_phase_id, "proposal"),
+                    stage_label=display_stage_label(
+                        str(project_row["project_mode"]),
+                        str(project_row["project_subtype"]) if project_row["project_subtype"] else None,
+                        target_phase_id,
+                    ),
                 )
             )
             executed = True
@@ -417,6 +564,12 @@ def vote_phase_change_request(
             href=f"/projects/{project_row['slug']}",
         )
 
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not persist phase vote activity") from exc
+
     return {
         "request": _serialize_phase_request(refreshed_request, final_summary),
         "vote": normalized_vote,
@@ -432,28 +585,54 @@ def create_project_update_request(
     body: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
+    _ensure_governance_requests_allowed(project_row["project_mode"])
     _ensure_member(db, project_row["id"], current_user_id)
+    member_count = _project_vote_population(db, project_row)
 
-    created = db.execute(
-        insert(project_update_requests)
-        .values(
-            project_id=project_row["id"],
-            body=body.strip(),
-            author_id=current_user_id,
-            status="open",
-        )
-        .returning(
-            project_update_requests.c.id,
-            project_update_requests.c.project_id,
-            project_update_requests.c.body,
-            project_update_requests.c.author_id,
-            project_update_requests.c.status,
-            project_update_requests.c.created_at,
-        )
-    ).mappings().one()
-    db.commit()
-    summary = _compute_simple_vote_summary(db, project_update_request_votes, created["id"], _project_vote_population(db, project_row))
-    return {"request": _serialize_update_request(created, summary)}
+    try:
+        created = db.execute(
+            insert(project_update_requests)
+            .values(
+                project_id=project_row["id"],
+                body=body.strip(),
+                author_id=current_user_id,
+                status="open",
+            )
+            .returning(
+                project_update_requests.c.id,
+                project_update_requests.c.project_id,
+                project_update_requests.c.body,
+                project_update_requests.c.author_id,
+                project_update_requests.c.status,
+                project_update_requests.c.created_at,
+            )
+        ).mappings().one()
+
+        executed = False
+        if member_count <= 1:
+            db.execute(
+                update(project_update_requests)
+                .where(project_update_requests.c.id == created["id"])
+                .values(status="approved")
+            )
+            db.execute(
+                insert(project_updates).values(
+                    project_id=project_row["id"],
+                    title="Approved update request",
+                    body=created["body"],
+                    author_id=created["author_id"],
+                )
+            )
+            created = {**created, "status": "approved"}
+            executed = True
+
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create update request") from exc
+
+    summary = _compute_simple_vote_summary(db, project_update_request_votes, created["id"], member_count)
+    return {"request": _serialize_update_request(created, summary), "executed": executed}
 
 
 def vote_project_update_request(
@@ -464,6 +643,7 @@ def vote_project_update_request(
     vote: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
+    _ensure_governance_requests_allowed(project_row["project_mode"])
     _ensure_member(db, project_row["id"], current_user_id)
 
     normalized_vote = vote.strip().lower()
@@ -542,6 +722,11 @@ def vote_project_update_request(
         action_type="cast-vote",
         metadata={"target_type": "project-update-request", "target_id": str(request_id), "vote": normalized_vote},
     )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not persist update vote activity") from exc
 
     refreshed_request = db.execute(
         select(project_update_requests).where(project_update_requests.c.id == request_id)
@@ -567,6 +752,7 @@ def create_project_edit_request(
     description: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
+    _ensure_governance_requests_allowed(project_row["project_mode"])
     _ensure_member(db, project_row["id"], current_user_id)
 
     created = db.execute(
@@ -601,6 +787,7 @@ def vote_project_edit_request(
     vote: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
+    _ensure_governance_requests_allowed(project_row["project_mode"])
     _ensure_member(db, project_row["id"], current_user_id)
 
     normalized_vote = vote.strip().lower()
@@ -702,6 +889,11 @@ def vote_project_edit_request(
             meta="project",
             href=f"/projects/{project_row['slug']}",
         )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not persist edit vote activity") from exc
     return {
         "request": _serialize_edit_request(refreshed_request, final_summary),
         "vote": normalized_vote,
@@ -839,7 +1031,11 @@ def vote_revert_phase_change_request(
                 .where(projects.c.id == project_row["id"])
                 .values(
                     current_phase_id=target_phase_id,
-                    stage_label=STAGE_LABEL_BY_PHASE_ID.get(target_phase_id, "proposal"),
+                    stage_label=display_stage_label(
+                        str(project_row["project_mode"]),
+                        str(project_row["project_subtype"]) if project_row["project_subtype"] else None,
+                        target_phase_id,
+                    ),
                 )
             )
             executed = True
@@ -877,6 +1073,12 @@ def vote_revert_phase_change_request(
             href=f"/projects/{project_row['slug']}",
         )
 
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not persist phase vote activity") from exc
+
     return {
         "request": _serialize_phase_request(refreshed_request, final_summary),
         "vote": normalized_vote,
@@ -892,25 +1094,39 @@ def advance_project_phase(
     close_note: str | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_member(db, project_row["id"], current_user_id)
+    if project_row["project_mode"] == "personal-service":
+        _ensure_manager(db, project_row["id"], current_user_id)
+    else:
+        _ensure_member(db, project_row["id"], current_user_id)
 
     current_phase_id = str(project_row["current_phase_id"])
     current_order = PHASE_ORDER.get(current_phase_id)
     if current_order is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project phase is invalid")
 
-    next_phase_id = next((phase_id for phase_id, order in PHASE_ORDER.items() if order == current_order + 1), None)
+    next_phase_id = next_phase_id_for_project(
+        str(project_row["project_mode"]),
+        str(project_row["project_subtype"]) if project_row["project_subtype"] else None,
+        current_phase_id,
+    )
     if next_phase_id is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project is already in the final phase")
+
+    _ensure_project_phase_plan_gate(db, project_row, next_phase_id)
 
     note = (close_note or "").strip()
     if next_phase_id == "phase-7" and not note:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="close_note is required when closing a project")
 
     try:
+        resolved_subtype = str(project_row["project_subtype"]) if project_row["project_subtype"] else None
         update_values: dict[str, object] = {
             "current_phase_id": next_phase_id,
-            "stage_label": STAGE_LABEL_BY_PHASE_ID.get(next_phase_id, "proposal"),
+            "stage_label": display_stage_label(
+                str(project_row["project_mode"]),
+                resolved_subtype,
+                next_phase_id,
+            ),
         }
 
         # When advancing from proposal to production-plan, copy the subtype from

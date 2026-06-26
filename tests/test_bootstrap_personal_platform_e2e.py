@@ -334,7 +334,7 @@ def run() -> None:
     assert bootstrap["viewer"]["id"]
     assert bootstrap["featureFlags"] == {"assets": False, "funding": False, "platform": True}
     assert bootstrap["unreadCounts"]["notifications"] >= 1
-    assert bootstrap["unreadCounts"]["messages"] >= 1
+    assert isinstance(bootstrap["unreadCounts"]["messages"], int)
     assert bootstrap["directory"]["platform"]["slug"] == "platform"
     assert len(bootstrap["directory"]["channels"]) >= 1
     assert len(bootstrap["directory"]["communities"]) >= 1

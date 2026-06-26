@@ -263,8 +263,37 @@ def run() -> None:
         )
         assert send.status_code == 200, send.text
 
+        conversation_id = direct.json()["conversation"]["id"]
+        fetched = client.get(
+            f"/messages/conversations/{conversation_id}/messages",
+            headers=_auth_header(seeded["owner_token"]),
+        )
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["total"] >= 1
+        assert any(item["body"] == "ping" for item in fetched.json()["items"])
+
+        listed = client.get(
+            "/messages/conversations",
+            headers=_auth_header(seeded["owner_token"]),
+        )
+        assert listed.status_code == 200, listed.text
+        listed_item = next(
+            item for item in listed.json()["items"] if item["id"] == conversation_id
+        )
+        assert listed_item["preview"] == "ping"
+        assert listed_item["unread_count"] >= 1
+
+        contacts = client.get(
+            f"/messages/contacts?q={seeded['member_username'][:4]}",
+            headers=_auth_header(seeded["owner_token"]),
+        )
+        assert contacts.status_code == 200, contacts.text
+        assert any(
+            item["username"] == seeded["member_username"] for item in contacts.json()["items"]
+        )
+
         mark_read = client.post(
-            f"/messages/conversations/{direct.json()['conversation']['id']}/read",
+            f"/messages/conversations/{conversation_id}/read",
             headers=_auth_header(seeded["owner_token"]),
             json={},
         )
@@ -287,6 +316,12 @@ def run() -> None:
                     "project_edit_request_vote_executed": edit_executed,
                     "project_revert_vote_executed": revert_executed,
                     "project_phase_after_revert": phase_after_revert,
+                    "conversation_messages_fetched": fetched.json()["total"] >= 1,
+                    "conversation_list_preview": listed_item["preview"] == "ping",
+                    "message_contacts_search": any(
+                        item["username"] == seeded["member_username"]
+                        for item in contacts.json()["items"]
+                    ),
                     "conversation_mark_read_ok": mark_read.json()["ok"],
                 }
             )

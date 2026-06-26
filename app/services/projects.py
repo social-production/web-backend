@@ -43,6 +43,7 @@ from app.models import (
     project_values,
     projects,
     reports,
+    scope_memberships,
     user_follows,
     users,
 )
@@ -56,7 +57,7 @@ PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
 PROJECT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 PROJECT_PHASES = (
-    ("phase-1", 1, "P1", "Discovery", "Define values and demand."),
+    ("phase-1", 1, "P1", "Proposal", "Define values and demand."),
     ("phase-2", 2, "P2", "Production Plan", "Select production plan."),
     ("phase-3", 3, "P3", "Distribution Plan", "Select distribution plan."),
     ("phase-4", 4, "P4", "Acquisition", "Prepare acquisition and inventory."),
@@ -100,6 +101,14 @@ def _get_project_by_slug_row(db: Session, slug: str) -> Mapping[str, object]:
     return row
 
 
+def _ensure_personal_service_author(project_row: Mapping[str, object], user_id: UUID) -> None:
+    if project_row["project_mode"] != "personal-service" or project_row["author_id"] != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the service creator can perform this action",
+        )
+
+
 def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
     normalized = [value.strip().lower() for value in channel_slugs if value.strip()]
     if not normalized:
@@ -115,6 +124,42 @@ def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown channel slugs: {missing}",
         )
+
+    return [row["id"] for row in rows]
+
+
+def _resolve_community_ids(db: Session, community_slugs: list[str], current_user_id: UUID) -> list[UUID]:
+    normalized = [value.strip().lower() for value in community_slugs if value.strip()]
+    if not normalized:
+        return []
+
+    rows = db.execute(
+        select(communities.c.id, communities.c.slug, communities.c.join_policy).where(communities.c.slug.in_(normalized))
+    ).mappings().all()
+    found = {row["slug"] for row in rows}
+    missing = sorted(set(normalized) - found)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown community slugs: {missing}",
+        )
+
+    closed_ids = [row["id"] for row in rows if row["join_policy"] == "closed"]
+    if closed_ids:
+        membership_rows = db.execute(
+            select(scope_memberships.c.scope_id).where(
+                scope_memberships.c.scope_kind == "community",
+                scope_memberships.c.scope_id.in_(closed_ids),
+                scope_memberships.c.user_id == current_user_id,
+            )
+        ).all()
+        member_ids = {row[0] for row in membership_rows}
+        forbidden = sorted(row["slug"] for row in rows if row["id"] in closed_ids and row["id"] not in member_ids)
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You must be a member to tag private communities: {forbidden}",
+            )
 
     return [row["id"] for row in rows]
 
@@ -181,8 +226,11 @@ async def _get_signal_counts(db: Session, cache: Redis, project_id: UUID) -> dic
 
 
 def _phase_for_mode(project_mode: str) -> tuple[str, str]:
-    from app.services.projects_phases import STAGE_LABEL_BY_PHASE_ID
-    return "phase-1", STAGE_LABEL_BY_PHASE_ID.get("phase-1", "Discovery")
+    from app.services.projects_phases import display_stage_label
+
+    if project_mode == "personal-service":
+        return "phase-1", display_stage_label("personal-service", None, "phase-1")
+    return "phase-1", display_stage_label(project_mode, None, "phase-1")
 
 
 def create_project(
@@ -195,6 +243,8 @@ def create_project(
     project_subtype: str | None,
     location_label: str,
     channel_slugs: list[str],
+    community_slugs: list[str] | None = None,
+    request_mode: str | None = None,
 ) -> dict[str, object]:
     normalized_slug = slug.strip().lower()
     normalized_mode = project_mode.strip().lower()
@@ -221,6 +271,13 @@ def create_project(
         )
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
+    community_ids = _resolve_community_ids(db, community_slugs or [], current_user_id)
+    normalized_request_mode = (request_mode or "both").strip().lower()
+    if normalized_request_mode not in {"calendar", "direct", "both"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="request_mode must be one of: ['both', 'calendar', 'direct']",
+        )
     if not channel_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -274,11 +331,21 @@ def create_project(
             insert(project_memberships).values(
                 project_id=created["id"],
                 user_id=current_user_id,
-                is_manager=False,
+                is_manager=normalized_mode == "personal-service",
                 is_manager_candidate=False,
                 joined_at=now,
             )
         )
+
+        if normalized_mode == "personal-service":
+            db.execute(
+                insert(project_service_request_settings).values(
+                    project_id=created["id"],
+                    enabled=True,
+                    request_mode=normalized_request_mode,
+                    allow_off_schedule_requests=normalized_request_mode == "both",
+                )
+            )
 
         for channel_id in channel_ids:
             db.execute(
@@ -287,6 +354,16 @@ def create_project(
                     tag_kind="channel",
                     channel_id=channel_id,
                     community_id=None,
+                )
+            )
+
+        for community_id in community_ids:
+            db.execute(
+                insert(project_tags).values(
+                    project_id=created["id"],
+                    tag_kind="community",
+                    channel_id=None,
+                    community_id=community_id,
                 )
             )
 
@@ -405,6 +482,46 @@ def _lifecycle_phases(current_phase_id: str) -> list[dict[str, object]]:
                 "order": order,
                 "shortLabel": short_label,
                 "title": title,
+                "summary": summary,
+                "progressState": progress,
+                "projectStatus": "active",
+                "mechanics": [],
+            }
+        )
+    return phases
+
+
+def _visible_lifecycle_phases(
+    project_mode: str,
+    project_subtype: str | None,
+    current_phase_id: str,
+) -> list[dict[str, object]]:
+    from app.services.projects_phases import (
+        effective_phase_id_for_progress,
+        lifecycle_phase_title,
+        visible_phase_ids_for_project,
+    )
+
+    phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
+    phase_meta = {phase_id: (order, short_label, title, summary) for phase_id, order, short_label, title, summary in PROJECT_PHASES}
+    current_order = phase_order.get(effective_phase_id_for_progress(current_phase_id), 1)
+    visible_ids = visible_phase_ids_for_project(project_mode, project_subtype, current_phase_id)
+
+    phases: list[dict[str, object]] = []
+    for index, phase_id in enumerate(visible_ids, start=1):
+        order, short_label, title, summary = phase_meta[phase_id]
+        if order < current_order:
+            progress = "complete"
+        elif order == current_order:
+            progress = "current"
+        else:
+            progress = "upcoming"
+        phases.append(
+            {
+                "id": phase_id,
+                "order": index,
+                "shortLabel": short_label,
+                "title": lifecycle_phase_title(project_mode, phase_id, title),
                 "summary": summary,
                 "progressState": progress,
                 "projectStatus": "active",
@@ -574,6 +691,8 @@ async def get_project_detail(
     viewer_is_member = viewer_membership is not None
     viewer_is_manager = bool(viewer_membership["is_manager"]) if viewer_membership else False
     viewer_is_manager_candidate = bool(viewer_membership["is_manager_candidate"]) if viewer_membership else False
+    viewer_is_author = current_user_id is not None and row["author_id"] == current_user_id
+    viewer_can_review_requests = viewer_is_manager or (row["project_mode"] == "personal-service" and viewer_is_author)
 
     author_row = db.execute(
         select(users.c.username).where(users.c.id == row["author_id"])
@@ -981,9 +1100,9 @@ async def get_project_detail(
     ).mappings().first()
     if service_settings is None:
         service_settings_payload = {
-            "enabled": False,
+            "enabled": row["project_mode"] == "personal-service",
             "requestMode": "both",
-            "allowOffScheduleRequests": False,
+            "allowOffScheduleRequests": row["project_mode"] == "personal-service",
             "summary": "",
         }
     else:
@@ -1014,7 +1133,10 @@ async def get_project_detail(
 
     settings_change_rows = db.execute(
         select(project_service_request_setting_changes)
-        .where(project_service_request_setting_changes.c.project_id == project_id)
+        .where(
+            project_service_request_setting_changes.c.project_id == project_id,
+            project_service_request_setting_changes.c.status == "open",
+        )
         .order_by(project_service_request_setting_changes.c.created_at.desc())
     ).mappings().all()
     settings_change_requests = []
@@ -1117,20 +1239,68 @@ async def get_project_detail(
 
     phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
     current_order = phase_order.get(row["current_phase_id"], 1)
-    next_phase = next((p for p in PROJECT_PHASES if p[1] == current_order + 1), None)
+    from app.services.projects_phases import display_stage_label, next_phase_id_for_project
+
+    next_phase_id = next_phase_id_for_project(
+        str(row["project_mode"]),
+        str(row["project_subtype"]) if row["project_subtype"] else None,
+        str(row["current_phase_id"]),
+    )
+    next_phase_label = (
+        display_stage_label(
+            str(row["project_mode"]),
+            str(row["project_subtype"]) if row["project_subtype"] else None,
+            next_phase_id,
+        )
+        if next_phase_id
+        else None
+    )
 
     software_governance = None
     if row["project_subtype"] == "software":
         software_governance = get_project_software_governance(db=db, project_slug=row["slug"], current_user_id=current_user_id)
 
+    is_personal_service = row["project_mode"] == "personal-service"
+    viewer_can_request_update = viewer_is_author if is_personal_service else viewer_is_member
+    viewer_can_vote_on_update_requests = False if is_personal_service else viewer_is_member
+    viewer_can_request_edit = viewer_is_author if is_personal_service else viewer_is_member
+    viewer_can_vote_on_edit_requests = False if is_personal_service else viewer_is_member
+    viewer_can_create_activities = viewer_is_author if is_personal_service else viewer_is_member
+    viewer_can_submit_requests = (current_user_id is not None and not viewer_is_author) if is_personal_service else viewer_is_member
+    viewer_can_request_settings_changes = viewer_is_author if is_personal_service else viewer_is_member
+    viewer_can_vote_on_settings_changes = False if is_personal_service else viewer_is_member
+    viewer_can_request_phase_changes = False if is_personal_service else viewer_is_member
+    viewer_can_vote_on_phase_changes = False if is_personal_service else viewer_is_member
+    viewer_can_propose_links = False if is_personal_service else viewer_is_member
+    phase_one_member_flags = (
+        {
+            "viewerCanSignalDemand": False,
+            "viewerCanSignalOpposition": False,
+            "viewerCanAddValue": False,
+            "viewerCanVoteOnValues": False,
+        }
+        if is_personal_service
+        else {
+            "viewerCanSignalDemand": viewer_is_member,
+            "viewerCanSignalOpposition": viewer_is_member,
+            "viewerCanAddValue": viewer_is_member,
+            "viewerCanVoteOnValues": viewer_is_member,
+        }
+    )
+    phase_plan_member_flags = (
+        {"viewerCanSubmitPlans": False, "viewerCanVoteOnPlans": False}
+        if is_personal_service
+        else {"viewerCanSubmitPlans": viewer_is_member, "viewerCanVoteOnPlans": viewer_is_member}
+    )
+
     request_system = {
         "enabled": bool(service_settings_payload["enabled"]),
         "requestCount": len(service_requests),
         "requests": service_requests,
-        "viewerCanSubmitRequests": viewer_is_member,
-        "viewerCanReviewRequests": viewer_is_manager,
-        "viewerCanRequestSettingsChanges": viewer_is_member,
-        "viewerCanVoteOnSettingsChanges": viewer_is_member,
+        "viewerCanSubmitRequests": viewer_can_submit_requests,
+        "viewerCanReviewRequests": viewer_can_review_requests,
+        "viewerCanRequestSettingsChanges": viewer_can_request_settings_changes,
+        "viewerCanVoteOnSettingsChanges": viewer_can_vote_on_settings_changes,
         "requiresSchedule": service_settings_payload["requestMode"] == "calendar",
         "settings": service_settings_payload,
         "settingsChangeRequests": settings_change_requests,
@@ -1141,7 +1311,7 @@ async def get_project_detail(
         "currentSubtype": row["project_subtype"],
         "currentSubtypeLabel": row["project_subtype"].replace("-", " ").title() if row["project_subtype"] else None,
         "usesPlatformLifecycle": row["project_mode"] != "personal-service",
-        "supportsDemandSignals": True,
+        "supportsDemandSignals": not is_personal_service,
         "supportsPlanning": row["project_mode"] != "personal-service",
         "currentPhaseId": row["current_phase_id"],
         "quorumThresholdPercent": (required_votes(vote_context_population) / vote_context_population * 100.0) if vote_context_population > 0 else 0.0,
@@ -1149,13 +1319,17 @@ async def get_project_detail(
         "voteContextLabel": vote_context_label,
         "voteContextPopulation": vote_context_population,
         "notes": [],
-        "phases": _lifecycle_phases(row["current_phase_id"]),
-        "viewerCanRequestPhaseChanges": viewer_is_member,
-        "viewerCanVoteOnPhaseChanges": viewer_is_member,
+        "phases": _visible_lifecycle_phases(
+            str(row["project_mode"]),
+            str(row["project_subtype"]) if row["project_subtype"] else None,
+            str(row["current_phase_id"]),
+        ),
+        "viewerCanRequestPhaseChanges": viewer_can_request_phase_changes,
+        "viewerCanVoteOnPhaseChanges": viewer_can_vote_on_phase_changes,
         "phaseChangeRequests": phase_change_requests,
         "viewerCanAdvancePhase": viewer_is_manager,
-        "nextPhaseId": next_phase[0] if next_phase else None,
-        "nextPhaseLabel": next_phase[3] if next_phase else None,
+        "nextPhaseId": next_phase_id,
+        "nextPhaseLabel": next_phase_label,
         "viewerCanRevertPhase": viewer_is_manager,
         "revertablePhaseIds": [phase_id for phase_id, order, _, _, _ in PROJECT_PHASES if order < current_order and order <= 3],
         "revertHistory": revert_history,
@@ -1163,38 +1337,33 @@ async def get_project_detail(
         "personalService": {
             "availabilitySummary": "",
             "travelRadiusLabel": "",
-            "usesCalendar": service_settings_payload["requestMode"] == "calendar",
+            "usesCalendar": service_settings_payload["requestMode"] in {"calendar", "both"},
             "requestMode": service_settings_payload["requestMode"],
         } if row["project_mode"] == "personal-service" else None,
         "phaseOne": {
             "values": phase_one_values,
-            "viewerCanSignalDemand": viewer_is_member,
+            **phase_one_member_flags,
             "viewerHasDemandSignal": viewer_signal == "demand",
-            "viewerCanSignalOpposition": viewer_is_member,
             "viewerHasOppositionSignal": viewer_signal == "opposition",
             "signalSummary": signal_summary,
-            "viewerCanAddValue": viewer_is_member,
-            "viewerCanVoteOnValues": viewer_is_member,
         },
         "phaseTwo": {
             "plans": phase_two_plans,
             "winningPlanId": phase_two_winning,
-            "viewerCanSubmitPlans": viewer_is_member,
-            "viewerCanVoteOnPlans": viewer_is_member,
+            **phase_plan_member_flags,
             "availableAssetManagementServices": [],
         },
         "phaseThree": {
             "plans": phase_three_plans,
             "winningPlanId": phase_three_winning,
-            "viewerCanSubmitPlans": viewer_is_member,
-            "viewerCanVoteOnPlans": viewer_is_member,
+            **phase_plan_member_flags,
             "requestSystemEnabled": bool(service_settings_payload["enabled"]),
         },
         "phaseFour": None,
         "phaseFive": {
             "activities": activities,
             "history": [],
-            "viewerCanCreateActivities": viewer_is_member,
+            "viewerCanCreateActivities": viewer_can_create_activities,
             "selectablePlanPhases": [],
             "softwareGovernance": software_governance,
         },
@@ -1213,6 +1382,10 @@ async def get_project_detail(
         .where(comments.c.subject_type == "project", comments.c.subject_id == project_id, comments.c.parent_id.is_(None))
         .order_by(comments.c.created_at.asc())
     ).all()
+    discussion_author_ids = {author_id for _, author_id, _, _, _ in discussion_rows if author_id}
+    missing_discussion_author_ids = discussion_author_ids - set(usernames.keys())
+    if missing_discussion_author_ids:
+        usernames.update(_username_lookup(db, missing_discussion_author_ids))
     discussion_comment_ids = [comment_id for comment_id, _, _, _, _ in discussion_rows]
     discussion_active_votes: dict[UUID, int] = {}
     if current_user_id is not None and discussion_comment_ids:
@@ -1249,7 +1422,11 @@ async def get_project_detail(
         "description": row["description"],
         "channelTags": channel_tags,
         "communityTags": community_tags,
-        "stage": row["stage_label"],
+        "stage": display_stage_label(
+            str(row["project_mode"]),
+            str(row["project_subtype"]) if row["project_subtype"] else None,
+            str(row["current_phase_id"]),
+        ),
         "locationLabel": row["location_label"],
         "voteCount": int(row["vote_count"] or 0),
         "activeVote": active_vote,
@@ -1260,11 +1437,11 @@ async def get_project_detail(
         "lifecycle": lifecycle,
         "updates": updates,
         "updateRequests": update_requests,
-        "viewerCanRequestUpdate": viewer_is_member,
-        "viewerCanVoteOnUpdateRequests": viewer_is_member,
+        "viewerCanRequestUpdate": viewer_can_request_update,
+        "viewerCanVoteOnUpdateRequests": viewer_can_vote_on_update_requests,
         "editRequests": edit_requests,
-        "viewerCanRequestEdit": viewer_is_member,
-        "viewerCanVoteOnEditRequests": viewer_is_member,
+        "viewerCanRequestEdit": viewer_can_request_edit,
+        "viewerCanVoteOnEditRequests": viewer_can_vote_on_edit_requests,
         "linksFrame": {
             "projectSlug": row["slug"],
             "intro": "Project links",
@@ -1272,7 +1449,7 @@ async def get_project_detail(
             "manualLinks": [],
             "manualLinkRequests": manual_link_requests,
             "linkableProjects": linkable_projects,
-            "viewerCanProposeLinks": viewer_is_member,
+            "viewerCanProposeLinks": viewer_can_propose_links,
             "conversionNote": "",
             "conversionWorkflow": [],
             "conversionLineage": None,
@@ -1512,7 +1689,10 @@ def create_project_activity(
     linked_plan_phase_id: str | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
-    _ensure_project_member(db, project_row["id"], current_user_id)
+    if project_row["project_mode"] == "personal-service":
+        _ensure_personal_service_author(project_row, current_user_id)
+    else:
+        _ensure_project_member(db, project_row["id"], current_user_id)
 
     if ends_at <= scheduled_at:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
@@ -1682,12 +1862,13 @@ def add_project_update(
     body: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
-    _ensure_project_member(db, project_row["id"], current_user_id)
+    if project_row["project_mode"] == "personal-service":
+        _ensure_personal_service_author(project_row, current_user_id)
+    else:
+        _ensure_project_member(db, project_row["id"], current_user_id)
 
-    normalized_title = title.strip()
+    normalized_title = title.strip() or "Update"
     normalized_body = body.strip()
-    if not normalized_title:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
     if not normalized_body:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="body is required")
 
@@ -1720,6 +1901,42 @@ def add_project_update(
             "created_at": created["created_at"],
         }
     }
+
+
+def update_project_details(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    title: str,
+    description: str,
+) -> dict[str, object]:
+    project_row = _get_project_by_slug_row(db, slug)
+    if project_row["project_mode"] != "personal-service":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Direct detail updates are only available for personal-service projects",
+        )
+    _ensure_personal_service_author(project_row, current_user_id)
+
+    normalized_title = title.strip()
+    normalized_description = description.strip()
+    if not normalized_title:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
+    if not normalized_description:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="description is required")
+
+    try:
+        db.execute(
+            update(projects)
+            .where(projects.c.id == project_row["id"])
+            .values(title=normalized_title, description=normalized_description)
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update project details") from exc
+
+    return {"ok": True, "slug": project_row["slug"], "title": normalized_title, "description": normalized_description}
 
 
 def share_project_with_user(

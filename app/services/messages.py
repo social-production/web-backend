@@ -6,7 +6,7 @@ from uuid import UUID
 
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,11 +20,18 @@ from app.models import (
     messages,
     project_memberships,
     projects,
+    subject_chat_reads,
     users,
 )
 
 
-def _serialize_conversation(row: Mapping[str, object], participants: list[dict[str, object]]) -> dict[str, object]:
+def _serialize_conversation(
+    row: Mapping[str, object],
+    participants: list[dict[str, object]],
+    *,
+    preview: str = "",
+    unread_count: int = 0,
+) -> dict[str, object]:
     return {
         "id": row["id"],
         "kind": row["kind"],
@@ -33,6 +40,8 @@ def _serialize_conversation(row: Mapping[str, object], participants: list[dict[s
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "last_message_at": row["last_message_at"],
+        "preview": preview,
+        "unread_count": unread_count,
         "participants": participants,
     }
 
@@ -79,6 +88,97 @@ def _ensure_member(db: Session, conversation_id: UUID, user_id: UUID) -> None:
     ).first()
     if member is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of this conversation")
+
+
+def _conversation_preview(db: Session, conversation_id: UUID) -> str:
+    last_message = db.execute(
+        select(messages.c.encrypted_body)
+        .where(messages.c.conversation_id == conversation_id)
+        .order_by(messages.c.created_at.desc())
+        .limit(1)
+    ).mappings().first()
+    if last_message is None:
+        return ""
+
+    try:
+        return decrypt_message(last_message["encrypted_body"])[:200]
+    except InvalidToken:
+        return ""
+
+
+def _conversation_unread_count(
+    db: Session,
+    conversation_id: UUID,
+    current_user_id: UUID,
+    last_read_at: datetime | None,
+) -> int:
+    conditions = [
+        messages.c.conversation_id == conversation_id,
+        messages.c.sender_id != current_user_id,
+    ]
+    if last_read_at is None:
+        conditions.append(messages.c.created_at.is_not(None))
+    else:
+        conditions.append(messages.c.created_at > last_read_at)
+
+    count = db.execute(select(func.count()).select_from(messages).where(*conditions)).scalar_one()
+    return int(count or 0)
+
+
+def _get_subject_chat_last_read_at(
+    db: Session,
+    current_user_id: UUID,
+    subject_type: str,
+    subject_id: UUID,
+) -> datetime | None:
+    row = db.execute(
+        select(subject_chat_reads.c.last_read_at).where(
+            subject_chat_reads.c.user_id == current_user_id,
+            subject_chat_reads.c.subject_type == subject_type,
+            subject_chat_reads.c.subject_id == subject_id,
+        )
+    ).first()
+    return row[0] if row else None
+
+
+def _linked_chat_unread_count(
+    db: Session,
+    subject_type: str,
+    subject_id: UUID,
+    current_user_id: UUID,
+    last_read_at: datetime | None,
+) -> int:
+    conditions = [
+        comments.c.subject_type == subject_type,
+        comments.c.subject_id == subject_id,
+        comments.c.author_id != current_user_id,
+    ]
+    if last_read_at is not None:
+        conditions.append(comments.c.created_at > last_read_at)
+
+    count = db.execute(select(func.count()).select_from(comments).where(*conditions)).scalar_one()
+    return int(count or 0)
+
+
+def get_total_unread_message_count(db: Session, current_user_id: UUID) -> int:
+    conversation_rows = db.execute(
+        select(conversations.c.id, conversation_members.c.last_read_at)
+        .select_from(
+            conversations.join(
+                conversation_members,
+                conversations.c.id == conversation_members.c.conversation_id,
+            )
+        )
+        .where(conversation_members.c.user_id == current_user_id)
+    ).all()
+
+    total = 0
+    for conversation_id, last_read_at in conversation_rows:
+        total += _conversation_unread_count(db, conversation_id, current_user_id, last_read_at)
+
+    linked_chats = get_linked_chats(db, current_user_id)
+    total += sum(int(item.get("unread_count") or 0) for item in linked_chats["items"])
+    return total
 
 
 def _get_conversation_participants(db: Session, conversation_id: UUID) -> list[dict[str, object]]:
@@ -128,6 +228,14 @@ def _find_existing_direct_conversation(db: Session, user_a: UUID, user_b: UUID) 
             return row
 
     return None
+
+
+def find_direct_conversation_between(
+    db: Session,
+    user_a: UUID,
+    user_b: UUID,
+) -> Mapping[str, object] | None:
+    return _find_existing_direct_conversation(db, user_a, user_b)
 
 
 def start_direct_conversation(db: Session, current_user_id: UUID, other_username: str) -> dict[str, object]:
@@ -305,7 +413,7 @@ def send_message(
 
 def list_conversations(db: Session, current_user_id: UUID) -> dict[str, object]:
     rows = db.execute(
-        select(conversations)
+        select(conversations, conversation_members.c.last_read_at)
         .select_from(
             conversations.join(
                 conversation_members,
@@ -318,10 +426,65 @@ def list_conversations(db: Session, current_user_id: UUID) -> dict[str, object]:
 
     items = []
     for row in rows:
-        participants = _get_conversation_participants(db, row["id"])
-        items.append(_serialize_conversation(row, participants))
+        conversation_id = row["id"]
+        participants = _get_conversation_participants(db, conversation_id)
+        preview = _conversation_preview(db, conversation_id)
+        unread_count = _conversation_unread_count(
+            db,
+            conversation_id,
+            current_user_id,
+            row["last_read_at"],
+        )
+        items.append(
+            _serialize_conversation(
+                row,
+                participants,
+                preview=preview,
+                unread_count=unread_count,
+            )
+        )
 
     return {"total": len(items), "items": items}
+
+
+def search_message_contacts(
+    db: Session,
+    current_user_id: UUID,
+    query: str = "",
+    limit: int = 8,
+) -> dict[str, object]:
+    normalized_query = query.strip().lower()
+    capped_limit = max(1, min(limit, 25))
+    conditions = [
+        users.c.is_active.is_(True),
+        users.c.id != current_user_id,
+    ]
+    if normalized_query:
+        conditions.append(
+            or_(
+                users.c.username.ilike(f"%{normalized_query}%"),
+            )
+        )
+
+    rows = db.execute(
+        select(users.c.id, users.c.username, users.c.bio, users.c.profile_image_url)
+        .where(*conditions)
+        .order_by(users.c.username.asc())
+        .limit(capped_limit)
+    ).mappings().all()
+
+    return {
+        "total": len(rows),
+        "items": [
+            {
+                "id": row["id"],
+                "username": row["username"],
+                "bio": row["bio"],
+                "profileImageUrl": row["profile_image_url"],
+            }
+            for row in rows
+        ],
+    }
 
 
 def get_messages_for_conversation(db: Session, current_user_id: UUID, conversation_id: UUID) -> dict[str, object]:
@@ -379,84 +542,178 @@ def rename_group_conversation(
 
 
 def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
-    event_rows = db.execute(
-        select(
-            events.c.id,
-            events.c.slug,
-            events.c.title,
-            events.c.last_activity_at,
-            events.c.comment_count,
-        )
-        .select_from(
-            event_memberships.join(events, event_memberships.c.event_id == events.c.id)
-        )
-        .where(event_memberships.c.user_id == current_user_id)
-        .order_by(events.c.last_activity_at.desc())
-    ).mappings().all()
+    event_ids = {
+        row[0]
+        for row in db.execute(
+            select(event_memberships.c.event_id).where(event_memberships.c.user_id == current_user_id)
+        ).all()
+    }
+    project_ids = {
+        row[0]
+        for row in db.execute(
+            select(project_memberships.c.project_id).where(project_memberships.c.user_id == current_user_id)
+        ).all()
+    }
 
-    project_rows = db.execute(
-        select(
-            projects.c.id,
-            projects.c.slug,
-            projects.c.title,
-            projects.c.last_activity_at,
-            projects.c.comment_count,
-        )
-        .select_from(
-            project_memberships.join(projects, project_memberships.c.project_id == projects.c.id)
-        )
-        .where(project_memberships.c.user_id == current_user_id)
-        .order_by(projects.c.last_activity_at.desc())
-    ).mappings().all()
+    for subject_type, target_ids in (("event", event_ids), ("project", project_ids)):
+        commented_ids = db.execute(
+            select(comments.c.subject_id)
+            .where(
+                comments.c.subject_type == subject_type,
+                comments.c.author_id == current_user_id,
+            )
+            .distinct()
+        ).scalars().all()
+        target_ids.update(commented_ids)
 
     items = []
 
-    for row in event_rows:
-        last_comment = db.execute(
-            select(comments.c.body, comments.c.created_at)
-            .where(
-                comments.c.subject_type == "event",
-                comments.c.subject_id == row["id"],
+    if event_ids:
+        event_rows = db.execute(
+            select(
+                events.c.id,
+                events.c.slug,
+                events.c.title,
+                events.c.last_activity_at,
+                events.c.comment_count,
             )
-            .order_by(comments.c.created_at.desc())
-            .limit(1)
-        ).mappings().first()
+            .where(events.c.id.in_(list(event_ids)))
+            .order_by(events.c.last_activity_at.desc())
+        ).mappings().all()
 
-        items.append({
-            "id": str(row["id"]),
-            "kind": "event",
-            "entity_id": str(row["id"]),
-            "entity_slug": row["slug"],
-            "title": row["title"],
-            "preview": last_comment["body"][:200] if last_comment else "",
-            "last_message_at": _iso(last_comment["created_at"]) if last_comment else _iso(row["last_activity_at"]),
-            "comment_count": row["comment_count"],
-        })
-
-    for row in project_rows:
-        last_comment = db.execute(
-            select(comments.c.body, comments.c.created_at)
-            .where(
-                comments.c.subject_type == "project",
-                comments.c.subject_id == row["id"],
+        for row in event_rows:
+            last_comment = db.execute(
+                select(comments.c.body, comments.c.created_at)
+                .where(
+                    comments.c.subject_type == "event",
+                    comments.c.subject_id == row["id"],
+                )
+                .order_by(comments.c.created_at.desc())
+                .limit(1)
+            ).mappings().first()
+            last_read_at = _get_subject_chat_last_read_at(db, current_user_id, "event", row["id"])
+            unread_count = _linked_chat_unread_count(
+                db,
+                "event",
+                row["id"],
+                current_user_id,
+                last_read_at,
             )
-            .order_by(comments.c.created_at.desc())
-            .limit(1)
-        ).mappings().first()
 
-        items.append({
-            "id": str(row["id"]),
-            "kind": "project",
-            "entity_id": str(row["id"]),
-            "entity_slug": row["slug"],
-            "title": row["title"],
-            "preview": last_comment["body"][:200] if last_comment else "",
-            "last_message_at": _iso(last_comment["created_at"]) if last_comment else _iso(row["last_activity_at"]),
-            "comment_count": row["comment_count"],
-        })
+            items.append({
+                "id": str(row["id"]),
+                "kind": "event",
+                "entity_id": str(row["id"]),
+                "entity_slug": row["slug"],
+                "title": row["title"],
+                "preview": last_comment["body"][:200] if last_comment else "",
+                "last_message_at": _iso(last_comment["created_at"]) if last_comment else _iso(row["last_activity_at"]),
+                "comment_count": row["comment_count"],
+                "unread_count": unread_count,
+            })
+
+    if project_ids:
+        project_rows = db.execute(
+            select(
+                projects.c.id,
+                projects.c.slug,
+                projects.c.title,
+                projects.c.last_activity_at,
+                projects.c.comment_count,
+            )
+            .where(projects.c.id.in_(list(project_ids)))
+            .order_by(projects.c.last_activity_at.desc())
+        ).mappings().all()
+
+        for row in project_rows:
+            last_comment = db.execute(
+                select(comments.c.body, comments.c.created_at)
+                .where(
+                    comments.c.subject_type == "project",
+                    comments.c.subject_id == row["id"],
+                )
+                .order_by(comments.c.created_at.desc())
+                .limit(1)
+            ).mappings().first()
+            last_read_at = _get_subject_chat_last_read_at(db, current_user_id, "project", row["id"])
+            unread_count = _linked_chat_unread_count(
+                db,
+                "project",
+                row["id"],
+                current_user_id,
+                last_read_at,
+            )
+
+            items.append({
+                "id": str(row["id"]),
+                "kind": "project",
+                "entity_id": str(row["id"]),
+                "entity_slug": row["slug"],
+                "title": row["title"],
+                "preview": last_comment["body"][:200] if last_comment else "",
+                "last_message_at": _iso(last_comment["created_at"]) if last_comment else _iso(row["last_activity_at"]),
+                "comment_count": row["comment_count"],
+                "unread_count": unread_count,
+            })
 
     items.sort(key=lambda x: x["last_message_at"], reverse=True)
     return {"total": len(items), "items": items}
+
+
+def mark_linked_chat_read(
+    db: Session,
+    current_user_id: UUID,
+    subject_type: str,
+    subject_id: UUID,
+) -> dict[str, object]:
+    normalized_subject_type = subject_type.strip().lower()
+    if normalized_subject_type not in {"project", "event"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="subject_type must be project or event")
+
+    if normalized_subject_type == "project":
+        exists = db.execute(select(projects.c.id).where(projects.c.id == subject_id)).first()
+    else:
+        exists = db.execute(select(events.c.id).where(events.c.id == subject_id)).first()
+
+    if exists is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{normalized_subject_type.capitalize()} not found")
+
+    now = datetime.now(timezone.utc)
+    existing = db.execute(
+        select(subject_chat_reads.c.user_id).where(
+            subject_chat_reads.c.user_id == current_user_id,
+            subject_chat_reads.c.subject_type == normalized_subject_type,
+            subject_chat_reads.c.subject_id == subject_id,
+        )
+    ).first()
+
+    if existing is None:
+        db.execute(
+            insert(subject_chat_reads).values(
+                user_id=current_user_id,
+                subject_type=normalized_subject_type,
+                subject_id=subject_id,
+                last_read_at=now,
+            )
+        )
+    else:
+        db.execute(
+            update(subject_chat_reads)
+            .where(
+                subject_chat_reads.c.user_id == current_user_id,
+                subject_chat_reads.c.subject_type == normalized_subject_type,
+                subject_chat_reads.c.subject_id == subject_id,
+            )
+            .values(last_read_at=now)
+        )
+
+    db.commit()
+    return {
+        "ok": True,
+        "subject_type": normalized_subject_type,
+        "subject_id": subject_id,
+        "last_read_at": now,
+    }
 
 
 def _iso(dt) -> str:

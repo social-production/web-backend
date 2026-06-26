@@ -33,3 +33,11 @@ messages = table(
     created_at(),
     updated_at(),
 )
+
+subject_chat_reads = table(
+    "subject_chat_reads",
+    sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("subject_type", sa.String(length=16), primary_key=True),
+    sa.Column("subject_id", UUID, primary_key=True),
+    sa.Column("last_read_at", sa.DateTime(timezone=True), nullable=False),
+)

@@ -4,6 +4,7 @@ from os import getenv
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from app.config import get_settings
 from app.models import metadata
 
 config = context.config
@@ -11,7 +12,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url")))
+config.set_main_option("sqlalchemy.url", getenv("DATABASE_URL", get_settings().database_url))
 target_metadata = metadata
 
 

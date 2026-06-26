@@ -76,9 +76,30 @@ def _get_settings_for_user(db: Session, user_id: UUID) -> Mapping[str, object]:
     return row
 
 
-def get_profile_by_username(db: Session, username: str) -> dict[str, object]:
+def get_profile_by_username(
+    db: Session,
+    username: str,
+    current_user_id: UUID | None = None,
+) -> dict[str, object]:
     user_row = _get_user_by_username(db, username)
-    return {"user": _serialize_user(user_row)}
+    viewer_is_following = False
+    is_own_profile = current_user_id == user_row["id"]
+
+    if current_user_id is not None and not is_own_profile:
+        viewer_is_following = db.execute(
+            select(user_follows.c.follower_id).where(
+                user_follows.c.follower_id == current_user_id,
+                user_follows.c.followed_id == user_row["id"],
+                user_follows.c.status == "accepted",
+            )
+        ).first() is not None
+
+    return {
+        "user": _serialize_user(user_row),
+        "viewer_is_following": viewer_is_following,
+        "is_own_profile": is_own_profile,
+        "can_view_personal_feed": is_own_profile or viewer_is_following,
+    }
 
 
 def get_own_profile(db: Session, current_user_id: UUID) -> dict[str, object]:

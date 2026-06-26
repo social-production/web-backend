@@ -336,6 +336,12 @@ def vote_phase_change_request(
             href=f"/events/{event_row['slug']}",
         )
 
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not persist phase vote activity") from exc
+
     return {
         "request": _serialize_phase_request(refreshed_request, final_summary),
         "vote": normalized_vote,
@@ -512,6 +518,11 @@ def vote_update_request(
         action_type="cast-vote",
         metadata={"target_type": "event-update-request", "target_id": str(request_id), "vote": normalized_vote},
     )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not persist update vote activity") from exc
 
     refreshed_request = db.execute(
         select(event_update_requests).where(event_update_requests.c.id == request_id)
@@ -693,6 +704,12 @@ def vote_edit_request(
             meta="event",
             href=f"/events/{event_row['slug']}",
         )
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not persist edit vote activity") from exc
 
     return {
         "request": _serialize_edit_request(refreshed_request, final_summary),

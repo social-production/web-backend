@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.cache import close_redis_client
 from app.config import get_settings
+from app.dependencies import get_cache
+from app.db import engine
 from app.routers.auth import router as auth_router
 from app.routers.board import router as board_router
 from app.routers.bootstrap import router as bootstrap_router
@@ -40,17 +43,13 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    settings.validate_runtime_settings()
     app = FastAPI(title="Social Production Backend", version="0.1.0", lifespan=lifespan)
-
-    if settings.cors_origins.strip() == "*":
-        allow_origins = ["*"]
-    else:
-        allow_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins,
-        allow_credentials=True,
+        allow_origins=settings.cors_origin_list,
+        allow_credentials=settings.allow_cors_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -59,6 +58,20 @@ def create_app() -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> dict[str, str]:
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("select 1"))
+            await get_cache().ping()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Dependencies are not ready",
+            ) from exc
+        return {"status": "ready"}
+
     app.include_router(bootstrap_router)
     app.include_router(auth_router)
     app.include_router(users_router)

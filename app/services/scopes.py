@@ -6,7 +6,7 @@ import hashlib
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -90,6 +90,114 @@ def _serialize_scope(scope_kind: str, row: Mapping[str, object]) -> dict[str, ob
     if scope_kind == CHANNEL_SCOPE_KIND:
         return _serialize_channel(row)
     return _serialize_community(row)
+
+
+def list_taggable_scopes(
+    db: Session,
+    current_user_id: UUID,
+    query: str = "",
+    kind: str | None = None,
+    limit: int = 8,
+) -> dict[str, object]:
+    normalized_query = query.strip().lower()
+    normalized_kind = kind.strip().lower() if kind else None
+    capped_limit = max(1, min(limit, 25))
+    channel_items: list[dict[str, object]] = []
+    community_items: list[dict[str, object]] = []
+
+    if normalized_kind in (None, CHANNEL_SCOPE_KIND):
+        channel_conditions = []
+        if normalized_query:
+            channel_conditions.append(
+                or_(
+                    channels.c.slug.ilike(f"%{normalized_query}%"),
+                    channels.c.name.ilike(f"%{normalized_query}%"),
+                )
+            )
+
+        channel_rows = db.execute(
+            select(
+                channels.c.id,
+                channels.c.slug,
+                channels.c.name,
+                scope_memberships.c.user_id.label("member_user_id"),
+            )
+            .select_from(
+                channels.outerjoin(
+                    scope_memberships,
+                    and_(
+                        scope_memberships.c.scope_kind == CHANNEL_SCOPE_KIND,
+                        scope_memberships.c.scope_id == channels.c.id,
+                        scope_memberships.c.user_id == current_user_id,
+                    ),
+                )
+            )
+            .where(*channel_conditions)
+            .order_by(channels.c.name.asc())
+            .limit(capped_limit)
+        ).mappings().all()
+
+        channel_items = [
+            {
+                "slug": row["slug"],
+                "label": row["name"],
+                "href": f"/channels/{row['slug']}",
+                "visibility": "public",
+                "viewer_is_member": row["member_user_id"] is not None,
+            }
+            for row in channel_rows
+        ]
+
+    if normalized_kind in (None, COMMUNITY_SCOPE_KIND):
+        community_conditions = [
+            or_(
+                communities.c.join_policy != "closed",
+                scope_memberships.c.user_id.is_not(None),
+            )
+        ]
+        if normalized_query:
+            community_conditions.append(
+                or_(
+                    communities.c.slug.ilike(f"%{normalized_query}%"),
+                    communities.c.name.ilike(f"%{normalized_query}%"),
+                )
+            )
+
+        community_rows = db.execute(
+            select(
+                communities.c.id,
+                communities.c.slug,
+                communities.c.name,
+                communities.c.join_policy,
+                scope_memberships.c.user_id.label("member_user_id"),
+            )
+            .select_from(
+                communities.outerjoin(
+                    scope_memberships,
+                    and_(
+                        scope_memberships.c.scope_kind == COMMUNITY_SCOPE_KIND,
+                        scope_memberships.c.scope_id == communities.c.id,
+                        scope_memberships.c.user_id == current_user_id,
+                    ),
+                )
+            )
+            .where(*community_conditions)
+            .order_by(communities.c.name.asc())
+            .limit(capped_limit)
+        ).mappings().all()
+
+        community_items = [
+            {
+                "slug": row["slug"],
+                "label": row["name"],
+                "href": f"/communities/{row['slug']}",
+                "visibility": "private" if row["join_policy"] == "closed" else "public",
+                "viewer_is_member": row["member_user_id"] is not None,
+            }
+            for row in community_rows
+        ]
+
+    return {"channels": channel_items, "communities": community_items}
 
 
 def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, description: str) -> dict[str, object]:
@@ -251,7 +359,9 @@ def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -
             action_type="join-scope",
             metadata={"scope_kind": scope_kind, "scope_id": str(scope_row["id"]), "slug": slug},
         )
+        db.commit()
     except Exception:
+        db.rollback()
         pass
 
     return {"ok": True, "joined": True, "scope_kind": scope_kind, "slug": scope_row["slug"]}

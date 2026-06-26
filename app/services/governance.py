@@ -298,7 +298,13 @@ def add_comment(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add comment") from exc
 
-    return {"comment": _serialize_comment(created)}
+    author_row = db.execute(
+        select(users.c.username).where(users.c.id == current_user_id).limit(1)
+    ).first()
+    created_with_username = dict(created)
+    created_with_username["author_username"] = author_row[0] if author_row else ""
+
+    return {"comment": _serialize_comment(created_with_username)}
 
 
 def get_comments(

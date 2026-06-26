@@ -44,6 +44,7 @@ class EventCreateRequest(BaseModel):
     location_label: str = Field(min_length=1, max_length=160)
     scheduled_at: datetime | None = None
     channel_slugs: list[str] = Field(default_factory=list)
+    community_slugs: list[str] = Field(default_factory=list)
 
 
 class EventTagOut(BaseModel):
@@ -236,6 +237,7 @@ async def create_new_event(
         time_label=payload.time_label,
         location_label=payload.location_label,
         channel_slugs=payload.channel_slugs,
+        community_slugs=payload.community_slugs,
         scheduled_at=payload.scheduled_at,
     )
 
