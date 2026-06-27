@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
+import secrets
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, delete, insert, or_, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import channels, communities, scope_invites, scope_memberships, users
+from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
 
 CHANNEL_SCOPE_KIND = "channel"
@@ -52,6 +54,28 @@ def _serialize_community(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _slug_in_use(db: Session, slug: str) -> bool:
+    normalized = slug.strip().lower()
+    if not normalized:
+        return False
+    channel_exists = db.execute(select(channels.c.id).where(channels.c.slug == normalized)).first()
+    community_exists = db.execute(select(communities.c.id).where(communities.c.slug == normalized)).first()
+    return channel_exists is not None or community_exists is not None
+
+
+def _name_in_use(db: Session, name: str) -> bool:
+    normalized = name.strip().lower()
+    if not normalized:
+        return False
+    channel_exists = db.execute(
+        select(channels.c.id).where(func.lower(channels.c.name) == normalized)
+    ).first()
+    community_exists = db.execute(
+        select(communities.c.id).where(func.lower(communities.c.name) == normalized)
+    ).first()
+    return channel_exists is not None or community_exists is not None
+
+
 def _get_channel_row(db: Session, slug: str) -> Mapping[str, object]:
     row = db.execute(
         select(channels).where(channels.c.slug == slug.lower())
@@ -90,6 +114,56 @@ def _serialize_scope(scope_kind: str, row: Mapping[str, object]) -> dict[str, ob
     if scope_kind == CHANNEL_SCOPE_KIND:
         return _serialize_channel(row)
     return _serialize_community(row)
+
+
+def _is_scope_manager(db: Session, scope_kind: str, scope_id: UUID, user_id: UUID) -> bool:
+    row = db.execute(
+        select(scope_memberships.c.role).where(
+            scope_memberships.c.scope_kind == scope_kind,
+            scope_memberships.c.scope_id == scope_id,
+            scope_memberships.c.user_id == user_id,
+        )
+    ).first()
+    return row is not None and row[0] == "manager"
+
+
+def _invite_redeem_url(token: str) -> str:
+    return f"/scopes/invites/redeem?token={token}"
+
+
+def create_scope_invite(
+    db: Session,
+    current_user_id: UUID,
+    scope_kind: str,
+    slug: str,
+) -> dict[str, object]:
+    scope_row = _get_scope_row(db, scope_kind, slug)
+    if not _is_scope_manager(db, scope_kind, scope_row["id"], current_user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only scope managers can create invites")
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+
+    try:
+        db.execute(
+            insert(scope_invites).values(
+                scope_kind=scope_kind,
+                scope_id=scope_row["id"],
+                token_hash=token_hash,
+                created_by=current_user_id,
+                expires_at=now + timedelta(days=30),
+                max_uses=None,
+                uses=0,
+            )
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create invite") from exc
+
+    redeem_url = _invite_redeem_url(token)
+    return {"token": token, "redeem_url": redeem_url}
 
 
 def list_taggable_scopes(
@@ -202,15 +276,28 @@ def list_taggable_scopes(
 
 def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, description: str) -> dict[str, object]:
     normalized_slug = slug.strip().lower()
+    normalized_name = name.strip()
     if not normalized_slug:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required")
+    if not normalized_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required")
+    if _slug_in_use(db, normalized_slug):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That slug is already used by a channel or community",
+        )
+    if _name_in_use(db, normalized_name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That name is already used by a channel or community",
+        )
 
     try:
         created_row = db.execute(
             insert(channels)
             .values(
                 slug=normalized_slug,
-                name=name.strip(),
+                name=normalized_name,
                 description=description.strip(),
                 created_by=current_user_id,
             )
@@ -224,6 +311,14 @@ def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, des
                 channels.c.updated_at,
             )
         ).mappings().one()
+        db.execute(
+            insert(scope_memberships).values(
+                scope_kind=CHANNEL_SCOPE_KIND,
+                scope_id=created_row["id"],
+                user_id=current_user_id,
+                role="manager",
+            )
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -243,16 +338,29 @@ def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, des
 
 def create_community(db: Session, current_user_id: UUID, slug: str, name: str, description: str, join_policy: str = "open") -> dict[str, object]:
     normalized_slug = slug.strip().lower()
+    normalized_name = name.strip()
     normalized_join_policy = join_policy.strip().lower()
     if not normalized_slug:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required")
+    if not normalized_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required")
+    if _slug_in_use(db, normalized_slug):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That slug is already used by a channel or community",
+        )
+    if _name_in_use(db, normalized_name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That name is already used by a channel or community",
+        )
 
     try:
         created_row = db.execute(
             insert(communities)
             .values(
                 slug=normalized_slug,
-                name=name.strip(),
+                name=normalized_name,
                 description=description.strip(),
                 join_policy=normalized_join_policy,
                 created_by=current_user_id,
@@ -268,6 +376,14 @@ def create_community(db: Session, current_user_id: UUID, slug: str, name: str, d
                 communities.c.updated_at,
             )
         ).mappings().one()
+        db.execute(
+            insert(scope_memberships).values(
+                scope_kind=COMMUNITY_SCOPE_KIND,
+                scope_id=created_row["id"],
+                user_id=current_user_id,
+                role="manager",
+            )
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -314,11 +430,34 @@ def get_community_by_slug(db: Session, slug: str, current_user_id: UUID | None =
     viewer_is_member = False
     if current_user_id is not None:
         viewer_is_member = any(str(r[0]) == str(current_user_id) for r in member_rows)
-    return {
+
+    result: dict[str, object] = {
         "community": _serialize_community(row),
         "member_count": len(member_rows),
         "viewer_is_member": viewer_is_member,
     }
+    if (
+        row["join_policy"] == "closed"
+        and current_user_id is not None
+        and _is_scope_manager(db, COMMUNITY_SCOPE_KIND, row["id"], current_user_id)
+    ):
+        now = datetime.now(timezone.utc)
+        active_invite = db.execute(
+            select(scope_invites.c.id)
+            .where(
+                scope_invites.c.scope_kind == COMMUNITY_SCOPE_KIND,
+                scope_invites.c.scope_id == row["id"],
+                or_(scope_invites.c.expires_at.is_(None), scope_invites.c.expires_at >= now),
+                or_(scope_invites.c.max_uses.is_(None), scope_invites.c.uses < scope_invites.c.max_uses),
+            )
+            .limit(1)
+        ).first()
+        if active_invite is None:
+            invite = create_scope_invite(db, current_user_id, COMMUNITY_SCOPE_KIND, row["slug"])
+            result["invite_link"] = invite["redeem_url"]
+        else:
+            result["invite_link"] = "/scopes/invites/redeem"
+    return result
 
 
 def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -> dict[str, object]:

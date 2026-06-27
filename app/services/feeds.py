@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from sqlalchemy import Boolean, DateTime, Integer, and_, cast, func, literal, null, or_, select, union_all
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -13,6 +14,8 @@ from app.models import (
     event_tags,
     event_updates,
     events,
+    help_request_tags,
+    help_requests,
     posts,
     project_tags,
     project_updates,
@@ -22,9 +25,11 @@ from app.models import (
     threads,
     user_follows,
     users,
+    user_settings,
 )
 
 from app.services.projects_phases import display_stage_label as project_display_stage_label
+from app.services.content import _help_request_role_summaries, _load_help_request_roles
 
 VALID_SORTS = frozenset({"popular", "recent"})
 
@@ -36,6 +41,7 @@ EVENT_STAGE_LABEL_BY_PHASE_ID = {
 }
 
 _ZERO_INT = literal(0, Integer)
+_EMPTY_ROLES = cast(literal("[]"), JSONB)
 
 
 def _resolved_feed_stage_label(row: Mapping[str, object]) -> str | None:
@@ -63,6 +69,7 @@ def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] |
         literal(None).label("audience"),
         projects.c.author_id,
         users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
         projects.c.signal_count,
         projects.c.vote_count,
         projects.c.comment_count,
@@ -78,6 +85,7 @@ def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] |
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
+        _EMPTY_ROLES.label("roles"),
     ).where(projects.c.is_closed.is_(False))
     q = q.select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
 
@@ -107,6 +115,7 @@ def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | 
         literal(None).label("audience"),
         threads.c.author_id,
         users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
         _ZERO_INT.label("signal_count"),
         threads.c.vote_count,
         threads.c.comment_count,
@@ -122,6 +131,7 @@ def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | 
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
+        _EMPTY_ROLES.label("roles"),
     )
     q = q.select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
 
@@ -151,6 +161,7 @@ def _events_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | N
         literal(None).label("audience"),
         events.c.created_by.label("author_id"),
         users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
         _ZERO_INT.label("signal_count"),
         events.c.vote_count,
         events.c.comment_count,
@@ -166,6 +177,7 @@ def _events_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | N
         events.c.is_private,
         events.c.scheduled_at,
         events.c.time_label,
+        _EMPTY_ROLES.label("roles"),
     ).where(events.c.is_private.is_(False))
     q = q.select_from(events.outerjoin(users, users.c.id == events.c.created_by))
 
@@ -267,11 +279,22 @@ def _fetch_latest_updates_for_items(
     return result
 
 
-def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[dict[str, str]]]], active_votes: dict[str, int] | None = None, updates: dict[str, dict[str, object]] | None = None) -> dict[str, object]:
+def _serialize_item(
+    row: Mapping[str, object],
+    tags: dict[str, dict[str, list[dict[str, str]]]],
+    active_votes: dict[str, int] | None = None,
+    updates: dict[str, dict[str, object]] | None = None,
+    help_request_roles: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
     vote_key = f"{row['entity_type']}:{row['id']}"
     update_data = (updates or {}).get(item_id, {})
+    roles_data = help_request_roles if help_request_roles is not None else (row.get("roles") or [])
+    signup_count = 0
+    slots_needed = 0
+    if row["entity_type"] == "help_request" and help_request_roles is not None:
+        signup_count, slots_needed = _help_request_role_summaries(help_request_roles)
     return {
         "id": item_id,
         "entity_type": row["entity_type"],
@@ -281,6 +304,7 @@ def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[di
         "audience": row["audience"],
         "author_id": row["author_id"],
         "author_username": row["author_username"],
+        "author_profile_image_url": row.get("author_profile_image_url"),
         "signal_count": int(row["signal_count"] or 0),
         "vote_count": int(row["vote_count"] or 0),
         "comment_count": int(row["comment_count"] or 0),
@@ -301,7 +325,55 @@ def _serialize_item(row: Mapping[str, object], tags: dict[str, dict[str, list[di
         "community_tags": tag_data["communities"],
         "last_update_at": update_data.get("last_update_at"),
         "latest_update_body": update_data.get("latest_update_body"),
+        "roles": roles_data,
+        "signup_count": signup_count,
+        "slots_needed": slots_needed,
     }
+
+
+def _help_requests_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | None):
+    q = select(
+        help_requests.c.id,
+        literal("help_request").label("entity_type"),
+        literal(None).label("slug"),
+        help_requests.c.title,
+        help_requests.c.body,
+        literal(None).label("audience"),
+        help_requests.c.author_id,
+        users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
+        _ZERO_INT.label("signal_count"),
+        help_requests.c.vote_count,
+        help_requests.c.comment_count,
+        _ZERO_INT.label("member_count"),
+        _ZERO_INT.label("going_count"),
+        help_requests.c.created_at.label("last_activity_at"),
+        help_requests.c.created_at,
+        literal(None).label("project_mode"),
+        literal(None).label("project_subtype"),
+        literal(None).label("stage_label"),
+        literal(None).label("current_phase_id"),
+        help_requests.c.location_label,
+        literal(False, Boolean).label("is_private"),
+        help_requests.c.needed_at.label("scheduled_at"),
+        help_requests.c.schedule_label.label("time_label"),
+        help_requests.c.roles,
+    ).select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
+
+    if channel_ids is not None:
+        tag_conditions = []
+        if channel_ids:
+            tag_conditions.append(help_request_tags.c.channel_id.in_(channel_ids))
+        if community_ids:
+            tag_conditions.append(help_request_tags.c.community_id.in_(community_ids))
+        if not tag_conditions:
+            return None
+        q = (
+            q.join(help_request_tags, help_request_tags.c.help_request_id == help_requests.c.id)
+            .where(or_(*tag_conditions))
+            .distinct()
+        )
+    return q
 
 
 def _serialize_personal_item(
@@ -323,6 +395,7 @@ def _serialize_personal_item(
         "audience": row["audience"],
         "author_id": row["author_id"],
         "author_username": row["author_username"],
+        "author_profile_image_url": row.get("author_profile_image_url"),
         "signal_count": int(row["signal_count"] or 0),
         "vote_count": int(row["vote_count"] or 0),
         "comment_count": int(row["comment_count"] or 0),
@@ -343,6 +416,8 @@ def _serialize_personal_item(
         "community_tags": tag_data["communities"],
         "last_update_at": update_data.get("last_update_at"),
         "latest_update_body": update_data.get("latest_update_body"),
+        "feed_source": row.get("feed_source", "following"),
+        "roles": row.get("roles") or [],
     }
 
 
@@ -354,7 +429,13 @@ def _fetch_active_votes_for_rows(
     if current_user_id is None or not rows:
         return {}
 
-    item_ids_by_type: dict[str, list[UUID]] = {"post": [], "thread": [], "project": [], "event": []}
+    item_ids_by_type: dict[str, list[UUID]] = {
+        "post": [],
+        "thread": [],
+        "project": [],
+        "event": [],
+        "help_request": [],
+    }
     for row in rows:
         entity_type = row["entity_type"]
         if entity_type in item_ids_by_type:
@@ -402,6 +483,7 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
         posts.c.audience,
         posts.c.author_id,
         users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
         _ZERO_INT.label("signal_count"),
         posts.c.vote_count,
         posts.c.comment_count,
@@ -417,9 +499,49 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
+        literal("following").label("feed_source"),
     )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
         .where(posts.c.author_id.in_(followed_user_ids))
+    )
+
+
+def _posts_select_discovery(excluded_author_ids: list[UUID]):
+    if not excluded_author_ids:
+        return None
+    return (
+        select(
+        posts.c.id,
+        literal("post").label("entity_type"),
+        literal(None).label("slug"),
+        literal("Post").label("title"),
+        posts.c.body,
+        posts.c.audience,
+        posts.c.author_id,
+        users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
+        _ZERO_INT.label("signal_count"),
+        posts.c.vote_count,
+        posts.c.comment_count,
+        _ZERO_INT.label("member_count"),
+        _ZERO_INT.label("going_count"),
+        posts.c.updated_at.label("last_activity_at"),
+        posts.c.created_at,
+        literal(None).label("project_mode"),
+        literal(None).label("project_subtype"),
+        literal(None).label("stage_label"),
+        literal(None).label("current_phase_id"),
+        literal(None).label("location_label"),
+        literal(False, Boolean).label("is_private"),
+        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+        literal(None).label("time_label"),
+        literal("discovery").label("feed_source"),
+    )
+        .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
+        .where(
+            posts.c.audience == "public",
+            posts.c.author_id.not_in(excluded_author_ids),
+        )
     )
 
 
@@ -436,6 +558,7 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("audience"),
         projects.c.author_id,
         users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
         projects.c.signal_count,
         projects.c.vote_count,
         projects.c.comment_count,
@@ -451,6 +574,7 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
+        literal("following").label("feed_source"),
     )
         .select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
         .where(
@@ -473,6 +597,7 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("audience"),
         threads.c.author_id,
         users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
         _ZERO_INT.label("signal_count"),
         threads.c.vote_count,
         threads.c.comment_count,
@@ -488,9 +613,46 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
         literal(False, Boolean).label("is_private"),
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
+        literal("following").label("feed_source"),
     )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
         .where(threads.c.author_id.in_(followed_user_ids))
+    )
+
+
+def _threads_select_discovery(excluded_author_ids: list[UUID]):
+    if not excluded_author_ids:
+        return None
+    return (
+        select(
+        threads.c.id,
+        literal("thread").label("entity_type"),
+        threads.c.slug,
+        threads.c.title,
+        threads.c.body,
+        literal(None).label("audience"),
+        threads.c.author_id,
+        users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
+        _ZERO_INT.label("signal_count"),
+        threads.c.vote_count,
+        threads.c.comment_count,
+        _ZERO_INT.label("member_count"),
+        _ZERO_INT.label("going_count"),
+        threads.c.last_activity_at,
+        threads.c.created_at,
+        literal(None).label("project_mode"),
+        literal(None).label("project_subtype"),
+        literal(None).label("stage_label"),
+        literal(None).label("current_phase_id"),
+        literal(None).label("location_label"),
+        literal(False, Boolean).label("is_private"),
+        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+        literal(None).label("time_label"),
+        literal("discovery").label("feed_source"),
+    )
+        .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
+        .where(threads.c.author_id.not_in(excluded_author_ids))
     )
 
 
@@ -507,6 +669,7 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
         literal(None).label("audience"),
         events.c.created_by.label("author_id"),
         users.c.username.label("author_username"),
+        users.c.profile_image_url.label("author_profile_image_url"),
         _ZERO_INT.label("signal_count"),
         events.c.vote_count,
         events.c.comment_count,
@@ -522,6 +685,7 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
         events.c.is_private,
         events.c.scheduled_at,
         events.c.time_label,
+        literal("following").label("feed_source"),
     )
         .select_from(events.outerjoin(users, users.c.id == events.c.created_by))
         .where(
@@ -531,11 +695,48 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
     )
 
 
+def _help_requests_select_for_followed(followed_user_ids: list[UUID]):
+    if not followed_user_ids:
+        return None
+    return (
+        select(
+            help_requests.c.id,
+            literal("help_request").label("entity_type"),
+            literal(None).label("slug"),
+            help_requests.c.title,
+            help_requests.c.body,
+            literal(None).label("audience"),
+            help_requests.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            help_requests.c.vote_count,
+            help_requests.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            help_requests.c.created_at.label("last_activity_at"),
+            help_requests.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            help_requests.c.location_label,
+            literal(False, Boolean).label("is_private"),
+            help_requests.c.needed_at.label("scheduled_at"),
+            help_requests.c.schedule_label.label("time_label"),
+            literal("following").label("feed_source"),
+        )
+        .select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
+        .where(help_requests.c.author_id.in_(followed_user_ids))
+    )
+
+
 def _fetch_tags_for_items(
     db: Session,
     project_ids: list[UUID],
     thread_ids: list[UUID],
     event_ids: list[UUID],
+    help_request_ids: list[UUID] | None = None,
 ) -> dict[str, dict[str, list[dict[str, str]]]]:
     """Returns {entity_id_str: {'channels': [...], 'communities': [...]}}."""
     result: dict[str, dict[str, list[dict[str, str]]]] = {}
@@ -633,6 +834,37 @@ def _fetch_tags_for_items(
                     }
                 )
 
+    if help_request_ids:
+        rows = db.execute(
+            select(
+                help_request_tags.c.help_request_id.label("entity_id"),
+                help_request_tags.c.tag_kind,
+                channels.c.slug.label("channel_slug"),
+                channels.c.name.label("channel_name"),
+                communities.c.slug.label("community_slug"),
+                communities.c.name.label("community_name"),
+            )
+            .select_from(help_request_tags)
+            .outerjoin(channels, channels.c.id == help_request_tags.c.channel_id)
+            .outerjoin(communities, communities.c.id == help_request_tags.c.community_id)
+            .where(help_request_tags.c.help_request_id.in_(help_request_ids))
+        ).mappings().all()
+        for row in rows:
+            key = str(row["entity_id"])
+            bucket = result.setdefault(key, {"channels": [], "communities": []})
+            if row["channel_slug"]:
+                bucket["channels"].append(
+                    {"slug": row["channel_slug"], "label": row["channel_name"], "kind": "channel"}
+                )
+            if row["community_slug"]:
+                bucket["communities"].append(
+                    {
+                        "slug": row["community_slug"],
+                        "label": row["community_name"],
+                        "kind": "community",
+                    }
+                )
+
     return result
 
 
@@ -648,8 +880,9 @@ def _build_feed(
     p_q = _projects_select(channel_ids, community_ids)
     t_q = _threads_select(channel_ids, community_ids)
     e_q = _events_select(channel_ids, community_ids)
+    h_q = _help_requests_select(channel_ids, community_ids)
 
-    parts = [q for q in (p_q, t_q, e_q) if q is not None]
+    parts = [q for q in (p_q, t_q, e_q, h_q) if q is not None]
 
     # No memberships means nothing to show in the home feed.
     if not parts:
@@ -679,10 +912,21 @@ def _build_feed(
     project_ids = [row["id"] for row in rows if row["entity_type"] == "project"]
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
-    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
+    help_request_ids = [row["id"] for row in rows if row["entity_type"] == "help_request"]
+    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids, help_request_ids)
     updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
-    items = [_serialize_item(row, tags, active_votes, updates) for row in rows]
+    help_roles_by_id = _load_help_request_roles(db, help_request_ids, current_user_id)
+    items = [
+        _serialize_item(
+            row,
+            tags,
+            active_votes,
+            updates,
+            help_request_roles=help_roles_by_id.get(str(row["id"])) if row["entity_type"] == "help_request" else None,
+        )
+        for row in rows
+    ]
     return {"total": len(items), "sort": sort, "limit": limit, "offset": offset, "items": items}
 
 
@@ -720,10 +964,12 @@ def get_personal_feed(
     sort: str = "recent",
     limit: int = 20,
     offset: int = 0,
+    scope: str = "following",
 ) -> dict[str, object]:
     safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
     bounded_limit = max(1, min(limit, 100))
     bounded_offset = max(0, offset)
+    normalized_scope = scope.strip().lower()
 
     followed_user_ids = _get_followed_user_ids(db, current_user_id)
     # Always include the viewer's own posts alongside posts from followed users.
@@ -734,7 +980,16 @@ def get_personal_feed(
         _projects_select_for_followed(followed_user_ids),
         _threads_select_for_followed(followed_user_ids),
         _events_select_for_followed(followed_user_ids),
+        _help_requests_select_for_followed(followed_user_ids),
     ]
+    if normalized_scope == "popular":
+        excluded_author_ids = post_author_ids
+        parts.extend(
+            [
+                _posts_select_discovery(excluded_author_ids),
+                _threads_select_discovery(excluded_author_ids),
+            ]
+        )
     parts = [part for part in parts if part is not None]
 
     if not parts:
@@ -763,10 +1018,21 @@ def get_personal_feed(
     project_ids = [row["id"] for row in rows if row["entity_type"] == "project"]
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
-    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
+    help_request_ids = [row["id"] for row in rows if row["entity_type"] == "help_request"]
+    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids, help_request_ids)
     updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
-    items = [_serialize_personal_item(row, tags, active_votes, updates) for row in rows]
+    help_roles_by_id = _load_help_request_roles(db, help_request_ids, current_user_id)
+    items = []
+    for row in rows:
+        item = _serialize_personal_item(row, tags, active_votes, updates)
+        if row["entity_type"] == "help_request":
+            roles = help_roles_by_id.get(str(row["id"]), [])
+            item["roles"] = roles
+            signup_count, slots_needed = _help_request_role_summaries(roles)
+            item["signup_count"] = signup_count
+            item["slots_needed"] = slots_needed
+        items.append(item)
     return {
         "total": len(items),
         "sort": safe_sort,
@@ -796,6 +1062,40 @@ def get_user_feed(
 
     user_id: UUID = user_row[0]
     viewer_is_owner = viewer_user_id is not None and viewer_user_id == user_id
+    viewer_is_following = False
+    if viewer_user_id is not None and not viewer_is_owner:
+        viewer_is_following = (
+            db.execute(
+                select(user_follows.c.follower_id).where(
+                    user_follows.c.follower_id == viewer_user_id,
+                    user_follows.c.followed_id == user_id,
+                    user_follows.c.status == "accepted",
+                )
+            ).first()
+            is not None
+        )
+
+    settings_row = db.execute(
+        select(
+            user_settings.c.hide_public_profile_activity_from_non_followers,
+            user_settings.c.hide_personal_feed_from_non_followers,
+        ).where(user_settings.c.user_id == user_id)
+    ).first()
+    hide_public_profile = bool(settings_row[0]) if settings_row else False
+    hide_personal_feed = bool(settings_row[1]) if settings_row else False
+    if hide_public_profile and not viewer_is_owner and not viewer_is_following:
+        return {
+            "total": 0,
+            "sort": safe_sort,
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "items": [],
+        }
+
+    if viewer_is_owner or viewer_is_following or not hide_personal_feed:
+        post_audiences = ["public", "followers"]
+    else:
+        post_audiences = ["public"]
 
     posts_q = (
         select(
@@ -807,6 +1107,7 @@ def get_user_feed(
             posts.c.audience,
             posts.c.author_id,
             users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
             posts.c.vote_count,
             posts.c.comment_count,
@@ -826,7 +1127,7 @@ def get_user_feed(
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
         .where(
             posts.c.author_id == user_id,
-            posts.c.audience.in_(["public", "followers"]) if viewer_is_owner else posts.c.audience == "public",
+            posts.c.audience.in_(post_audiences),
         )
     )
 
@@ -840,6 +1141,7 @@ def get_user_feed(
             literal(None).label("audience"),
             threads.c.author_id,
             users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
             threads.c.vote_count,
             threads.c.comment_count,
@@ -870,6 +1172,7 @@ def get_user_feed(
             literal(None).label("audience"),
             events.c.created_by.label("author_id"),
             users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
             events.c.vote_count,
             events.c.comment_count,
@@ -889,6 +1192,8 @@ def get_user_feed(
         .select_from(events.outerjoin(users, users.c.id == events.c.created_by))
         .where(events.c.created_by == user_id)
     )
+    if not viewer_is_owner:
+        events_q = events_q.where(events.c.is_private.is_(False))
 
     projects_q = (
         select(
@@ -900,6 +1205,7 @@ def get_user_feed(
             literal(None).label("audience"),
             projects.c.author_id,
             users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
             projects.c.signal_count,
             projects.c.vote_count,
             projects.c.comment_count,
@@ -920,7 +1226,38 @@ def get_user_feed(
         .where(projects.c.author_id == user_id, projects.c.is_closed.is_(False))
     )
 
-    combined = union_all(posts_q, threads_q, events_q, projects_q).subquery("user_feed")
+    help_requests_q = (
+        select(
+            help_requests.c.id,
+            literal("help_request").label("entity_type"),
+            literal(None).label("slug"),
+            help_requests.c.title,
+            help_requests.c.body,
+            literal(None).label("audience"),
+            help_requests.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            help_requests.c.vote_count,
+            help_requests.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            help_requests.c.created_at.label("last_activity_at"),
+            help_requests.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            help_requests.c.location_label,
+            literal(False, Boolean).label("is_private"),
+            help_requests.c.needed_at.label("scheduled_at"),
+            help_requests.c.schedule_label.label("time_label"),
+        )
+        .select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
+        .where(help_requests.c.author_id == user_id)
+    )
+
+    combined = union_all(posts_q, threads_q, events_q, projects_q, help_requests_q).subquery("user_feed")
 
     if safe_sort == "popular":
         sort_col = (
@@ -943,10 +1280,21 @@ def get_user_feed(
     project_ids = [row["id"] for row in rows if row["entity_type"] == "project"]
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
-    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids)
+    help_request_ids = [row["id"] for row in rows if row["entity_type"] == "help_request"]
+    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids, help_request_ids)
     updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, viewer_user_id)
-    items = [_serialize_personal_item(row, tags, active_votes, updates) for row in rows]
+    help_roles_by_id = _load_help_request_roles(db, help_request_ids, viewer_user_id)
+    items = []
+    for row in rows:
+        item = _serialize_personal_item(row, tags, active_votes, updates)
+        if row["entity_type"] == "help_request":
+            roles = help_roles_by_id.get(str(row["id"]), [])
+            item["roles"] = roles
+            signup_count, slots_needed = _help_request_role_summaries(roles)
+            item["signup_count"] = signup_count
+            item["slots_needed"] = slots_needed
+        items.append(item)
     return {
         "total": len(items),
         "sort": safe_sort,

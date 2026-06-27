@@ -12,6 +12,7 @@ from app.models import (
     comments,
     content_votes,
     events,
+    help_requests,
     platform_board_memberships,
     posts,
     project_memberships,
@@ -22,10 +23,11 @@ from app.models import (
     users,
 )
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
 from app.utils.votes import required_votes
 
-COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project"})
-VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "event", "project"})
+COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project", "help_request"})
+VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "event", "project", "help_request"})
 REPORTABLE_TARGET_TYPES = frozenset({"project", "thread", "post", "comment"})
 REPORT_REASONS = frozenset({"spam", "serious-harm"})
 REPORT_VOTES = frozenset({"yes", "no"})
@@ -136,6 +138,8 @@ def _ensure_subject_exists(db: Session, subject_type: str, subject_id: UUID) -> 
         exists = db.execute(select(events.c.id).where(events.c.id == subject_id)).first()
     elif subject_type == "project":
         exists = db.execute(select(projects.c.id).where(projects.c.id == subject_id)).first()
+    elif subject_type == "help_request":
+        exists = db.execute(select(help_requests.c.id).where(help_requests.c.id == subject_id)).first()
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid subject_type")
 
@@ -154,6 +158,8 @@ def _ensure_vote_target_exists(db: Session, target_type: str, target_id: UUID) -
         exists = db.execute(select(events.c.id).where(events.c.id == target_id)).first()
     elif target_type == "project":
         exists = db.execute(select(projects.c.id).where(projects.c.id == target_id)).first()
+    elif target_type == "help_request":
+        exists = db.execute(select(help_requests.c.id).where(help_requests.c.id == target_id)).first()
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid target_type")
 
@@ -180,6 +186,12 @@ def _update_subject_comment_count(db: Session, subject_type: str, subject_id: UU
                 update(projects)
                 .where(projects.c.id == subject_id)
                 .values(comment_count=projects.c.comment_count + delta)
+            )
+        elif subject_type == "help_request":
+            db.execute(
+                update(help_requests)
+                .where(help_requests.c.id == subject_id)
+                .values(comment_count=help_requests.c.comment_count + delta)
             )
         else:
             db.execute(
@@ -220,6 +232,12 @@ def _apply_vote_count_delta(db: Session, target_type: str, target_id: UUID, delt
                 update(projects)
                 .where(projects.c.id == target_id)
                 .values(vote_count=projects.c.vote_count + delta)
+            )
+        elif target_type == "help_request":
+            db.execute(
+                update(help_requests)
+                .where(help_requests.c.id == target_id)
+                .values(vote_count=help_requests.c.vote_count + delta)
             )
         else:
             db.execute(
@@ -297,6 +315,47 @@ def add_comment(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add comment") from exc
+
+    if normalized_subject_type == "thread":
+        thread_row = (
+            db.execute(
+                select(threads.c.slug, threads.c.title, threads.c.author_id).where(threads.c.id == subject_id)
+            )
+            .mappings()
+            .first()
+        )
+        if thread_row is not None:
+            href = f"/threads/{thread_row['slug']}?comment={created['id']}"
+            recipient_ids: list[UUID] = []
+            thread_author_id = thread_row["author_id"]
+            if thread_author_id is not None and thread_author_id != current_user_id:
+                recipient_ids.append(thread_author_id)
+            if parent_id is not None:
+                parent_author_row = db.execute(
+                    select(comments.c.author_id).where(comments.c.id == parent_id)
+                ).first()
+                if parent_author_row is not None:
+                    parent_author_id = parent_author_row[0]
+                    if (
+                        parent_author_id is not None
+                        and parent_author_id != current_user_id
+                        and parent_author_id not in recipient_ids
+                    ):
+                        recipient_ids.append(parent_author_id)
+            for recipient_id in recipient_ids:
+                create_notification(
+                    db=db,
+                    recipient_id=recipient_id,
+                    actor_id=current_user_id,
+                    kind="reply",
+                    surface="thread",
+                    subject_type="thread",
+                    subject_id=subject_id,
+                    target_id=created["id"],
+                    title=str(thread_row["title"]),
+                    body="Someone replied to a thread you follow.",
+                    href=href,
+                )
 
     author_row = db.execute(
         select(users.c.username).where(users.c.id == current_user_id).limit(1)

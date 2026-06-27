@@ -12,6 +12,7 @@ from app.dependencies import get_db
 from app.services.scopes import (
     create_channel,
     create_community,
+    create_scope_invite,
     get_channel_by_slug,
     get_community_by_slug,
     join_scope,
@@ -64,6 +65,12 @@ class CommunityResponse(BaseModel):
     community: dict[str, object]
     member_count: int | None = None
     viewer_is_member: bool = False
+    invite_link: str | None = None
+
+
+class ScopeInviteResponse(BaseModel):
+    token: str
+    redeem_url: str
 
 
 class ScopeMember(BaseModel):
@@ -217,3 +224,20 @@ def redeem_invite(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return redeem_scope_invite(db=db, current_user_id=current_user_id, token=payload.token)
+
+
+@router.post(
+    "/{scope_kind}/{slug}/invites",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=ScopeInviteResponse,
+)
+def create_scope_invite_route(
+    scope_kind: str,
+    slug: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    normalized_kind = scope_kind.strip().lower()
+    if normalized_kind not in {"channel", "community"}:
+        raise HTTPException(status_code=422, detail="scope_kind must be channel or community")
+    return create_scope_invite(db, current_user_id, normalized_kind, slug)

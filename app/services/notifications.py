@@ -9,7 +9,7 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import notifications
+from app.models import notifications, users
 
 
 def _serialize_notification(row: Mapping[str, object]) -> dict[str, object]:
@@ -17,6 +17,7 @@ def _serialize_notification(row: Mapping[str, object]) -> dict[str, object]:
         "id": row["id"],
         "recipient_id": row["recipient_id"],
         "actor_id": row["actor_id"],
+        "actor_username": row.get("actor_username"),
         "kind": row["kind"],
         "surface": row["surface"],
         "subject_type": row["subject_type"],
@@ -97,7 +98,15 @@ def list_notifications(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, object]:
-    query = select(notifications).where(notifications.c.recipient_id == current_user_id)
+    actor_users = users.alias("actor_users")
+    query = (
+        select(
+            notifications,
+            actor_users.c.username.label("actor_username"),
+        )
+        .select_from(notifications.outerjoin(actor_users, actor_users.c.id == notifications.c.actor_id))
+        .where(notifications.c.recipient_id == current_user_id)
+    )
     if unread_only:
         query = query.where(notifications.c.is_unread.is_(True))
 

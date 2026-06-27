@@ -102,7 +102,7 @@ def register_user(db: Session, username: str, password: str, profile_bio: str | 
         title=created_user["username"],
         summary=created_user["bio"] if created_user["bio"] else created_user["username"],
         meta="user",
-        href=f"/users/{created_user['username']}",
+        href=f"/profile/{created_user['username']}",
     )
     access_token = create_access_token(str(created_user["id"]))
     return _build_auth_response(created_user, access_token)

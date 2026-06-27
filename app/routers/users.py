@@ -10,11 +10,14 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
 from app.services.users import (
+    accept_follow_request,
     follow_user,
+    get_follow_requests,
     get_followers,
     get_following,
     get_own_profile,
     get_profile_by_username,
+    reject_follow_request,
     unfollow_user,
     update_own_profile_settings,
 )
@@ -43,14 +46,17 @@ class UserSettings(BaseModel):
     personal_feed_window: str
     hide_public_activity_from_personal_feeds: bool
     hide_personal_feed_from_non_followers: bool
+    hide_public_profile_activity_from_non_followers: bool
     require_follow_approval: bool
 
 
 class PublicProfileResponse(BaseModel):
     user: UserSummary
     viewer_is_following: bool
+    viewer_follow_status: str | None = None
     is_own_profile: bool
     can_view_personal_feed: bool
+    can_view_public_profile_activity: bool
 
 
 class OwnProfileResponse(BaseModel):
@@ -62,7 +68,7 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     bio: str | None = Field(default=None, max_length=500)
-    profile_image_url: str | None = Field(default=None, max_length=2000)
+    profile_image_url: str | None = Field(default=None, max_length=500_000)
     appearance_theme_mode: str | None = None
     default_feed: str | None = None
     public_feed_scope: str | None = None
@@ -75,12 +81,14 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     personal_feed_window: str | None = None
     hide_public_activity_from_personal_feeds: bool | None = None
     hide_personal_feed_from_non_followers: bool | None = None
+    hide_public_profile_activity_from_non_followers: bool | None = None
     require_follow_approval: bool | None = None
 
 
 class FollowResponse(BaseModel):
     ok: bool
     following: bool
+    follow_status: str | None = None
     username: str
 
 
@@ -92,6 +100,17 @@ class FollowListResponse(BaseModel):
     username: str
     total: int
     items: list[FollowUserSummary]
+
+
+class FollowRequestListResponse(BaseModel):
+    total: int
+    items: list[FollowUserSummary]
+
+
+class FollowRequestActionResponse(BaseModel):
+    ok: bool
+    username: str
+    follow_status: str | None = None
 
 
 @router.get("/me", response_model=OwnProfileResponse)
@@ -107,6 +126,32 @@ def patch_my_settings(
 ) -> dict[str, object]:
     updates = payload.model_dump(exclude_unset=True)
     return update_own_profile_settings(db, current_user_id, updates)
+
+
+@router.get("/me/follow-requests", response_model=FollowRequestListResponse)
+def follow_requests(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_follow_requests(db, current_user_id)
+
+
+@router.post("/me/follow-requests/{username}/accept", response_model=FollowRequestActionResponse)
+def accept_follow(
+    username: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return accept_follow_request(db, current_user_id, username)
+
+
+@router.post("/me/follow-requests/{username}/reject", response_model=FollowRequestActionResponse)
+def reject_follow(
+    username: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return reject_follow_request(db, current_user_id, username)
 
 
 @router.post("/{username}/follow", response_model=FollowResponse)
@@ -129,10 +174,18 @@ def get_profile(
 
 
 @router.get("/{username}/followers", response_model=FollowListResponse)
-def followers(username: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return get_followers(db, username)
+def followers(
+    username: str,
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_followers(db, username, current_user_id)
 
 
 @router.get("/{username}/following", response_model=FollowListResponse)
-def following(username: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return get_following(db, username)
+def following(
+    username: str,
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_following(db, username, current_user_id)

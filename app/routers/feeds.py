@@ -20,6 +20,15 @@ class TagRefOut(BaseModel):
     kind: str
 
 
+class HelpRequestRoleFeedOut(BaseModel):
+    role_id: UUID | None = None
+    title: str
+    description: str = ""
+    slots: int
+    filled_count: int = 0
+    is_viewer_assigned: bool = False
+
+
 class FeedItemOut(BaseModel):
     id: UUID
     entity_type: str
@@ -29,6 +38,7 @@ class FeedItemOut(BaseModel):
     audience: str | None = None
     author_id: UUID | None = None
     author_username: str | None = None
+    author_profile_image_url: str | None = None
     signal_count: int
     vote_count: int
     comment_count: int
@@ -49,6 +59,10 @@ class FeedItemOut(BaseModel):
     community_tags: list[TagRefOut] = Field(default_factory=list)
     last_update_at: object = None
     latest_update_body: str | None = None
+    feed_source: str | None = None
+    roles: list[HelpRequestRoleFeedOut] | None = None
+    signup_count: int | None = None
+    slots_needed: int | None = None
 
 
 class FeedResponse(BaseModel):
@@ -111,6 +125,7 @@ def home_feed(
 @router.get("/personal", response_model=FeedResponse)
 def personal_feed(
     sort: str = Query(default="recent", pattern="^(popular|recent)$"),
+    scope: str = Query(default="following"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user_id: UUID = Depends(get_current_user_id),
@@ -122,6 +137,7 @@ def personal_feed(
         sort=sort,
         limit=limit,
         offset=offset,
+        scope=scope,
     )
 
 

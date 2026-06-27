@@ -1,5 +1,18 @@
 from app.models.base import Base, JSONB, TSVECTOR, UUID, metadata
-from app.models.content import comments, content_votes, post_links, posts, report_votes, reports, threads, thread_tags
+from app.models.content import (
+    comments,
+    content_votes,
+    help_request_role_assignments,
+    help_request_roles,
+    help_request_tags,
+    help_requests,
+    post_links,
+    posts,
+    report_votes,
+    reports,
+    threads,
+    thread_tags,
+)
 from app.models.events import (
     event_activity_assignments,
     event_activity_roles,
@@ -85,6 +98,9 @@ __all__ = [
     "scope_confidence_votes",
     "posts",
     "post_links",
+    "help_requests",
+    "help_request_roles",
+    "help_request_role_assignments",
     "threads",
     "thread_tags",
     "comments",

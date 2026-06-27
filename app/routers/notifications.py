@@ -21,6 +21,7 @@ class NotificationOut(BaseModel):
     id: UUID
     recipient_id: UUID
     actor_id: UUID | None = None
+    actor_username: str | None = None
     kind: str
     surface: str
     subject_type: str

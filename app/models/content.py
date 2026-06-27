@@ -76,6 +76,70 @@ content_votes = table(
     sa.UniqueConstraint("target_type", "target_id", "voter_id", name="uq_content_votes_target_voter"),
 )
 
+help_requests = table(
+    "help_requests",
+    uuid_pk(),
+    user_fk("author_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("title", sa.String(200), nullable=False),
+    sa.Column("body", sa.Text, nullable=False),
+    sa.Column("location_label", sa.String(200), nullable=False),
+    sa.Column("schedule_label", sa.String(200), nullable=False),
+    sa.Column("needed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("roles", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+    sa.Column("vote_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("comment_count", sa.Integer, nullable=False, server_default="0"),
+    created_at(),
+)
+
+help_request_roles = table(
+    "help_request_roles",
+    uuid_pk(),
+    sa.Column(
+        "help_request_id",
+        UUID,
+        sa.ForeignKey("help_requests.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("title", sa.String(120), nullable=False),
+    sa.Column("description", sa.Text, nullable=False, server_default=""),
+    sa.Column("slots", sa.Integer, nullable=False),
+    sa.Column("sort_order", sa.Integer, nullable=False, server_default="0"),
+    created_at(),
+)
+
+help_request_role_assignments = table(
+    "help_request_role_assignments",
+    sa.Column(
+        "role_id",
+        UUID,
+        sa.ForeignKey("help_request_roles.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    created_at(),
+)
+
+help_request_tags = table(
+    "help_request_tags",
+    uuid_pk(),
+    sa.Column(
+        "help_request_id",
+        UUID,
+        sa.ForeignKey("help_requests.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("tag_kind", sa.String(16), nullable=False),
+    channel_fk("channel_id", nullable=True),
+    community_fk("community_id", nullable=True),
+    sa.UniqueConstraint(
+        "help_request_id",
+        "tag_kind",
+        "channel_id",
+        "community_id",
+        name="uq_help_request_tags_tag",
+    ),
+)
+
 reports = table(
     "reports",
     uuid_pk(),

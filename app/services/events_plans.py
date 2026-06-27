@@ -95,6 +95,42 @@ def _compute_vote_summary(db: Session, plan_id: UUID, member_count: int) -> dict
     }
 
 
+def sync_event_plan_leading_flags(
+    db: Session,
+    event_id: UUID,
+    member_count: int,
+) -> UUID | None:
+    plan_ids = db.execute(
+        select(event_plans.c.id).where(event_plans.c.event_id == event_id)
+    ).scalars().all()
+
+    candidates: list[tuple[UUID, float]] = []
+    for plan_id in plan_ids:
+        summary = _compute_vote_summary(db, plan_id, member_count)
+        if summary["is_winning"]:
+            candidates.append((plan_id, float(summary["approval_ratio"])))
+
+    db.execute(
+        update(event_plans)
+        .where(event_plans.c.event_id == event_id)
+        .values(is_leading=False)
+    )
+
+    leader_id: UUID | None = None
+    if candidates:
+        max_ratio = max(ratio for _, ratio in candidates)
+        top = [plan_id for plan_id, ratio in candidates if ratio == max_ratio]
+        if len(top) == 1:
+            leader_id = top[0]
+            db.execute(
+                update(event_plans)
+                .where(event_plans.c.id == leader_id)
+                .values(is_leading=True, status="approved")
+            )
+
+    return leader_id
+
+
 def submit_event_plan(
     db: Session,
     current_user_id: UUID,
@@ -230,27 +266,15 @@ def cast_event_plan_vote(
             )
 
         member_count = resolve_event_vote_population(db, event_row["id"])
-        summary = _compute_vote_summary(db, plan_id, member_count)
-
-        if summary["is_winning"]:
-            db.execute(
-                update(event_plans)
-                .where(event_plans.c.event_id == event_row["id"])
-                .values(is_leading=False)
+        previous_leader = db.execute(
+            select(event_plans.c.id).where(
+                event_plans.c.event_id == event_row["id"],
+                event_plans.c.is_leading.is_(True),
             )
-            db.execute(
-                update(event_plans)
-                .where(event_plans.c.id == plan_id)
-                .values(is_leading=True, status="approved")
-            )
-            plan_is_leading = True
-        else:
-            db.execute(
-                update(event_plans)
-                .where(event_plans.c.id == plan_id)
-                .values(is_leading=False)
-            )
-            plan_is_leading = False
+        ).scalar()
+        new_leader = sync_event_plan_leading_flags(db, event_row["id"], member_count)
+        plan_is_leading = new_leader == plan_id
+        leader_changed = new_leader is not None and new_leader != previous_leader
 
         record_meaningful_action(
             db=db,
@@ -269,20 +293,24 @@ def cast_event_plan_vote(
     ).mappings().one()
     final_summary = _compute_vote_summary(db, plan_id, resolve_event_vote_population(db, event_row["id"]))
 
-    if plan_is_leading and plan_row["author_id"] is not None:
-        create_notification(
-            db=db,
-            recipient_id=plan_row["author_id"],
-            actor_id=current_user_id,
-            kind="evt-plan-lead",
-            surface="event",
-            subject_type="event-plan",
-            subject_id=plan_id,
-            target_id=event_row["id"],
-            title="Plan became leading",
-            body="A vote passed and your event plan is now leading.",
-            href=f"/events/{event_row['slug']}",
-        )
+    if leader_changed and new_leader is not None:
+        leader_author_id = db.execute(
+            select(event_plans.c.author_id).where(event_plans.c.id == new_leader)
+        ).scalar()
+        if leader_author_id is not None:
+            create_notification(
+                db=db,
+                recipient_id=leader_author_id,
+                actor_id=current_user_id,
+                kind="evt-plan-lead",
+                surface="event",
+                subject_type="event-plan",
+                subject_id=new_leader,
+                target_id=event_row["id"],
+                title="Plan became leading",
+                body="A vote passed and your event plan is now leading.",
+                href=f"/events/{event_row['slug']}",
+            )
 
     return {
         "plan": _serialize_plan(refreshed_plan, final_summary),

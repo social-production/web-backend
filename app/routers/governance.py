@@ -39,7 +39,7 @@ async def _get_optional_user_id(
 class CommentCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    subject_type: str = Field(pattern="^(thread|post|event|project)$")
+    subject_type: str = Field(pattern="^(thread|post|event|project|help_request)$")
     subject_id: UUID
     body: str = Field(min_length=1)
     parent_id: UUID | None = None
@@ -48,7 +48,7 @@ class CommentCreateRequest(BaseModel):
 class VoteCastRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    target_type: str = Field(pattern="^(thread|post|comment|event|project)$")
+    target_type: str = Field(pattern="^(thread|post|comment|event|project|help_request)$")
     target_id: UUID
     direction: str = Field(pattern="^(up|down|neutral)$")
 
@@ -152,7 +152,7 @@ def create_comment(
 
 @router.get("/comments", response_model=CommentsListResponse)
 def list_comments(
-    subject_type: str = Query(pattern="^(thread|post|event|project)$"),
+    subject_type: str = Query(pattern="^(thread|post|event|project|help_request)$"),
     subject_id: UUID = Query(),
     db: Session = Depends(get_db),
     current_user_id: UUID | None = Depends(_get_optional_user_id),

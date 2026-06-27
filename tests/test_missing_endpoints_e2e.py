@@ -144,7 +144,7 @@ def run() -> None:
     with TestClient(app) as client:
         onboarding = client.get("/onboarding")
         assert onboarding.status_code == 200, onboarding.text
-        assert onboarding.json()["title"] == "Signup / Login"
+        assert onboarding.json()["title"] == "Login"
 
         project_value = client.post(
             f"/projects/{seeded['project_slug']}/values",

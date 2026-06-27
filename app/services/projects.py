@@ -47,6 +47,7 @@ from app.models import (
     user_follows,
     users,
 )
+from app.services.content import activity_status_tone
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
@@ -465,7 +466,27 @@ def _vote_summary(
     return summary, passes, can_still_pass
 
 
+def _plan_leader_status(
+    *,
+    is_leading: bool,
+    passes: bool,
+    approval_percent: float,
+    passing_plans: list[tuple[str, float]],
+) -> str | None:
+    if is_leading:
+        return "leading"
+    if not passes or not passing_plans:
+        return None
+    max_percent = max(percent for _, percent in passing_plans)
+    top_count = sum(1 for _, percent in passing_plans if percent == max_percent)
+    if approval_percent == max_percent and top_count > 1:
+        return "tied"
+    return None
+
+
 def _lifecycle_phases(current_phase_id: str) -> list[dict[str, object]]:
+    from app.services.lifecycle_copy import project_phase_copy
+
     phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
     current_order = phase_order.get(current_phase_id, 1)
     phases: list[dict[str, object]] = []
@@ -476,16 +497,18 @@ def _lifecycle_phases(current_phase_id: str) -> list[dict[str, object]]:
             progress = "current"
         else:
             progress = "upcoming"
+        copy = project_phase_copy(phase_id, "productive", summary)
         phases.append(
             {
                 "id": phase_id,
                 "order": order,
                 "shortLabel": short_label,
                 "title": title,
-                "summary": summary,
+                "summary": copy["summary"],
                 "progressState": progress,
                 "projectStatus": "active",
-                "mechanics": [],
+                "mechanics": copy["mechanics"],
+                "note": copy["note"],
             }
         )
     return phases
@@ -496,6 +519,7 @@ def _visible_lifecycle_phases(
     project_subtype: str | None,
     current_phase_id: str,
 ) -> list[dict[str, object]]:
+    from app.services.lifecycle_copy import project_phase_copy
     from app.services.projects_phases import (
         effective_phase_id_for_progress,
         lifecycle_phase_title,
@@ -516,16 +540,18 @@ def _visible_lifecycle_phases(
             progress = "current"
         else:
             progress = "upcoming"
+        copy = project_phase_copy(phase_id, project_mode, summary)
         phases.append(
             {
                 "id": phase_id,
                 "order": index,
                 "shortLabel": short_label,
                 "title": lifecycle_phase_title(project_mode, phase_id, title),
-                "summary": summary,
+                "summary": copy["summary"],
                 "progressState": progress,
                 "projectStatus": "active",
-                "mechanics": [],
+                "mechanics": copy["mechanics"],
+                "note": copy["note"],
             }
         )
     return phases
@@ -774,6 +800,7 @@ async def get_project_detail(
     for value_id, voter_id, importance in importance_rows:
         votes_by_value.setdefault(value_id, []).append((voter_id, int(importance)))
 
+    importance_scores_by_value_id: dict[UUID, float] = {}
     phase_one_values = []
     for value_id, label, value_author_id in value_rows:
         votes = votes_by_value.get(value_id, [])
@@ -791,6 +818,7 @@ async def get_project_detail(
                 if voter_id == current_user_id:
                     active_importance_vote = score
                     break
+        importance_scores_by_value_id[value_id] = round(avg, 2)
         phase_one_values.append(
             {
                 "id": str(value_id),
@@ -836,19 +864,39 @@ async def get_project_detail(
         select(project_plans).where(project_plans.c.project_id == project_id).order_by(project_plans.c.created_at.desc())
     ).mappings().all()
 
+    passing_by_phase_kind: dict[str, list[tuple[str, float]]] = {}
+    for plan in plan_rows:
+        plan_vote_rows = db.execute(
+            select(project_plan_votes.c.vote, project_plan_votes.c.voter_id).where(project_plan_votes.c.plan_id == plan["id"])
+        ).all()
+        overall_summary, passes, _ = _vote_summary(plan_vote_rows, vote_context_population, current_user_id)
+        plan_id_str = str(plan["id"])
+        if passes:
+            passing_by_phase_kind.setdefault(plan["phase_kind"], []).append(
+                (plan_id_str, overall_summary["approvalPercent"])
+            )
+
     phase_two_plans = []
     phase_three_plans = []
-    phase_two_winning = None
-    phase_three_winning = None
+    phase_two_leading: list[str] = []
+    phase_three_leading: list[str] = []
 
     for plan in plan_rows:
         plan_vote_rows = db.execute(
             select(project_plan_votes.c.vote, project_plan_votes.c.voter_id).where(project_plan_votes.c.plan_id == plan["id"])
         ).all()
-        overall_summary, _, _ = _vote_summary(plan_vote_rows, vote_context_population, current_user_id)
+        overall_summary, passes, _ = _vote_summary(plan_vote_rows, vote_context_population, current_user_id)
+        leader_status = _plan_leader_status(
+            is_leading=bool(plan["is_leading"]),
+            passes=passes,
+            approval_percent=overall_summary["approvalPercent"],
+            passing_plans=passing_by_phase_kind.get(plan["phase_kind"], []),
+        )
 
         value_assessments = []
         for value_id, value_label, _ in value_rows:
+            if importance_scores_by_value_id.get(value_id, 0) < 5:
+                continue
             value_vote_rows = db.execute(
                 select(project_plan_value_votes.c.vote, project_plan_value_votes.c.voter_id)
                 .where(
@@ -864,6 +912,7 @@ async def get_project_detail(
             })
 
         plan_payload = dict(plan["plan_payload"] or {})
+        value_consideration_notes = dict(plan_payload.get("valueConsiderationNotes") or {})
         plan_phases = [
             {
                 "id": str(item.get("id") or f"phase-{idx + 1}"),
@@ -884,11 +933,13 @@ async def get_project_detail(
             "repositoryUrl": plan["repository_url"],
             "demandSignalSnapshot": signal_counts["demand"],
             "demandConsiderationNote": plan["demand_consideration_note"] or "",
+            "valueConsiderationNotes": value_consideration_notes,
             "totalCostLabel": plan["total_cost_label"] or "",
             "planPhases": plan_phases,
             "valueAssessments": value_assessments,
             "overallApproval": overall_summary,
             "isLeading": bool(plan["is_leading"]),
+            "leaderStatus": leader_status,
         }
 
         if plan["phase_kind"] in {"production", "organisation"}:
@@ -905,7 +956,7 @@ async def get_project_detail(
             }
             phase_two_plans.append(item)
             if plan["is_leading"]:
-                phase_two_winning = str(plan["id"])
+                phase_two_leading.append(str(plan["id"]))
 
         if plan["phase_kind"] in {"distribution", "access"}:
             item = {
@@ -919,7 +970,10 @@ async def get_project_detail(
             }
             phase_three_plans.append(item)
             if plan["is_leading"]:
-                phase_three_winning = str(plan["id"])
+                phase_three_leading.append(str(plan["id"]))
+
+    phase_two_winning = phase_two_leading[0] if len(phase_two_leading) == 1 else None
+    phase_three_winning = phase_three_leading[0] if len(phase_three_leading) == 1 else None
 
     activities_rows = db.execute(
         select(project_activities).where(project_activities.c.project_id == project_id).order_by(project_activities.c.scheduled_at.desc())
@@ -988,7 +1042,7 @@ async def get_project_detail(
                 "committedCount": len(committed_users),
                 "viewerAssignedRoleLabel": viewer_assigned_label,
                 "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
-                "statusTone": "green" if activity["status"] == "active" else "yellow",
+                "statusTone": activity_status_tone(len(committed_users), minimum_participants),
                 "roles": activity_roles,
                 "note": activity["note"],
                 "isActive": activity["status"] == "active",

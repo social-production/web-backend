@@ -85,6 +85,49 @@ def _assert_plan_type_allowed(project_mode: str, plan_type: str) -> None:
         )
 
 
+def sync_project_plan_leading_flags(
+    db: Session,
+    project_id: UUID,
+    phase_kind: str,
+    member_count: int,
+) -> UUID | None:
+    plan_ids = db.execute(
+        select(project_plans.c.id).where(
+            project_plans.c.project_id == project_id,
+            project_plans.c.phase_kind == phase_kind,
+        )
+    ).scalars().all()
+
+    candidates: list[tuple[UUID, float]] = []
+    for plan_id in plan_ids:
+        summary = _compute_vote_summary(db, plan_id, member_count)
+        if summary["is_winning"]:
+            candidates.append((plan_id, float(summary["approval_ratio"])))
+
+    db.execute(
+        update(project_plans)
+        .where(
+            project_plans.c.project_id == project_id,
+            project_plans.c.phase_kind == phase_kind,
+        )
+        .values(is_leading=False)
+    )
+
+    leader_id: UUID | None = None
+    if candidates:
+        max_ratio = max(ratio for _, ratio in candidates)
+        top = [plan_id for plan_id, ratio in candidates if ratio == max_ratio]
+        if len(top) == 1:
+            leader_id = top[0]
+            db.execute(
+                update(project_plans)
+                .where(project_plans.c.id == leader_id)
+                .values(is_leading=True, status="approved")
+            )
+
+    return leader_id
+
+
 def _compute_vote_summary(db: Session, plan_id: UUID, member_count: int) -> dict[str, object]:
     rows = db.execute(
         select(project_plan_votes.c.vote).where(project_plan_votes.c.plan_id == plan_id)
@@ -277,30 +320,21 @@ def cast_project_plan_vote(
             project_row["id"],
             bool(project_row["is_platform_tagged"]),
         )
-        summary = _compute_vote_summary(db, plan_id, vote_context_population)
-
-        if summary["is_winning"]:
-            db.execute(
-                update(project_plans)
-                .where(
-                    project_plans.c.project_id == project_row["id"],
-                    project_plans.c.phase_kind == plan_row["phase_kind"],
-                )
-                .values(is_leading=False)
+        previous_leader = db.execute(
+            select(project_plans.c.id).where(
+                project_plans.c.project_id == project_row["id"],
+                project_plans.c.phase_kind == plan_row["phase_kind"],
+                project_plans.c.is_leading.is_(True),
             )
-            db.execute(
-                update(project_plans)
-                .where(project_plans.c.id == plan_id)
-                .values(is_leading=True, status="approved")
-            )
-            plan_is_leading = True
-        else:
-            db.execute(
-                update(project_plans)
-                .where(project_plans.c.id == plan_id)
-                .values(is_leading=False)
-            )
-            plan_is_leading = False
+        ).scalar()
+        new_leader = sync_project_plan_leading_flags(
+            db,
+            project_row["id"],
+            plan_row["phase_kind"],
+            vote_context_population,
+        )
+        plan_is_leading = new_leader == plan_id
+        leader_changed = new_leader is not None and new_leader != previous_leader
 
         record_meaningful_action(
             db=db,
@@ -327,20 +361,24 @@ def cast_project_plan_vote(
         ),
     )
 
-    if plan_is_leading and plan_row["author_id"] is not None:
-        create_notification(
-            db=db,
-            recipient_id=plan_row["author_id"],
-            actor_id=current_user_id,
-            kind="prj-plan-lead",
-            surface="project",
-            subject_type="project-plan",
-            subject_id=plan_id,
-            target_id=project_row["id"],
-            title="Plan became leading",
-            body="A vote passed and your plan is now leading.",
-            href=f"/projects/{project_row['slug']}",
-        )
+    if leader_changed and new_leader is not None:
+        leader_author_id = db.execute(
+            select(project_plans.c.author_id).where(project_plans.c.id == new_leader)
+        ).scalar()
+        if leader_author_id is not None:
+            create_notification(
+                db=db,
+                recipient_id=leader_author_id,
+                actor_id=current_user_id,
+                kind="prj-plan-lead",
+                surface="project",
+                subject_type="project-plan",
+                subject_id=new_leader,
+                target_id=project_row["id"],
+                title="Plan became leading",
+                body="A vote passed and your plan is now leading.",
+                href=f"/projects/{project_row['slug']}",
+            )
 
     return {
         "plan": _serialize_plan(refreshed_plan, final_summary),

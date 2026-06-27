@@ -17,6 +17,9 @@ from app.models import (
     conversations,
     event_memberships,
     events,
+    help_request_role_assignments,
+    help_request_roles,
+    help_requests,
     messages,
     project_memberships,
     projects,
@@ -183,14 +186,21 @@ def get_total_unread_message_count(db: Session, current_user_id: UUID) -> int:
 
 def _get_conversation_participants(db: Session, conversation_id: UUID) -> list[dict[str, object]]:
     rows = db.execute(
-        select(users.c.id, users.c.username)
+        select(users.c.id, users.c.username, users.c.profile_image_url)
         .select_from(
             conversation_members.join(users, conversation_members.c.user_id == users.c.id)
         )
         .where(conversation_members.c.conversation_id == conversation_id)
         .order_by(users.c.username.asc())
     ).mappings().all()
-    return [{"id": row["id"], "username": row["username"]} for row in rows]
+    return [
+        {
+            "id": row["id"],
+            "username": row["username"],
+            "profileImageUrl": row["profile_image_url"],
+        }
+        for row in rows
+    ]
 
 
 def _ensure_group_manager(db: Session, conversation_row: Mapping[str, object], current_user_id: UUID) -> None:
@@ -656,6 +666,78 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
                 "unread_count": unread_count,
             })
 
+    help_request_ids: set[UUID] = set()
+    help_request_ids.update(
+        db.execute(
+            select(help_requests.c.id).where(help_requests.c.author_id == current_user_id)
+        ).scalars().all()
+    )
+    help_request_ids.update(
+        db.execute(
+            select(help_request_roles.c.help_request_id)
+            .select_from(
+                help_request_role_assignments.join(
+                    help_request_roles,
+                    help_request_roles.c.id == help_request_role_assignments.c.role_id,
+                )
+            )
+            .where(help_request_role_assignments.c.user_id == current_user_id)
+            .distinct()
+        ).scalars().all()
+    )
+    help_request_ids.update(
+        db.execute(
+            select(comments.c.subject_id)
+            .where(
+                comments.c.subject_type == "help_request",
+                comments.c.author_id == current_user_id,
+            )
+            .distinct()
+        ).scalars().all()
+    )
+
+    if help_request_ids:
+        help_request_rows = db.execute(
+            select(
+                help_requests.c.id,
+                help_requests.c.title,
+                help_requests.c.comment_count,
+                help_requests.c.created_at,
+            )
+            .where(help_requests.c.id.in_(list(help_request_ids)))
+        ).mappings().all()
+
+        for row in help_request_rows:
+            last_comment = db.execute(
+                select(comments.c.body, comments.c.created_at)
+                .where(
+                    comments.c.subject_type == "help_request",
+                    comments.c.subject_id == row["id"],
+                )
+                .order_by(comments.c.created_at.desc())
+                .limit(1)
+            ).mappings().first()
+            last_read_at = _get_subject_chat_last_read_at(db, current_user_id, "help_request", row["id"])
+            unread_count = _linked_chat_unread_count(
+                db,
+                "help_request",
+                row["id"],
+                current_user_id,
+                last_read_at,
+            )
+
+            items.append({
+                "id": str(row["id"]),
+                "kind": "help_request",
+                "entity_id": str(row["id"]),
+                "entity_slug": str(row["id"]),
+                "title": row["title"],
+                "preview": last_comment["body"][:200] if last_comment else "",
+                "last_message_at": _iso(last_comment["created_at"]) if last_comment else _iso(row["created_at"]),
+                "comment_count": row["comment_count"],
+                "unread_count": unread_count,
+            })
+
     items.sort(key=lambda x: x["last_message_at"], reverse=True)
     return {"total": len(items), "items": items}
 
@@ -667,13 +749,18 @@ def mark_linked_chat_read(
     subject_id: UUID,
 ) -> dict[str, object]:
     normalized_subject_type = subject_type.strip().lower()
-    if normalized_subject_type not in {"project", "event"}:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="subject_type must be project or event")
+    if normalized_subject_type not in {"project", "event", "help_request"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="subject_type must be project, event, or help_request",
+        )
 
     if normalized_subject_type == "project":
         exists = db.execute(select(projects.c.id).where(projects.c.id == subject_id)).first()
-    else:
+    elif normalized_subject_type == "event":
         exists = db.execute(select(events.c.id).where(events.c.id == subject_id)).first()
+    else:
+        exists = db.execute(select(help_requests.c.id).where(help_requests.c.id == subject_id)).first()
 
     if exists is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{normalized_subject_type.capitalize()} not found")

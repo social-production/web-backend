@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import and_, func, literal, not_, or_, select, union_all
 from sqlalchemy.orm import Session
 
+from app.services.content import format_schedule_rail_label
 from app.models import (
     channels,
     communities,
@@ -24,6 +26,10 @@ from app.models import (
     event_update_request_votes,
     event_update_requests,
     events,
+    help_request_role_assignments,
+    help_request_roles,
+    help_request_tags,
+    help_requests,
     notifications,
     project_activities,
     project_activity_assignments,
@@ -31,29 +37,8 @@ from app.models import (
     project_edit_request_votes,
     project_edit_requests,
     project_memberships,
-    project_phase_change_votes,
-    event_activities,
-    event_activity_assignments,
-    event_activity_roles,
-    event_edit_request_votes,
-    event_edit_requests,
-    event_phase_change_votes,
-    event_phase_change_requests,
-    event_plan_votes,
-    event_plans,
-    event_update_request_votes,
-    event_update_requests,
-    project_activities,
-    project_activity_assignments,
-    project_activity_roles,
-    project_edit_request_votes,
-    project_edit_requests,
-    project_phase_change_votes,
-    project_plan_votes,
-    project_plans,
-    project_update_request_votes,
-    project_update_requests,
     project_phase_change_requests,
+    project_phase_change_votes,
     project_plan_votes,
     project_plans,
     project_service_requests,
@@ -64,34 +49,29 @@ from app.models import (
     user_follows,
     users,
 )
+from app.services.content import _help_request_role_summaries, _load_help_request_roles
+from app.services.feeds import _truncate_update_body
 from app.services.messages import find_direct_conversation_between, get_total_unread_message_count
 
 
 def get_onboarding(db: Session) -> dict[str, object]:
-    channel_names = db.execute(
-        select(channels.c.name).order_by(channels.c.name.asc()).limit(8)
-    ).scalars().all()
-    community_names = db.execute(
-        select(communities.c.name).order_by(communities.c.name.asc()).limit(8)
-    ).scalars().all()
-
     return {
-        "title": "Signup / Login",
-        "intro": "Anonymous visitors can read public surfaces first. To post, follow people, or open create flows, sign up or log in.",
+        "title": "Login",
+        "intro": "Sign in to post, follow people, and create projects, threads, and events.",
         "accountModes": [
             {
                 "value": "signup",
                 "label": "Sign up",
-                "description": "Start a fresh username and local profile.",
+                "description": "Create a new account.",
             },
             {
                 "value": "login",
                 "label": "Log in",
-                "description": "Use an existing account once authentication is wired.",
+                "description": "Use an existing account.",
             },
         ],
-        "starterChannels": list(channel_names),
-        "starterCommunities": list(community_names),
+        "starterChannels": [],
+        "starterCommunities": [],
     }
 
 
@@ -284,7 +264,8 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "title": r["title"],
                 "href": f"/projects/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
-                "timeLabel": _small_iso(r["scheduled_at"]),
+                "createdAt": _small_iso(r["scheduled_at"]),
+                "timeLabel": format_schedule_rail_label(r["scheduled_at"]) if r["scheduled_at"] else "",
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
                 "projectMode": r["project_mode"],
                 "projectSlug": r["parent_slug"],
@@ -343,11 +324,164 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "title": r["title"],
                 "href": f"/events/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
-                "timeLabel": _small_iso(r["scheduled_at"]),
+                "createdAt": _small_iso(r["scheduled_at"]),
+                "timeLabel": format_schedule_rail_label(r["scheduled_at"]) if r["scheduled_at"] else "",
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
                 "eventSlug": r["parent_slug"],
                 "activityId": aid,
             })
+
+    # ── Help requests: author-owned, viewer signups, and open requests in member scopes ──
+    help_request_items: list[dict[str, object]] = []
+    author_owned_ids: set[UUID] = set()
+
+    author_rows = db.execute(
+        select(
+            help_requests.c.id,
+            help_requests.c.title,
+            help_requests.c.body,
+            help_requests.c.needed_at,
+            help_requests.c.schedule_label,
+        )
+        .where(
+            help_requests.c.author_id == current_user_id,
+            help_requests.c.needed_at > datetime.now(timezone.utc),
+        )
+        .order_by(help_requests.c.needed_at.asc())
+        .limit(6)
+    ).mappings().all()
+
+    if author_rows:
+        author_owned_ids = {row["id"] for row in author_rows}
+        author_hr_ids = [row["id"] for row in author_rows]
+        author_roles = _load_help_request_roles(db, author_hr_ids, current_user_id)
+        for row in author_rows:
+            hr_id = str(row["id"])
+            roles = author_roles.get(hr_id, [])
+            signed, needed = _help_request_role_summaries(roles)
+            help_request_items.append({
+                "kind": "help-request-owned",
+                "id": hr_id,
+                "subjectId": hr_id,
+                "title": row["title"],
+                "href": f"/help-requests/{hr_id}",
+                "meta": "Your request",
+                "createdAt": _small_iso(row["needed_at"]),
+                "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
+                "viewerIsAuthor": True,
+                "body": _truncate_update_body(str(row["body"] or "")),
+            })
+
+    signup_rows = db.execute(
+        select(
+            help_requests.c.id,
+            help_requests.c.title,
+            help_requests.c.body,
+            help_requests.c.needed_at,
+            help_requests.c.schedule_label,
+        )
+        .select_from(
+            help_request_role_assignments.join(
+                help_request_roles,
+                help_request_roles.c.id == help_request_role_assignments.c.role_id,
+            ).join(help_requests, help_requests.c.id == help_request_roles.c.help_request_id)
+        )
+        .where(help_request_role_assignments.c.user_id == current_user_id)
+        .distinct()
+        .order_by(help_requests.c.needed_at.asc())
+        .limit(6)
+    ).mappings().all()
+
+    signed_up_ids: set[UUID] = set()
+    if signup_rows:
+        signup_hr_ids = [row["id"] for row in signup_rows]
+        signed_up_ids = set(signup_hr_ids)
+        signup_roles = _load_help_request_roles(db, signup_hr_ids, current_user_id)
+        for row in signup_rows:
+            if row["id"] in author_owned_ids:
+                continue
+            hr_id = str(row["id"])
+            roles = signup_roles.get(hr_id, [])
+            signed, needed = _help_request_role_summaries(roles)
+            help_request_items.append({
+                "kind": "help-request-signup",
+                "id": hr_id,
+                "subjectId": hr_id,
+                "title": row["title"],
+                "href": f"/help-requests/{hr_id}",
+                "meta": "You signed up",
+                "createdAt": _small_iso(row["needed_at"]),
+                "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
+                "body": _truncate_update_body(str(row["body"] or "")),
+            })
+
+    member_scope_rows = db.execute(
+        select(scope_memberships.c.scope_kind, scope_memberships.c.scope_id).where(
+            scope_memberships.c.user_id == current_user_id,
+            scope_memberships.c.scope_id.is_not(None),
+        )
+    ).all()
+    member_channel_ids = [scope_id for kind, scope_id in member_scope_rows if kind == "channel"]
+    member_community_ids = [scope_id for kind, scope_id in member_scope_rows if kind == "community"]
+
+    if member_channel_ids or member_community_ids:
+        tag_conditions = []
+        if member_channel_ids:
+            tag_conditions.append(help_request_tags.c.channel_id.in_(member_channel_ids))
+        if member_community_ids:
+            tag_conditions.append(help_request_tags.c.community_id.in_(member_community_ids))
+
+        open_query = (
+            select(
+                help_requests.c.id,
+                help_requests.c.title,
+                help_requests.c.body,
+                help_requests.c.needed_at,
+                help_requests.c.schedule_label,
+            )
+            .select_from(
+                help_requests.join(
+                    help_request_tags,
+                    help_request_tags.c.help_request_id == help_requests.c.id,
+                )
+            )
+            .where(
+                help_requests.c.needed_at > datetime.now(timezone.utc),
+                or_(*tag_conditions),
+            )
+            .distinct()
+            .order_by(help_requests.c.needed_at.asc())
+            .limit(6)
+        )
+        if signed_up_ids:
+            open_query = open_query.where(help_requests.c.id.not_in(list(signed_up_ids)))
+
+        open_rows = db.execute(open_query).mappings().all()
+        if open_rows:
+            open_hr_ids = [row["id"] for row in open_rows]
+            open_roles = _load_help_request_roles(db, open_hr_ids, current_user_id)
+            for row in open_rows:
+                if row["id"] in author_owned_ids:
+                    continue
+                hr_id = str(row["id"])
+                roles = open_roles.get(hr_id, [])
+                signed, needed = _help_request_role_summaries(roles)
+                help_request_items.append({
+                    "kind": "help-request-open",
+                    "id": f"open-{hr_id}",
+                    "subjectId": hr_id,
+                    "title": row["title"],
+                    "href": f"/help-requests/{hr_id}",
+                    "meta": "",
+                    "createdAt": _small_iso(row["needed_at"]),
+                    "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                    "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
+                    "body": _truncate_update_body(str(row["body"] or "")),
+                })
+
+    items.extend(help_request_items)
 
     # ── Active votes: open requests where user is a member and hasn't voted yet ──
     vote_items: list[dict[str, object]] = []

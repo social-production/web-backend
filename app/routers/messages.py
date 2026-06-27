@@ -29,6 +29,7 @@ router = APIRouter(prefix="/messages", tags=["messages"])
 class ParticipantOut(BaseModel):
     id: UUID
     username: str
+    profileImageUrl: str | None = None
 
 
 class ConversationOut(BaseModel):

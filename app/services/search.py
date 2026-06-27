@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -170,4 +170,44 @@ def search_documents(
 
     rows = db.execute(stmt).mappings().all()
     items = [_serialize_search_document(row) for row in rows]
+
+    if len(items) < safe_limit and len(cleaned_query) >= 2:
+        existing_ids = {str(item["id"]) for item in items}
+        pattern = f"%{cleaned_query}%"
+        fallback_stmt = (
+            select(
+                searchable_documents.c.id,
+                searchable_documents.c.entity_type,
+                searchable_documents.c.entity_id,
+                searchable_documents.c.title,
+                searchable_documents.c.summary,
+                searchable_documents.c.meta,
+                searchable_documents.c.href,
+                searchable_documents.c.created_at,
+                searchable_documents.c.updated_at,
+                literal(0.0).label("rank"),
+            )
+            .where(
+                or_(
+                    searchable_documents.c.title.ilike(pattern),
+                    searchable_documents.c.summary.ilike(pattern),
+                    searchable_documents.c.meta.ilike(pattern),
+                )
+            )
+            .order_by(searchable_documents.c.updated_at.desc())
+            .limit(safe_limit)
+        )
+        if normalized_types:
+            fallback_stmt = fallback_stmt.where(
+                searchable_documents.c.entity_type.in_(normalized_types)
+            )
+        fallback_rows = db.execute(fallback_stmt).mappings().all()
+        for row in fallback_rows:
+            if str(row["id"]) in existing_ids:
+                continue
+            items.append(_serialize_search_document(row))
+            existing_ids.add(str(row["id"]))
+            if len(items) >= safe_limit:
+                break
+
     return {"total": len(items), "items": items}

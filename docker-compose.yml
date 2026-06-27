@@ -39,7 +39,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: dev-only-change-me
       MESSAGE_ENCRYPTION_KEY: IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=
-      CORS_ORIGINS: http://localhost:5173
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     ports:
       - "8000:8000"
     volumes:
