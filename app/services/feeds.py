@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Integer, and_, cast, func, literal, null, or_, select, union_all
+from sqlalchemy import Boolean, DateTime, Integer, String, and_, cast, func, literal, null, or_, select, union_all
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.models import (
     channels,
+    comments,
     communities,
     content_votes,
     event_tags,
@@ -656,6 +657,136 @@ def _threads_select_discovery(excluded_author_ids: list[UUID]):
     )
 
 
+def _comment_activity_select(
+    subject_type: str,
+    slug_column,
+    title_column,
+    subject_id_column,
+    join_clause,
+    extra_where,
+    followed_user_ids: list[UUID],
+    feed_source: str = "following",
+):
+    if not followed_user_ids:
+        return None
+
+    return (
+        select(
+            comments.c.id,
+            literal("comment_activity").label("entity_type"),
+            slug_column.label("slug"),
+            title_column.label("title"),
+            comments.c.body,
+            literal(subject_type).label("audience"),
+            comments.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("vote_count"),
+            _ZERO_INT.label("comment_count"),
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            comments.c.created_at.label("last_activity_at"),
+            comments.c.created_at,
+            literal(subject_type).label("project_mode"),
+            cast(subject_id_column, String).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            literal(None).label("location_label"),
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+            literal(feed_source).label("feed_source"),
+        )
+        .select_from(join_clause)
+        .where(
+            comments.c.subject_type == subject_type,
+            comments.c.author_id.in_(followed_user_ids),
+            extra_where,
+        )
+    )
+
+
+def _comments_select_for_followed(
+    followed_user_ids: list[UUID],
+    current_user_id: UUID,
+    feed_source: str = "following",
+) -> list:
+    if not followed_user_ids:
+        return []
+
+    visible_post_author_ids = list({current_user_id, *followed_user_ids})
+    return [
+        part
+        for part in [
+            _comment_activity_select(
+                "thread",
+                threads.c.slug,
+                threads.c.title,
+                comments.c.subject_id,
+                comments.outerjoin(users, users.c.id == comments.c.author_id).join(
+                    threads, comments.c.subject_id == threads.c.id
+                ),
+                literal(True),
+                followed_user_ids,
+                feed_source=feed_source,
+            ),
+            _comment_activity_select(
+                "post",
+                cast(null(), String),
+                func.left(posts.c.body, 120),
+                comments.c.subject_id,
+                comments.outerjoin(users, users.c.id == comments.c.author_id).join(
+                    posts, comments.c.subject_id == posts.c.id
+                ),
+                or_(
+                    posts.c.audience == "public",
+                    posts.c.author_id.in_(visible_post_author_ids),
+                ),
+                followed_user_ids,
+                feed_source=feed_source,
+            ),
+            _comment_activity_select(
+                "project",
+                projects.c.slug,
+                projects.c.title,
+                comments.c.subject_id,
+                comments.outerjoin(users, users.c.id == comments.c.author_id).join(
+                    projects, comments.c.subject_id == projects.c.id
+                ),
+                projects.c.is_closed.is_(False),
+                followed_user_ids,
+                feed_source=feed_source,
+            ),
+            _comment_activity_select(
+                "event",
+                events.c.slug,
+                events.c.title,
+                comments.c.subject_id,
+                comments.outerjoin(users, users.c.id == comments.c.author_id).join(
+                    events, comments.c.subject_id == events.c.id
+                ),
+                events.c.is_private.is_(False),
+                followed_user_ids,
+                feed_source=feed_source,
+            ),
+            _comment_activity_select(
+                "help_request",
+                cast(null(), String),
+                help_requests.c.title,
+                comments.c.subject_id,
+                comments.outerjoin(users, users.c.id == comments.c.author_id).join(
+                    help_requests, comments.c.subject_id == help_requests.c.id
+                ),
+                literal(True),
+                followed_user_ids,
+                feed_source=feed_source,
+            ),
+        ]
+        if part is not None
+    ]
+
+
 def _events_select_for_followed(followed_user_ids: list[UUID]):
     if not followed_user_ids:
         return None
@@ -981,6 +1112,7 @@ def get_personal_feed(
         _threads_select_for_followed(followed_user_ids),
         _events_select_for_followed(followed_user_ids),
         _help_requests_select_for_followed(followed_user_ids),
+        *_comments_select_for_followed(followed_user_ids, current_user_id),
     ]
     if normalized_scope == "popular":
         excluded_author_ids = post_author_ids
@@ -1123,6 +1255,7 @@ def get_user_feed(
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            literal("activity").label("feed_source"),
         )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
         .where(
@@ -1157,6 +1290,7 @@ def get_user_feed(
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            literal("activity").label("feed_source"),
         )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
         .where(threads.c.author_id == user_id)
@@ -1188,6 +1322,7 @@ def get_user_feed(
             events.c.is_private,
             events.c.scheduled_at,
             events.c.time_label,
+            literal("activity").label("feed_source"),
         )
         .select_from(events.outerjoin(users, users.c.id == events.c.created_by))
         .where(events.c.created_by == user_id)
@@ -1221,6 +1356,7 @@ def get_user_feed(
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            literal("activity").label("feed_source"),
         )
         .select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
         .where(projects.c.author_id == user_id, projects.c.is_closed.is_(False))
@@ -1252,12 +1388,24 @@ def get_user_feed(
             literal(False, Boolean).label("is_private"),
             help_requests.c.needed_at.label("scheduled_at"),
             help_requests.c.schedule_label.label("time_label"),
+            literal("activity").label("feed_source"),
         )
         .select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
         .where(help_requests.c.author_id == user_id)
     )
 
-    combined = union_all(posts_q, threads_q, events_q, projects_q, help_requests_q).subquery("user_feed")
+    combined = union_all(
+        posts_q,
+        threads_q,
+        events_q,
+        projects_q,
+        help_requests_q,
+        *_comments_select_for_followed(
+            [user_id],
+            viewer_user_id if viewer_user_id is not None else user_id,
+            feed_source="activity",
+        ),
+    ).subquery("user_feed")
 
     if safe_sort == "popular":
         sort_col = (

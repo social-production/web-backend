@@ -48,13 +48,13 @@ class DiscussionCommentOut(BaseModel):
     vote_count: int
     active_vote: int = 0
     created_at: object
+    replies: list["DiscussionCommentOut"] = Field(default_factory=list)
 
 
 class TagRefOut(BaseModel):
     slug: str
     label: str
     kind: str
-    replies: list["DiscussionCommentOut"] = Field(default_factory=list)
 
 
 DiscussionCommentOut.model_rebuild()

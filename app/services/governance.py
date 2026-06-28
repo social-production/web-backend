@@ -167,6 +167,137 @@ def _ensure_vote_target_exists(db: Session, target_type: str, target_id: UUID) -
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{target_type.capitalize()} not found")
 
 
+def _comment_notification_context(
+    db: Session,
+    subject_type: str,
+    subject_id: UUID,
+) -> tuple[str, str, UUID | None] | None:
+    if subject_type == "thread":
+        row = db.execute(
+            select(threads.c.slug, threads.c.title, threads.c.author_id).where(threads.c.id == subject_id)
+        ).mappings().first()
+        if row is None:
+            return None
+        return (
+            f"/threads/{row['slug']}",
+            str(row["title"]),
+            row["author_id"],
+        )
+    if subject_type == "post":
+        row = db.execute(
+            select(posts.c.body, posts.c.author_id).where(posts.c.id == subject_id)
+        ).mappings().first()
+        if row is None:
+            return None
+        body = str(row["body"] or "").strip()
+        title = body[:120] + ("…" if len(body) > 120 else "") if body else "Post"
+        return (f"/posts/{subject_id}", title, row["author_id"])
+    if subject_type == "project":
+        row = db.execute(
+            select(projects.c.slug, projects.c.title, projects.c.author_id).where(projects.c.id == subject_id)
+        ).mappings().first()
+        if row is None:
+            return None
+        return (
+            f"/projects/{row['slug']}",
+            str(row["title"]),
+            row["author_id"],
+        )
+    if subject_type == "event":
+        row = db.execute(
+            select(events.c.slug, events.c.title, events.c.author_id).where(events.c.id == subject_id)
+        ).mappings().first()
+        if row is None:
+            return None
+        return (
+            f"/events/{row['slug']}",
+            str(row["title"]),
+            row["author_id"],
+        )
+    if subject_type == "help_request":
+        row = db.execute(
+            select(help_requests.c.title, help_requests.c.author_id).where(help_requests.c.id == subject_id)
+        ).mappings().first()
+        if row is None:
+            return None
+        return (
+            f"/help-requests/{subject_id}",
+            str(row["title"]),
+            row["author_id"],
+        )
+    return None
+
+
+def _comment_notification_body(subject_type: str, *, is_reply: bool) -> str:
+    if is_reply:
+        return "Someone replied to your comment."
+    labels = {
+        "thread": "Someone commented on your thread.",
+        "post": "Someone commented on your post.",
+        "project": "Someone commented on your project.",
+        "event": "Someone commented on your event.",
+        "help_request": "Someone commented on your help request.",
+    }
+    return labels.get(subject_type, "Someone commented on content you follow.")
+
+
+def _notify_comment_recipients(
+    db: Session,
+    *,
+    current_user_id: UUID,
+    subject_type: str,
+    subject_id: UUID,
+    comment_id: UUID,
+    parent_id: UUID | None,
+) -> None:
+    context = _comment_notification_context(db, subject_type, subject_id)
+    if context is None:
+        return
+
+    base_href, title, owner_id = context
+    if subject_type in ("project", "event", "help_request"):
+        href = f"{base_href}?tab=chat&comment={comment_id}"
+    else:
+        href = f"{base_href}?comment={comment_id}"
+    recipient_ids: list[UUID] = []
+
+    if owner_id is not None and owner_id != current_user_id:
+        recipient_ids.append(owner_id)
+
+    if parent_id is not None:
+        parent_author_row = db.execute(
+            select(comments.c.author_id).where(comments.c.id == parent_id)
+        ).first()
+        if parent_author_row is not None:
+            parent_author_id = parent_author_row[0]
+            if (
+                parent_author_id is not None
+                and parent_author_id != current_user_id
+                and parent_author_id not in recipient_ids
+            ):
+                recipient_ids.append(parent_author_id)
+
+    notification_body = _comment_notification_body(
+        subject_type,
+        is_reply=parent_id is not None,
+    )
+
+    for recipient_id in recipient_ids:
+        create_notification(
+            db=db,
+            recipient_id=recipient_id,
+            actor_id=current_user_id,
+            kind="reply",
+            surface=subject_type,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            target_id=comment_id,
+            title=title,
+            body=notification_body,
+            href=href,
+        )
+
+
 def _update_subject_comment_count(db: Session, subject_type: str, subject_id: UUID, delta: int) -> None:
     try:
         if subject_type == "thread":
@@ -316,46 +447,14 @@ def add_comment(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add comment") from exc
 
-    if normalized_subject_type == "thread":
-        thread_row = (
-            db.execute(
-                select(threads.c.slug, threads.c.title, threads.c.author_id).where(threads.c.id == subject_id)
-            )
-            .mappings()
-            .first()
-        )
-        if thread_row is not None:
-            href = f"/threads/{thread_row['slug']}?comment={created['id']}"
-            recipient_ids: list[UUID] = []
-            thread_author_id = thread_row["author_id"]
-            if thread_author_id is not None and thread_author_id != current_user_id:
-                recipient_ids.append(thread_author_id)
-            if parent_id is not None:
-                parent_author_row = db.execute(
-                    select(comments.c.author_id).where(comments.c.id == parent_id)
-                ).first()
-                if parent_author_row is not None:
-                    parent_author_id = parent_author_row[0]
-                    if (
-                        parent_author_id is not None
-                        and parent_author_id != current_user_id
-                        and parent_author_id not in recipient_ids
-                    ):
-                        recipient_ids.append(parent_author_id)
-            for recipient_id in recipient_ids:
-                create_notification(
-                    db=db,
-                    recipient_id=recipient_id,
-                    actor_id=current_user_id,
-                    kind="reply",
-                    surface="thread",
-                    subject_type="thread",
-                    subject_id=subject_id,
-                    target_id=created["id"],
-                    title=str(thread_row["title"]),
-                    body="Someone replied to a thread you follow.",
-                    href=href,
-                )
+    _notify_comment_recipients(
+        db,
+        current_user_id=current_user_id,
+        subject_type=normalized_subject_type,
+        subject_id=subject_id,
+        comment_id=created["id"],
+        parent_id=parent_id,
+    )
 
     author_row = db.execute(
         select(users.c.username).where(users.c.id == current_user_id).limit(1)
