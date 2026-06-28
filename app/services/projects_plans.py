@@ -28,6 +28,31 @@ ALLOWED_PLAN_TYPES_BY_MODE: dict[str, set[str]] = {
 }
 
 VALID_VOTES = {"yes", "no"}
+VALID_PROJECT_SUBTYPES = {"standard", "software", "asset-management"}
+
+
+def _plan_subtype_from_payload(
+    plan_payload: Mapping[str, object] | None,
+    fallback: str | None = None,
+) -> str | None:
+    if plan_payload is None:
+        return fallback
+
+    raw = plan_payload.get("projectSubtype")
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in VALID_PROJECT_SUBTYPES:
+            return normalized
+
+    return fallback
+
+
+def _subtype_label(subtype: str | None) -> str:
+    if subtype == "software":
+        return "Software"
+    if subtype == "asset-management":
+        return "Asset management"
+    return "Standard"
 
 
 def _serialize_plan(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
@@ -125,6 +150,27 @@ def sync_project_plan_leading_flags(
                 .values(is_leading=True, status="approved")
             )
 
+    if leader_id is not None:
+        leader_row = db.execute(
+            select(project_plans.c.project_subtype, project_plans.c.plan_payload).where(
+                project_plans.c.id == leader_id
+            )
+        ).mappings().first()
+        if leader_row is not None and phase_kind in {"production", "organisation"}:
+            resolved_subtype = leader_row["project_subtype"] or _plan_subtype_from_payload(
+                dict(leader_row["plan_payload"] or {})
+            )
+            if resolved_subtype:
+                db.execute(
+                    update(projects)
+                    .where(projects.c.id == project_id)
+                    .values(project_subtype=resolved_subtype)
+                )
+
+        from app.services.projects_software import sync_merge_capability_for_leading_plan
+
+        sync_merge_capability_for_leading_plan(db, project_id, leader_id)
+
     return leader_id
 
 
@@ -178,6 +224,7 @@ def submit_project_plan(
 
     _assert_plan_type_allowed(project_row["project_mode"], normalized_type)
     _ensure_member(db, project_row["id"], current_user_id)
+    plan_subtype = _plan_subtype_from_payload(plan_payload, project_row["project_subtype"])
 
     try:
         created = db.execute(
@@ -188,7 +235,7 @@ def submit_project_plan(
                 title=title.strip(),
                 description=description.strip(),
                 author_id=current_user_id,
-                project_subtype=project_row["project_subtype"],
+                project_subtype=plan_subtype,
                 repository_url=repository_url.strip() if repository_url else None,
                 demand_consideration_note=demand_consideration_note.strip(),
                 total_cost_label=total_cost_label.strip() if total_cost_label else None,

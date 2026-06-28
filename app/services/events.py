@@ -355,10 +355,10 @@ def create_event(
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
     community_ids = _resolve_community_ids(db, community_slugs or [], current_user_id)
-    if not is_private and not channel_ids:
+    if not is_private and not channel_ids and not community_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Public events require at least one channel tag",
+            detail="Public events require at least one channel or community tag",
         )
 
     now = datetime.now(timezone.utc)

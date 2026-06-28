@@ -29,6 +29,9 @@ class PhaseChangeRequestCreateIn(BaseModel):
 
     target_phase_id: str = Field(min_length=1, max_length=24)
     reason: str = Field(min_length=1)
+    close_outcome: str | None = Field(default=None, pattern="^(close|convert)$")
+    conversion_target_mode: str | None = Field(default=None, max_length=32)
+    conversion_target_subtype: str | None = Field(default=None, max_length=32)
 
 
 class PhaseChangeVoteIn(BaseModel):
@@ -158,6 +161,9 @@ def create_project_phase_request(
         project_slug=slug,
         target_phase_id=payload.target_phase_id,
         reason=payload.reason,
+        close_outcome=payload.close_outcome,
+        conversion_target_mode=payload.conversion_target_mode,
+        conversion_target_subtype=payload.conversion_target_subtype,
     )
 
 

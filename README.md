@@ -45,8 +45,16 @@ Open `http://localhost:5173`.
 | `JWT_EXPIRE_MINUTES` | `60` | Token lifetime in minutes |
 | `MESSAGE_ENCRYPTION_KEY` | local dev value | Fernet key for message encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CORS_ORIGINS` | `http://localhost:5173` | Allowed origins, e.g. `https://socialproduction.example` |
+| `GITHUB_TOKEN` | _(empty)_ | Fine-grained GitHub PAT with **Issues: write** on `GITHUB_REPO`. Required for the in-app feedback form. |
+| `GITHUB_REPO` | `social-production/web` | `owner/repo` where feedback issues are created |
 
-With Docker, local development values are set in `docker-compose.yml`. Add any overrides to a `.env` file in this folder — Docker Compose picks them up automatically.
+With Docker, local development values are set in `docker-compose.yml`. Copy `.env.example` to `.env` in this folder and set `GITHUB_TOKEN` if you want feedback submissions to work:
+
+```bash
+cp .env.example .env
+# Edit .env and paste your GitHub token
+docker compose up -d --build
+```
 
 Set `APP_ENV=production`, real secrets, and explicit CORS origins before exposing the service externally. Production startup fails fast if placeholder secrets or wildcard CORS are used.
 

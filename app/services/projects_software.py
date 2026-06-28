@@ -146,7 +146,11 @@ def _get_project_by_slug(db: Session, slug: str) -> Mapping[str, object]:
     row = db.execute(select(projects).where(projects.c.slug == slug.lower())).mappings().first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    if row["project_subtype"] != "software":
+
+    from app.services.projects import _resolve_effective_project_subtype
+
+    effective_subtype = _resolve_effective_project_subtype(db, row["id"], row["project_subtype"])
+    if effective_subtype != "software":
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Software governance requires a software project",
@@ -345,10 +349,11 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
                 "passesApprovalThreshold": passes,
                 "canStillPass": can_still_pass,
                 "viewerCanRecordMerge": viewer_can_request_merge and row["stage"] == "awaiting-merge",
+                "viewerCanVote": viewer_is_member and row["stage"] in {"approval", "confirmation"},
             }
         )
 
-        if row["stage"] in {"awaiting-merge", "rejected"}:
+        if row["stage"] == "awaiting-merge":
             replaceable_pull_requests.append(
                 {
                     "id": str(row["id"]),
@@ -391,6 +396,7 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
                 "voteSummary": vote_summary,
                 "passesApprovalThreshold": passes,
                 "canStillPass": can_still_pass,
+                "viewerCanVote": viewer_is_member and row["status"] == "open" and not passes,
             }
         )
 
@@ -424,6 +430,7 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
                 "voteSummary": vote_summary,
                 "passesApprovalThreshold": passes,
                 "canStillPass": can_still_pass,
+                "viewerCanVote": viewer_is_member and row["status"] == "open" and not passes,
             }
         )
 
@@ -443,6 +450,8 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
     return {
         "repositoryUrl": repository_url,
         "licenseLabel": license_label,
+        "isPlatformTagged": bool(project_row.get("is_platform_tagged")),
+        "mergeCapabilityManagedByPlatform": bool(project_row.get("is_platform_tagged")),
         "mergeCapabilityMembers": merge_capability_members,
         "availableMergeCapabilityCandidates": available_merge_candidates,
         "mergeCapabilityChangeRequests": merge_change_requests,
@@ -451,7 +460,7 @@ def _governance_payload(db: Session, project_row: Mapping[str, object], current_
         "repositoryHistory": repository_history,
         "pullRequests": pull_requests,
         "viewerCanCreatePullRequests": viewer_is_member,
-        "viewerCanRequestMergeCapabilityChanges": viewer_is_member,
+        "viewerCanRequestMergeCapabilityChanges": viewer_is_member and not bool(project_row.get("is_platform_tagged")),
         "viewerCanRequestRepositoryReplacement": viewer_is_member,
     }
 
@@ -527,7 +536,7 @@ def vote_pull_request(
     ).mappings().first()
     if request_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pull request not found")
-    if request_row["stage"] not in {"approval", "awaiting-merge"}:
+    if request_row["stage"] not in {"approval", "confirmation"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Pull request is not open for voting")
 
     existing = db.execute(
@@ -569,6 +578,11 @@ def vote_pull_request(
                 next_stage = "awaiting-merge"
             elif not can_still_pass:
                 next_stage = "rejected"
+        elif request_row["stage"] == "confirmation":
+            if passes:
+                next_stage = "confirmed"
+            elif not can_still_pass:
+                next_stage = "awaiting-merge"
 
         if next_stage != request_row["stage"]:
             db.execute(
@@ -576,6 +590,12 @@ def vote_pull_request(
                 .where(project_pull_requests.c.id == request_id)
                 .values(stage=next_stage)
             )
+            if previous_stage == "confirmation" and next_stage == "awaiting-merge":
+                db.execute(
+                    update(project_pull_requests)
+                    .where(project_pull_requests.c.id == request_id)
+                    .values(merge_id=None, merged_by_user_id=None)
+                )
 
         record_meaningful_action(
             db=db,
@@ -639,7 +659,10 @@ def record_pull_request_merge(
         db.execute(
             update(project_pull_requests)
             .where(project_pull_requests.c.id == request_id)
-            .values(stage="confirmed", merge_id=merge_id.strip(), merged_by_user_id=current_user_id)
+            .values(stage="confirmation", merge_id=merge_id.strip(), merged_by_user_id=current_user_id)
+        )
+        db.execute(
+            delete(project_pull_request_votes).where(project_pull_request_votes.c.request_id == request_id)
         )
         db.commit()
     except IntegrityError as exc:
@@ -914,6 +937,22 @@ def vote_repository_replacement(
                 .where(project_pull_requests.c.id == request_row["related_pull_request_id"])
                 .values(stage="replaced")
             )
+            if request_row["author_id"] is not None:
+                db.execute(
+                    delete(project_merge_capability_members).where(
+                        project_merge_capability_members.c.project_id == project_row["id"],
+                        project_merge_capability_members.c.source_label.in_(["plan-creator", "repo-replacement"]),
+                    )
+                )
+                db.execute(
+                    pg_insert(project_merge_capability_members)
+                    .values(
+                        project_id=project_row["id"],
+                        user_id=request_row["author_id"],
+                        source_label="repo-replacement",
+                    )
+                    .on_conflict_do_nothing(index_elements=["project_id", "user_id"])
+                )
         elif not can_still_pass:
             db.execute(
                 update(project_repository_replacement_requests)
@@ -934,3 +973,225 @@ def vote_repository_replacement(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not record vote") from exc
 
     return _governance_payload(db, project_row, current_user_id)
+
+
+def _set_merge_capability_members(
+    db: Session,
+    project_id: UUID,
+    user_ids: list[UUID],
+    source_label: str,
+) -> None:
+    _ensure_software_tables(db)
+    db.execute(
+        delete(project_merge_capability_members).where(
+            project_merge_capability_members.c.project_id == project_id,
+            project_merge_capability_members.c.source_label == source_label,
+        )
+    )
+    for user_id in user_ids:
+        db.execute(
+            pg_insert(project_merge_capability_members)
+            .values(project_id=project_id, user_id=user_id, source_label=source_label)
+            .on_conflict_do_update(
+                index_elements=["project_id", "user_id"],
+                set_={"source_label": source_label},
+            )
+        )
+
+
+def sync_merge_capability_for_leading_plan(db: Session, project_id: UUID, plan_id: UUID) -> None:
+    _ensure_software_tables(db)
+    project_row = db.execute(select(projects).where(projects.c.id == project_id)).mappings().first()
+    if project_row is None or project_row["project_subtype"] != "software":
+        return
+
+    plan_row = db.execute(
+        select(project_plans.c.author_id).where(
+            project_plans.c.id == plan_id,
+            project_plans.c.project_id == project_id,
+            project_plans.c.is_leading.is_(True),
+        )
+    ).mappings().first()
+    if plan_row is None:
+        return
+
+    if bool(project_row.get("is_platform_tagged")):
+        sync_platform_software_merge_capability(db, project_id=project_id)
+        return
+
+    if plan_row["author_id"] is not None:
+        _set_merge_capability_members(db, project_id, [plan_row["author_id"]], "plan-creator")
+
+
+def sync_platform_software_merge_capability(db: Session, project_id: UUID | None = None) -> None:
+    from app.services.board import get_active_board_member_ids
+
+    _ensure_software_tables(db)
+    board_member_ids = get_active_board_member_ids(db)
+
+    query = select(projects.c.id).where(
+        projects.c.project_subtype == "software",
+        projects.c.is_platform_tagged.is_(True),
+    )
+    if project_id is not None:
+        query = query.where(projects.c.id == project_id)
+
+    project_ids = [row[0] for row in db.execute(query).all()]
+    for pid in project_ids:
+        db.execute(
+            delete(project_merge_capability_members).where(
+                project_merge_capability_members.c.project_id == pid,
+                project_merge_capability_members.c.source_label == "platform-board",
+            )
+        )
+        if board_member_ids:
+            _set_merge_capability_members(db, pid, board_member_ids, "platform-board")
+
+
+def build_software_history_entries(
+    db: Session,
+    project_id: UUID,
+    vote_context_population: int,
+    current_user_id: UUID | None,
+) -> list[tuple[object, dict[str, object]]]:
+    _ensure_software_tables(db)
+    entries: list[tuple[object, dict[str, object]]] = []
+
+    def _author_username(author_id: UUID | None) -> str:
+        if author_id is None:
+            return "unknown"
+        row = db.execute(select(users.c.username).where(users.c.id == author_id)).first()
+        return row[0] if row else "unknown"
+
+    pr_rows = db.execute(
+        select(project_pull_requests)
+        .where(project_pull_requests.c.project_id == project_id)
+        .order_by(project_pull_requests.c.created_at.desc())
+    ).mappings().all()
+
+    for row in pr_rows:
+        vote_summary, passes, can_still = _compute_vote_summary(
+            _vote_rows(db, project_pull_request_votes, row["id"]),
+            vote_context_population,
+            current_user_id,
+        )
+        kind = (
+            "project-pull-request-confirmation"
+            if row["stage"] in {"confirmation", "confirmed"}
+            else "project-pull-request-approval"
+        )
+        status = "open"
+        if row["stage"] in {"confirmed", "awaiting-merge"} and kind == "project-pull-request-approval":
+            status = "approved"
+        elif row["stage"] == "confirmed":
+            status = "approved"
+        elif row["stage"] == "rejected":
+            status = "rejected"
+        elif row["stage"] == "confirmation":
+            status = "open"
+
+        entries.append(
+            (
+                row["created_at"],
+                {
+                    "id": str(row["id"]),
+                    "entityKind": "project",
+                    "kind": kind,
+                    "kindLabel": "Merge confirmation" if kind.endswith("confirmation") else "Pull request approval",
+                    "createdAt": row["created_at"].isoformat(),
+                    "authorUsername": _author_username(row["author_id"]),
+                    "status": status,
+                    "approvalThresholdPercent": float(row["approval_threshold_percent"]),
+                    "voteSummary": vote_summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": row["stage"] in {"approval", "confirmation"},
+                    "payload": {
+                        "type": "pull-request",
+                        "title": row["title"],
+                        "summary": row["summary"],
+                        "pullRequestId": row["pull_request_id"],
+                        "pullRequestUrl": row["pull_request_url"],
+                        "stage": row["stage"],
+                        "mergeId": row["merge_id"],
+                    },
+                },
+            )
+        )
+
+    merge_rows = db.execute(
+        select(project_merge_capability_change_requests)
+        .where(project_merge_capability_change_requests.c.project_id == project_id)
+        .order_by(project_merge_capability_change_requests.c.created_at.desc())
+    ).mappings().all()
+    for row in merge_rows:
+        vote_summary, passes, can_still = _compute_vote_summary(
+            _vote_rows(db, project_merge_capability_change_votes, row["id"]),
+            vote_context_population,
+            current_user_id,
+        )
+        target = db.execute(select(users.c.username).where(users.c.id == row["target_user_id"])).first()
+        entries.append(
+            (
+                row["created_at"],
+                {
+                    "id": str(row["id"]),
+                    "entityKind": "project",
+                    "kind": "project-merge-capability-change",
+                    "kindLabel": "Merge capability change",
+                    "createdAt": row["created_at"].isoformat(),
+                    "authorUsername": _author_username(row["author_id"]),
+                    "status": row["status"],
+                    "approvalThresholdPercent": float(row["approval_threshold_percent"]),
+                    "voteSummary": vote_summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": row["status"] == "open",
+                    "payload": {
+                        "type": "merge-capability-change",
+                        "action": row["action"],
+                        "targetUsername": target[0] if target else "unknown",
+                    },
+                },
+            )
+        )
+
+    repo_rows = db.execute(
+        select(project_repository_replacement_requests)
+        .where(project_repository_replacement_requests.c.project_id == project_id)
+        .order_by(project_repository_replacement_requests.c.created_at.desc())
+    ).mappings().all()
+    for row in repo_rows:
+        vote_summary, passes, can_still = _compute_vote_summary(
+            _vote_rows(db, project_repository_replacement_votes, row["id"]),
+            vote_context_population,
+            current_user_id,
+        )
+        entries.append(
+            (
+                row["created_at"],
+                {
+                    "id": str(row["id"]),
+                    "entityKind": "project",
+                    "kind": "project-repository-replacement",
+                    "kindLabel": "Repository replacement",
+                    "createdAt": row["created_at"].isoformat(),
+                    "authorUsername": _author_username(row["author_id"]),
+                    "status": row["status"],
+                    "approvalThresholdPercent": float(row["approval_threshold_percent"]),
+                    "voteSummary": vote_summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": row["status"] == "open",
+                    "payload": {
+                        "type": "repository-replacement",
+                        "repositoryUrl": row["repository_url"],
+                        "previousRepositoryUrl": row["previous_repository_url"],
+                        "reason": row["reason"],
+                        "relatedPullRequestId": str(row["related_pull_request_id"]),
+                    },
+                },
+            )
+        )
+
+    return entries

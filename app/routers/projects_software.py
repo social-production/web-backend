@@ -65,6 +65,7 @@ class ProjectSoftwarePullRequestOut(BaseModel):
     passesApprovalThreshold: bool
     canStillPass: bool
     viewerCanRecordMerge: bool
+    viewerCanVote: bool = False
 
 
 class ProjectSoftwareBlockedPullRequestOut(BaseModel):
@@ -87,6 +88,7 @@ class ProjectSoftwareMergeCapabilityChangeRequestOut(BaseModel):
     voteSummary: ProjectPlanVoteSummaryOut | None = None
     passesApprovalThreshold: bool
     canStillPass: bool
+    viewerCanVote: bool = False
 
 
 class ProjectSoftwareRepositoryReplacementRequestOut(BaseModel):
@@ -102,6 +104,7 @@ class ProjectSoftwareRepositoryReplacementRequestOut(BaseModel):
     voteSummary: ProjectPlanVoteSummaryOut | None = None
     passesApprovalThreshold: bool
     canStillPass: bool
+    viewerCanVote: bool = False
 
 
 class ProjectSoftwareRepositoryRecordOut(BaseModel):
@@ -117,6 +120,8 @@ class ProjectSoftwareRepositoryRecordOut(BaseModel):
 class ProjectSoftwareGovernanceDataOut(BaseModel):
     repositoryUrl: str
     licenseLabel: str
+    isPlatformTagged: bool = False
+    mergeCapabilityManagedByPlatform: bool = False
     mergeCapabilityMembers: list[ProjectSoftwareMergeCapabilityMemberOut]
     availableMergeCapabilityCandidates: list[DetailMemberOut]
     mergeCapabilityChangeRequests: list[ProjectSoftwareMergeCapabilityChangeRequestOut]

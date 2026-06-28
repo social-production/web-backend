@@ -138,6 +138,12 @@ def _serialize_edit_request(row: Mapping[str, object], vote_summary: dict[str, o
     }
 
 
+def _phase_change_kind_for_event(target_phase_id: str) -> str:
+    if target_phase_id == "closed":
+        return "close"
+    return "advance"
+
+
 def create_phase_change_request(
     db: Session,
     current_user_id: UUID,
@@ -161,6 +167,8 @@ def create_phase_change_request(
             detail="target_phase_id must differ from current_phase_id",
         )
 
+    change_kind = _phase_change_kind_for_event(normalized_target)
+
     try:
         created = db.execute(
             insert(event_phase_change_requests)
@@ -168,7 +176,7 @@ def create_phase_change_request(
                 event_id=event_row["id"],
                 from_phase_id=event_row["current_phase_id"],
                 target_phase_id=normalized_target,
-                change_kind="advance",
+                change_kind=change_kind,
                 reason=reason.strip(),
                 author_id=current_user_id,
                 status="open",

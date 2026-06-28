@@ -29,6 +29,7 @@ USER_SETTINGS_FIELDS = {
     "hide_personal_feed_from_non_followers",
     "hide_public_profile_activity_from_non_followers",
     "require_follow_approval",
+    "preferred_language",
 }
 
 
@@ -63,6 +64,7 @@ def _serialize_settings(row: Mapping[str, object]) -> dict[str, object]:
             "hide_public_profile_activity_from_non_followers"
         ],
         "require_follow_approval": row["require_follow_approval"],
+        "preferred_language": row["preferred_language"],
     }
 
 
@@ -141,9 +143,18 @@ def get_own_profile(db: Session, current_user_id: UUID) -> dict[str, object]:
     return {"user": _serialize_user(user_row), "settings": _serialize_settings(settings_row)}
 
 
+VALID_LANGUAGES = {"en", "nl"}
+
+
 def update_own_profile_settings(db: Session, current_user_id: UUID, payload: dict[str, object]) -> dict[str, object]:
     profile_updates = {k: v for k, v in payload.items() if k in USER_PROFILE_FIELDS}
     settings_updates = {k: v for k, v in payload.items() if k in USER_SETTINGS_FIELDS}
+
+    if "preferred_language" in settings_updates:
+        language = str(settings_updates["preferred_language"]).strip().lower()
+        if language not in VALID_LANGUAGES:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_preferred_language")
+        settings_updates["preferred_language"] = language
 
     if not profile_updates and not settings_updates:
         return get_own_profile(db, current_user_id)

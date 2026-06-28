@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 import hashlib
+import re
 import secrets
+from urllib.parse import unquote
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -13,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models import channels, communities, scope_invites, scope_memberships, users
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
 from app.services.search import index_document
 
 CHANNEL_SCOPE_KIND = "channel"
@@ -127,8 +130,51 @@ def _is_scope_manager(db: Session, scope_kind: str, scope_id: UUID, user_id: UUI
     return row is not None and row[0] == "manager"
 
 
-def _invite_redeem_url(token: str) -> str:
+def _is_scope_member(db: Session, scope_kind: str, scope_id: UUID, user_id: UUID) -> bool:
+    row = db.execute(
+        select(scope_memberships.c.user_id).where(
+            scope_memberships.c.scope_kind == scope_kind,
+            scope_memberships.c.scope_id == scope_id,
+            scope_memberships.c.user_id == user_id,
+        )
+    ).first()
+    return row is not None
+
+
+def _can_create_scope_invite(
+    db: Session,
+    scope_kind: str,
+    scope_row: Mapping[str, object],
+    user_id: UUID,
+) -> bool:
+    if not _is_scope_member(db, scope_kind, scope_row["id"], user_id):
+        return False
+    if scope_kind == COMMUNITY_SCOPE_KIND and scope_row["join_policy"] == "closed":
+        return True
+    return _is_scope_manager(db, scope_kind, scope_row["id"], user_id)
+
+
+def _community_invite_url(slug: str, token: str) -> str:
+    return f"/communities/{slug}?invite={token}"
+
+
+def _invite_redeem_url(scope_kind: str, slug: str, token: str) -> str:
+    if scope_kind == COMMUNITY_SCOPE_KIND:
+        return _community_invite_url(slug, token)
     return f"/scopes/invites/redeem?token={token}"
+
+
+def normalize_invite_token(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return value
+
+    for param in ("invite", "token"):
+        match = re.search(rf"[?&]{param}=([^&#]+)", value)
+        if match:
+            return unquote(match.group(1).strip())
+
+    return value
 
 
 def create_scope_invite(
@@ -138,8 +184,8 @@ def create_scope_invite(
     slug: str,
 ) -> dict[str, object]:
     scope_row = _get_scope_row(db, scope_kind, slug)
-    if not _is_scope_manager(db, scope_kind, scope_row["id"], current_user_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only scope managers can create invites")
+    if not _can_create_scope_invite(db, scope_kind, scope_row, current_user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only community members can create invites")
 
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -162,7 +208,7 @@ def create_scope_invite(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create invite") from exc
 
-    redeem_url = _invite_redeem_url(token)
+    redeem_url = _invite_redeem_url(scope_kind, scope_row["slug"], token)
     return {"token": token, "redeem_url": redeem_url}
 
 
@@ -436,27 +482,6 @@ def get_community_by_slug(db: Session, slug: str, current_user_id: UUID | None =
         "member_count": len(member_rows),
         "viewer_is_member": viewer_is_member,
     }
-    if (
-        row["join_policy"] == "closed"
-        and current_user_id is not None
-        and _is_scope_manager(db, COMMUNITY_SCOPE_KIND, row["id"], current_user_id)
-    ):
-        now = datetime.now(timezone.utc)
-        active_invite = db.execute(
-            select(scope_invites.c.id)
-            .where(
-                scope_invites.c.scope_kind == COMMUNITY_SCOPE_KIND,
-                scope_invites.c.scope_id == row["id"],
-                or_(scope_invites.c.expires_at.is_(None), scope_invites.c.expires_at >= now),
-                or_(scope_invites.c.max_uses.is_(None), scope_invites.c.uses < scope_invites.c.max_uses),
-            )
-            .limit(1)
-        ).first()
-        if active_invite is None:
-            invite = create_scope_invite(db, current_user_id, COMMUNITY_SCOPE_KIND, row["slug"])
-            result["invite_link"] = invite["redeem_url"]
-        else:
-            result["invite_link"] = "/scopes/invites/redeem"
     return result
 
 
@@ -559,7 +584,7 @@ def list_scope_members(db: Session, scope_kind: str, slug: str) -> dict[str, obj
 
 
 def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[str, object]:
-    normalized_token = token.strip()
+    normalized_token = normalize_invite_token(token)
     if not normalized_token:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="token is required")
 
@@ -587,6 +612,16 @@ def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[
     if scope_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite scope not found")
 
+    existing = db.execute(
+        select(scope_memberships.c.user_id).where(
+            scope_memberships.c.scope_kind == scope_kind,
+            scope_memberships.c.scope_id == scope_row["id"],
+            scope_memberships.c.user_id == current_user_id,
+        )
+    ).first()
+    if existing is not None:
+        return {"ok": True, "joined": False, "scope_kind": scope_kind, "slug": scope_row["slug"]}
+
     try:
         db.execute(
             insert(scope_memberships).values(
@@ -608,3 +643,75 @@ def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not redeem invite") from exc
 
     return {"ok": True, "joined": True, "scope_kind": scope_kind, "slug": scope_row["slug"]}
+
+
+def invite_user_to_community(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    username: str,
+) -> dict[str, object]:
+    community_row = _get_community_row(db, slug)
+    if community_row["join_policy"] != "closed":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Direct invites are only available for private communities",
+        )
+    if not _is_scope_member(db, COMMUNITY_SCOPE_KIND, community_row["id"], current_user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only community members can invite others",
+        )
+
+    normalized_username = username.strip()
+    if not normalized_username:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="username is required")
+
+    target_user = db.execute(
+        select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+    ).mappings().first()
+    if target_user is None or target_user["id"] == current_user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    existing = db.execute(
+        select(scope_memberships.c.user_id).where(
+            scope_memberships.c.scope_kind == COMMUNITY_SCOPE_KIND,
+            scope_memberships.c.scope_id == community_row["id"],
+            scope_memberships.c.user_id == target_user["id"],
+        )
+    ).first()
+    if existing is not None:
+        return {"ok": True, "username": target_user["username"], "already_member": True}
+
+    try:
+        db.execute(
+            insert(scope_memberships).values(
+                scope_kind=COMMUNITY_SCOPE_KIND,
+                scope_id=community_row["id"],
+                user_id=target_user["id"],
+                role="member",
+            )
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not invite user",
+        ) from exc
+
+    create_notification(
+        db=db,
+        recipient_id=target_user["id"],
+        actor_id=current_user_id,
+        kind="community-invite",
+        surface="community",
+        subject_type="community",
+        subject_id=community_row["id"],
+        target_id=community_row["id"],
+        title=community_row["name"],
+        body="You were invited to join this private community.",
+        href=f"/communities/{community_row['slug']}",
+    )
+
+    return {"ok": True, "username": target_user["username"], "already_member": False}

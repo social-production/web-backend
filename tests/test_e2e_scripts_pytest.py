@@ -24,6 +24,7 @@ IN_PROCESS_SCRIPTS = [
 ]
 
 EXTERNAL_SERVER_SCRIPTS = [
+    "test_board_standing_e2e.py",
     "test_bootstrap_personal_platform_e2e.py",
     "test_events_plans_phases_e2e.py",
     "test_projects_software_e2e.py",

@@ -48,6 +48,7 @@ class UserSettings(BaseModel):
     hide_personal_feed_from_non_followers: bool
     hide_public_profile_activity_from_non_followers: bool
     require_follow_approval: bool
+    preferred_language: str
 
 
 class PublicProfileResponse(BaseModel):
@@ -83,6 +84,7 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     hide_personal_feed_from_non_followers: bool | None = None
     hide_public_profile_activity_from_non_followers: bool | None = None
     require_follow_approval: bool | None = None
+    preferred_language: str | None = None
 
 
 class FollowResponse(BaseModel):

@@ -69,7 +69,12 @@ def run() -> None:
     assert visible_phase_ids_for_project("collective-service", None, "phase-3") == [
         "phase-1",
         "phase-2",
-        "phase-3",
+        "phase-5",
+        "phase-7",
+    ]
+    assert visible_phase_ids_for_project("productive", "software", "phase-3") == [
+        "phase-1",
+        "phase-2",
         "phase-5",
         "phase-7",
     ]
@@ -125,7 +130,7 @@ def run() -> None:
         assert software_detail.status_code == 200, software_detail.text
         software_payload = software_detail.json()
         software_phase_ids = [phase["id"] for phase in software_payload["lifecycle"]["phases"]]
-        assert software_phase_ids == ["phase-1", "phase-2", "phase-3", "phase-5", "phase-7"]
+        assert software_phase_ids == ["phase-1", "phase-2", "phase-5", "phase-7"]
         assert software_payload["lifecycle"]["phases"][0]["title"] == "Proposal"
 
         home_feed = client.get("/feeds/home", headers=_auth_header(seeded["creator_token"]))

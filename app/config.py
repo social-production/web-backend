@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     message_encryption_key: str = "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8="
     redis_url: str = "redis://localhost:6379/0"
     cors_origins: str = "http://localhost:5173"
+    github_token: str = ""
+    github_repo: str = "social-production/web"
 
     @property
     def is_production(self) -> bool:

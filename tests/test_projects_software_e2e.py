@@ -12,6 +12,7 @@ from sqlalchemy import insert, select
 from app.auth.jwt import create_access_token
 from app.db import SessionLocal
 from app.models import channels, project_memberships, project_plans, projects, users
+from app.services.projects_software import sync_merge_capability_for_leading_plan
 
 
 def _request_json(url: str, method: str = "GET", body: dict[str, object] | None = None, token: str | None = None) -> dict[str, object]:
@@ -151,9 +152,10 @@ def _seed_software_project() -> dict[str, str]:
             joined_at=now,
         )
     )
+    plan_id = uuid4()
     db.execute(
         insert(project_plans).values(
-            id=uuid4(),
+            id=plan_id,
             project_id=project_id,
             phase_kind="distribution-plan",
             title="Current Plan",
@@ -171,6 +173,7 @@ def _seed_software_project() -> dict[str, str]:
         )
     )
 
+    sync_merge_capability_for_leading_plan(db, project_id, plan_id)
     db.commit()
 
     repo_before = db.execute(
@@ -184,6 +187,7 @@ def _seed_software_project() -> dict[str, str]:
     return {
         "project_slug": project_slug,
         "owner_token": create_access_token(str(owner_id)),
+        "owner_id": str(owner_id),
         "member_token": create_access_token(str(member_id)),
         "member_id": str(member_id),
         "repo_before": repo_before,
@@ -194,6 +198,15 @@ def run() -> None:
     base = os.environ.get("TEST_BASE_URL", "http://127.0.0.1:8010")
     seeded = _seed_software_project()
     slug = seeded["project_slug"]
+
+    initial_governance = _request_json(
+        f"{base}/projects/{slug}/software",
+        token=seeded["owner_token"],
+    )
+    assert any(
+        member["id"] == seeded["owner_id"] and member.get("sourceLabel") == "plan-creator"
+        for member in initial_governance["mergeCapabilityMembers"]
+    ), "Plan creator should receive merge capability automatically"
 
     pr_submit = _request_json(
         f"{base}/projects/{slug}/software/pull-requests",
@@ -267,8 +280,24 @@ def run() -> None:
         body={"mergeId": "abc123"},
     )
     merged_pr = next(item for item in merged["pullRequests"] if item["id"] == pr_request_id)
-    assert merged_pr["stage"] == "confirmed"
+    assert merged_pr["stage"] == "confirmation"
     assert merged_pr["mergeId"] == "abc123"
+
+    first_confirmation_vote = _request_json(
+        f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/vote",
+        method="POST",
+        token=seeded["owner_token"],
+        body={"vote": "yes"},
+    )
+    confirmation_vote = _request_json_or_closed(
+        f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/vote",
+        method="POST",
+        token=seeded["member_token"],
+        body={"vote": "yes"},
+        expected_closed_detail="Pull request is not open for voting",
+    ) or first_confirmation_vote
+    merged_pr = next(item for item in confirmation_vote["pullRequests"] if item["id"] == pr_request_id)
+    assert merged_pr["stage"] == "confirmed"
 
     repo_req = _request_json(
         f"{base}/projects/{slug}/software/repository-replacement-requests",

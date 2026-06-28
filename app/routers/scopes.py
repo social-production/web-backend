@@ -15,6 +15,7 @@ from app.services.scopes import (
     create_scope_invite,
     get_channel_by_slug,
     get_community_by_slug,
+    invite_user_to_community,
     join_scope,
     leave_scope,
     list_taggable_scopes,
@@ -53,6 +54,18 @@ class InviteRedeemRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     token: str = Field(min_length=1)
+
+
+class CommunityInviteUserRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    username: str = Field(min_length=3, max_length=32)
+
+
+class CommunityInviteUserResponse(BaseModel):
+    ok: bool
+    username: str
+    already_member: bool = False
 
 
 class ChannelResponse(BaseModel):
@@ -215,6 +228,25 @@ def channel_members(slug: str, db: Session = Depends(get_db)) -> dict[str, objec
 @router.get("/communities/{slug}/members", dependencies=[Depends(get_current_user_id)], response_model=ScopeMembersResponse)
 def community_members(slug: str, db: Session = Depends(get_db)) -> dict[str, object]:
     return list_scope_members(db, "community", slug)
+
+
+@router.post(
+    "/communities/{slug}/invite-user",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=CommunityInviteUserResponse,
+)
+def invite_user_to_community_route(
+    slug: str,
+    payload: CommunityInviteUserRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return invite_user_to_community(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        username=payload.username,
+    )
 
 
 @router.post("/invites/redeem", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)

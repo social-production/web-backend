@@ -52,6 +52,7 @@ from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.services.projects_software import get_project_software_governance
+from app.services.projects_plans import _plan_subtype_from_payload, _subtype_label
 from app.utils.votes import required_votes, resolve_project_vote_population
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
@@ -93,6 +94,29 @@ def _serialize_project(row: Mapping[str, object], tags: list[dict[str, object]],
         "tags": tags,
         "signals": signal_counts,
     }
+
+
+def _resolve_effective_project_subtype(
+    db: Session,
+    project_id: UUID,
+    project_subtype: str | None,
+) -> str | None:
+    if project_subtype:
+        return str(project_subtype)
+
+    leading = db.execute(
+        select(project_plans.c.project_subtype, project_plans.c.plan_payload)
+        .where(
+            project_plans.c.project_id == project_id,
+            project_plans.c.is_leading.is_(True),
+            project_plans.c.phase_kind.in_(("production", "organisation")),
+        )
+        .limit(1)
+    ).mappings().first()
+    if leading is None:
+        return None
+
+    return leading["project_subtype"] or _plan_subtype_from_payload(dict(leading["plan_payload"] or {}))
 
 
 def _get_project_by_slug_row(db: Session, slug: str) -> Mapping[str, object]:
@@ -273,6 +297,7 @@ def create_project(
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
     community_ids = _resolve_community_ids(db, community_slugs or [], current_user_id)
+    is_platform_tagged = "platform" in [value.strip().lower() for value in channel_slugs if value.strip()]
     normalized_request_mode = (request_mode or "both").strip().lower()
     if normalized_request_mode not in {"calendar", "direct", "both"}:
         raise HTTPException(
@@ -303,6 +328,7 @@ def create_project(
                 location_label=location_label.strip(),
                 member_count=1,
                 last_activity_at=now,
+                is_platform_tagged=is_platform_tagged,
             )
             .returning(
                 projects.c.id,
@@ -677,6 +703,17 @@ def _build_project_history(
             },
         ))
 
+    project_subtype = db.execute(
+        select(projects.c.project_subtype).where(projects.c.id == project_id)
+    ).scalar_one_or_none()
+    if project_subtype == "software":
+        from app.services.projects_software import build_software_history_entries
+
+        for created_at, entry in build_software_history_entries(
+            db, project_id, vote_context_population, current_user_id
+        ):
+            history.append((created_at, entry))
+
     return [entry for _, entry in sorted(history, key=lambda item: item[0], reverse=True)]
 
 
@@ -943,10 +980,15 @@ async def get_project_detail(
         }
 
         if plan["phase_kind"] in {"production", "organisation"}:
+            resolved_plan_subtype = (
+                plan["project_subtype"]
+                or _plan_subtype_from_payload(plan_payload)
+                or "standard"
+            )
             item = {
                 **base_plan,
-                "projectSubtype": plan["project_subtype"] or "standard",
-                "projectSubtypeLabel": (plan["project_subtype"] or "standard").replace("-", " ").title(),
+                "projectSubtype": resolved_plan_subtype,
+                "projectSubtypeLabel": _subtype_label(resolved_plan_subtype),
                 "outputSummary": str(plan_payload.get("outputSummary") or ""),
                 "materialsSummary": str(plan_payload.get("materialsSummary") or ""),
                 "acquisitionsSummary": str(plan_payload.get("acquisitionsSummary") or ""),
@@ -1311,7 +1353,15 @@ async def get_project_detail(
     )
 
     software_governance = None
-    if row["project_subtype"] == "software":
+    effective_subtype = _resolve_effective_project_subtype(db, project_id, row["project_subtype"])
+    if effective_subtype and row["project_subtype"] != effective_subtype:
+        db.execute(
+            update(projects)
+            .where(projects.c.id == project_id)
+            .values(project_subtype=effective_subtype)
+        )
+        db.commit()
+    if effective_subtype == "software":
         software_governance = get_project_software_governance(db=db, project_slug=row["slug"], current_user_id=current_user_id)
 
     is_personal_service = row["project_mode"] == "personal-service"
@@ -1362,8 +1412,8 @@ async def get_project_detail(
 
     lifecycle = {
         "projectMode": row["project_mode"],
-        "currentSubtype": row["project_subtype"],
-        "currentSubtypeLabel": row["project_subtype"].replace("-", " ").title() if row["project_subtype"] else None,
+        "currentSubtype": effective_subtype,
+        "currentSubtypeLabel": _subtype_label(effective_subtype) if effective_subtype else None,
         "usesPlatformLifecycle": row["project_mode"] != "personal-service",
         "supportsDemandSignals": not is_personal_service,
         "supportsPlanning": row["project_mode"] != "personal-service",

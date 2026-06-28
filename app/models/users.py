@@ -39,6 +39,7 @@ user_settings = table(
         server_default=sa.false(),
     ),
     sa.Column("require_follow_approval", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("preferred_language", sa.String(5), nullable=False, server_default="en"),
     updated_at(),
 )
 

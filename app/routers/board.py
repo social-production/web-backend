@@ -17,6 +17,7 @@ class BoardProfileOut(BaseModel):
     user_id: UUID
     username: str
     standing_state: str
+    membership_state: str
     updated_at: object
     yes_count: int
     no_count: int
@@ -24,6 +25,7 @@ class BoardProfileOut(BaseModel):
     approval_ratio: float
     required_quorum: int = 0
     weekly_active_users: int = 0
+    grace_ends_at: object | None = None
     active_vote: str | None = None
 
 

@@ -75,6 +75,10 @@ def lifecycle_phase_title(project_mode: str, phase_id: str, default_title: str) 
     return default_title
 
 
+def _skips_distribution_phase(project_mode: str, project_subtype: str | None) -> bool:
+    return project_mode == "collective-service" or project_subtype == "software"
+
+
 def visible_phase_ids_for_project(
     project_mode: str,
     project_subtype: str | None,
@@ -82,6 +86,9 @@ def visible_phase_ids_for_project(
 ) -> list[str]:
     if project_mode == "personal-service":
         return ["phase-1", "phase-2"]
+
+    if _skips_distribution_phase(project_mode, project_subtype):
+        return ["phase-1", "phase-2", "phase-5", "phase-7"]
 
     return ["phase-1", "phase-2", "phase-3", "phase-5", "phase-7"]
 
@@ -109,6 +116,10 @@ def next_phase_id_for_project(
         if next_phase_id is None:
             return None
 
+        if next_phase_id == "phase-3" and _skips_distribution_phase(project_mode, project_subtype):
+            next_order += 1
+            continue
+
         if next_phase_id == "phase-4":
             next_order += 1
             continue
@@ -122,10 +133,16 @@ def next_phase_id_for_project(
     return None
 
 
-def _required_leading_plan_kind(project_mode: str, current_phase_id: str) -> str | None:
+def _required_leading_plan_kind(
+    project_mode: str,
+    project_subtype: str | None,
+    current_phase_id: str,
+) -> str | None:
     if current_phase_id == "phase-2":
         return "organisation" if project_mode == "collective-service" else "production"
     if current_phase_id == "phase-3":
+        if _skips_distribution_phase(project_mode, project_subtype):
+            return None
         return "access" if project_mode == "collective-service" else "distribution"
     return None
 
@@ -137,7 +154,12 @@ def _ensure_project_phase_plan_gate(db: Session, project_row: Mapping[str, objec
     if current_order is None or target_order is None or target_order <= current_order:
         return
 
-    required_kind = _required_leading_plan_kind(str(project_row["project_mode"]), current_phase_id)
+    project_subtype = str(project_row["project_subtype"]) if project_row.get("project_subtype") else None
+    required_kind = _required_leading_plan_kind(
+        str(project_row["project_mode"]),
+        project_subtype,
+        current_phase_id,
+    )
     if required_kind is None:
         return
 
@@ -339,12 +361,21 @@ def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> d
     }
 
 
+def _phase_change_kind_for_project(target_phase_id: str) -> str:
+    if target_phase_id == "phase-7":
+        return "close"
+    return "advance"
+
+
 def create_phase_change_request(
     db: Session,
     current_user_id: UUID,
     project_slug: str,
     target_phase_id: str,
     reason: str,
+    close_outcome: str | None = None,
+    conversion_target_mode: str | None = None,
+    conversion_target_subtype: str | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_phase_requests_allowed(project_row["project_mode"])
@@ -373,6 +404,8 @@ def create_phase_change_request(
 
     _ensure_project_phase_plan_gate(db, project_row, normalized_target)
 
+    change_kind = _phase_change_kind_for_project(normalized_target)
+
     try:
         created = db.execute(
             insert(project_phase_change_requests)
@@ -380,10 +413,10 @@ def create_phase_change_request(
                 project_id=project_row["id"],
                 from_phase_id=current_phase_id,
                 target_phase_id=normalized_target,
-                change_kind="advance",
-                close_outcome=None,
-                conversion_target_mode=None,
-                conversion_target_subtype=None,
+                change_kind=change_kind,
+                close_outcome=close_outcome,
+                conversion_target_mode=conversion_target_mode,
+                conversion_target_subtype=conversion_target_subtype,
                 reason=reason.strip(),
                 author_id=current_user_id,
                 status="open",
@@ -409,6 +442,33 @@ def create_phase_change_request(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create phase request") from exc
 
     summary = _compute_vote_summary(db, created["id"], _project_vote_population(db, project_row))
+    member_ids = db.execute(
+        select(project_memberships.c.user_id).where(
+            project_memberships.c.project_id == project_row["id"],
+        )
+    ).scalars().all()
+    target_label = display_stage_label(
+        str(project_row["project_mode"]),
+        str(project_row["project_subtype"]) if project_row.get("project_subtype") else None,
+        normalized_target,
+    )
+    for member_id in member_ids:
+        if member_id == current_user_id:
+            continue
+        create_notification(
+            db=db,
+            recipient_id=member_id,
+            actor_id=current_user_id,
+            kind="prj-phase-vote",
+            surface="project",
+            subject_type="phase-change",
+            subject_id=created["id"],
+            target_id=project_row["id"],
+            title="Project phase vote open",
+            body=f"Vote on advancing to {target_label}.",
+            href=f"/projects/{project_row['slug']}?open=vote&voteKind=phase_change&voteTarget={created['id']}",
+        )
+    db.commit()
     return {"request": _serialize_phase_request(created, summary)}
 
 
@@ -523,6 +583,17 @@ def vote_phase_change_request(
                     ),
                 )
             )
+            if target_phase_id == "phase-7":
+                close_note = (request_row["reason"] or "").strip()
+                if close_note:
+                    db.execute(
+                        insert(project_updates).values(
+                            project_id=project_row["id"],
+                            title="Closure note",
+                            body=close_note,
+                            author_id=request_row["author_id"] or current_user_id,
+                        )
+                    )
             executed = True
         elif not summary.get("can_still_pass", True):
             db.execute(
@@ -1130,10 +1201,12 @@ def advance_project_phase(
         }
 
         # When advancing from proposal to production-plan, copy the subtype from
-        # the winning plan's payload into the project record.
+        # the winning plan into the project record.
         if current_phase_id == "phase-1" and next_phase_id == "phase-2":
+            from app.services.projects_plans import _plan_subtype_from_payload
+
             winning_plan = db.execute(
-                select(project_plans.c.plan_payload)
+                select(project_plans.c.project_subtype, project_plans.c.plan_payload)
                 .where(
                     project_plans.c.project_id == project_row["id"],
                     project_plans.c.is_leading.is_(True),
@@ -1141,9 +1214,12 @@ def advance_project_phase(
                 .limit(1)
             ).mappings().first()
             if winning_plan:
-                plan_subtype = winning_plan["plan_payload"].get("projectSubtype")
+                plan_subtype = winning_plan["project_subtype"] or _plan_subtype_from_payload(
+                    dict(winning_plan["plan_payload"] or {})
+                )
                 if plan_subtype:
                     update_values["project_subtype"] = plan_subtype
+                    resolved_subtype = plan_subtype
 
         db.execute(
             update(projects)

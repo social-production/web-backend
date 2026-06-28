@@ -28,6 +28,8 @@ services:
   backend:
     build: .
     restart: unless-stopped
+    env_file:
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,6 +42,8 @@ services:
       JWT_SECRET: dev-only-change-me
       MESSAGE_ENCRYPTION_KEY: IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPO: ${GITHUB_REPO:-social-production/web}
     ports:
       - "8000:8000"
     volumes:
