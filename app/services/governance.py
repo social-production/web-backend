@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from uuid import UUID
 
@@ -25,6 +26,8 @@ from app.models import (
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.utils.votes import required_votes
+
+logger = logging.getLogger(__name__)
 
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project", "help_request"})
 VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "event", "project", "help_request"})
@@ -447,14 +450,22 @@ def add_comment(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add comment") from exc
 
-    _notify_comment_recipients(
-        db,
-        current_user_id=current_user_id,
-        subject_type=normalized_subject_type,
-        subject_id=subject_id,
-        comment_id=created["id"],
-        parent_id=parent_id,
-    )
+    try:
+        _notify_comment_recipients(
+            db,
+            current_user_id=current_user_id,
+            subject_type=normalized_subject_type,
+            subject_id=subject_id,
+            comment_id=created["id"],
+            parent_id=parent_id,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to notify comment recipients for comment %s on %s %s",
+            created["id"],
+            normalized_subject_type,
+            subject_id,
+        )
 
     author_row = db.execute(
         select(users.c.username).where(users.c.id == current_user_id).limit(1)
