@@ -5,8 +5,8 @@ WORKDIR /app
 # Copy the entire project first
 COPY . .
 
-# Install application dependencies from pyproject.toml.
-RUN pip install --no-cache-dir -e .
+# Install dependencies plus psycopg2 for plain postgresql:// URLs.
+RUN pip install --no-cache-dir psycopg2-binary -e .
 
-# Run the backend
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run migrations before starting the backend process.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
