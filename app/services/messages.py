@@ -497,14 +497,32 @@ def search_message_contacts(
     }
 
 
-def get_messages_for_conversation(db: Session, current_user_id: UUID, conversation_id: UUID) -> dict[str, object]:
+def get_messages_for_conversation(
+    db: Session,
+    current_user_id: UUID,
+    conversation_id: UUID,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, object]:
     _get_conversation_row(db, conversation_id)
     _ensure_member(db, conversation_id, current_user_id)
+
+    safe_limit = max(1, min(limit, 200))
+    safe_offset = max(0, offset)
+
+    total = db.execute(
+        select(func.count())
+        .select_from(messages)
+        .where(messages.c.conversation_id == conversation_id)
+    ).scalar_one()
 
     rows = db.execute(
         select(messages)
         .where(messages.c.conversation_id == conversation_id)
         .order_by(messages.c.created_at.asc())
+        .limit(safe_limit)
+        .offset(safe_offset)
     ).mappings().all()
 
     items = []
@@ -518,7 +536,13 @@ def get_messages_for_conversation(db: Session, current_user_id: UUID, conversati
             ) from exc
         items.append(_serialize_message(row, plaintext))
 
-    return {"conversation_id": conversation_id, "total": len(items), "items": items}
+    return {
+        "conversation_id": conversation_id,
+        "total": int(total or 0),
+        "limit": safe_limit,
+        "offset": safe_offset,
+        "items": items,
+    }
 
 
 def rename_group_conversation(

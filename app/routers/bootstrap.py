@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
-from app.services.bootstrap import get_bootstrap, get_onboarding
+from app.services.bootstrap import get_bootstrap, get_bootstrap_summary, get_onboarding
 
 router = APIRouter(tags=["bootstrap"])
 
@@ -65,6 +65,14 @@ class OnboardingResponse(BaseModel):
     accountModes: list[OnboardingAccountModeOut]
     starterChannels: list[str]
     starterCommunities: list[str]
+
+
+@router.get("/bootstrap/summary", response_model=UnreadCountsOut)
+def bootstrap_summary(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return get_bootstrap_summary(db=db, current_user_id=current_user_id)
 
 
 @router.get("/bootstrap", response_model=BootstrapResponse)

@@ -12,9 +12,14 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60
     message_encryption_key: str = "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8="
     redis_url: str = "redis://localhost:6379/0"
+    redis_socket_timeout_seconds: float = 2.0
+    redis_socket_connect_timeout_seconds: float = 2.0
+    redis_max_connections: int = 50
+    redis_cache_ttl_seconds: int = 3600
     cors_origins: str = "http://localhost:5173"
     github_token: str = ""
     github_repo: str = "social-production/web"
+    disable_openapi_in_production: bool = True
 
     @property
     def is_production(self) -> bool:

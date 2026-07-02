@@ -45,7 +45,16 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.validate_runtime_settings()
-    app = FastAPI(title="Social Production Backend", version="0.1.0", lifespan=lifespan)
+    docs_url = None if settings.is_production and settings.disable_openapi_in_production else "/docs"
+    openapi_url = None if settings.is_production and settings.disable_openapi_in_production else "/openapi.json"
+    app = FastAPI(
+        title="Social Production Backend",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url=docs_url,
+        redoc_url=None,
+        openapi_url=openapi_url,
+    )
 
     app.add_middleware(
         CORSMiddleware,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import Boolean, DateTime, Integer, String, and_, cast, func, literal, null, or_, select, union_all
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
@@ -29,6 +30,10 @@ from app.models import (
     user_settings,
 )
 
+from app.services.access_control import (
+    assert_can_view_scope,
+    closed_community_only_tag_condition,
+)
 from app.services.projects_phases import display_stage_label as project_display_stage_label
 from app.services.content import _help_request_role_summaries, _load_help_request_roles
 
@@ -60,7 +65,12 @@ def _resolved_feed_stage_label(row: Mapping[str, object]) -> str | None:
     return str(stage_label) if stage_label else None
 
 
-def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | None):
+def _projects_select(
+    channel_ids: list[UUID] | None,
+    community_ids: list[UUID] | None,
+    *,
+    public_only: bool = False,
+):
     q = select(
         projects.c.id,
         literal("project").label("entity_type"),
@@ -103,10 +113,19 @@ def _projects_select(channel_ids: list[UUID] | None, community_ids: list[UUID] |
             .where(or_(*tag_conditions))
             .distinct()
         )
+    if public_only:
+        q = q.where(
+            ~closed_community_only_tag_condition(project_tags, projects.c.id, "project_id")
+        )
     return q
 
 
-def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | None):
+def _threads_select(
+    channel_ids: list[UUID] | None,
+    community_ids: list[UUID] | None,
+    *,
+    public_only: bool = False,
+):
     q = select(
         threads.c.id,
         literal("thread").label("entity_type"),
@@ -149,10 +168,19 @@ def _threads_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | 
             .where(or_(*tag_conditions))
             .distinct()
         )
+    if public_only:
+        q = q.where(
+            ~closed_community_only_tag_condition(thread_tags, threads.c.id, "thread_id")
+        )
     return q
 
 
-def _events_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | None):
+def _events_select(
+    channel_ids: list[UUID] | None,
+    community_ids: list[UUID] | None,
+    *,
+    public_only: bool = False,
+):
     q = select(
         events.c.id,
         literal("event").label("entity_type"),
@@ -194,6 +222,10 @@ def _events_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | N
             q.join(event_tags, event_tags.c.event_id == events.c.id)
             .where(or_(*tag_conditions))
             .distinct()
+        )
+    if public_only:
+        q = q.where(
+            ~closed_community_only_tag_condition(event_tags, events.c.id, "event_id")
         )
     return q
 
@@ -332,7 +364,12 @@ def _serialize_item(
     }
 
 
-def _help_requests_select(channel_ids: list[UUID] | None, community_ids: list[UUID] | None):
+def _help_requests_select(
+    channel_ids: list[UUID] | None,
+    community_ids: list[UUID] | None,
+    *,
+    public_only: bool = False,
+):
     q = select(
         help_requests.c.id,
         literal("help_request").label("entity_type"),
@@ -373,6 +410,12 @@ def _help_requests_select(channel_ids: list[UUID] | None, community_ids: list[UU
             q.join(help_request_tags, help_request_tags.c.help_request_id == help_requests.c.id)
             .where(or_(*tag_conditions))
             .distinct()
+        )
+    if public_only:
+        q = q.where(
+            ~closed_community_only_tag_condition(
+                help_request_tags, help_requests.c.id, "help_request_id"
+            )
         )
     return q
 
@@ -1007,11 +1050,13 @@ def _build_feed(
     channel_ids: list[UUID] | None = None,
     community_ids: list[UUID] | None = None,
     current_user_id: UUID | None = None,
+    *,
+    public_only: bool = False,
 ) -> dict[str, object]:
-    p_q = _projects_select(channel_ids, community_ids)
-    t_q = _threads_select(channel_ids, community_ids)
-    e_q = _events_select(channel_ids, community_ids)
-    h_q = _help_requests_select(channel_ids, community_ids)
+    p_q = _projects_select(channel_ids, community_ids, public_only=public_only)
+    t_q = _threads_select(channel_ids, community_ids, public_only=public_only)
+    e_q = _events_select(channel_ids, community_ids, public_only=public_only)
+    h_q = _help_requests_select(channel_ids, community_ids, public_only=public_only)
 
     parts = [q for q in (p_q, t_q, e_q, h_q) if q is not None]
 
@@ -1069,7 +1114,14 @@ def get_public_feed(
     current_user_id: UUID | None = None,
 ) -> dict[str, object]:
     safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
-    return _build_feed(db, safe_sort, max(1, min(limit, 100)), max(0, offset), current_user_id=current_user_id)
+    return _build_feed(
+        db,
+        safe_sort,
+        max(1, min(limit, 100)),
+        max(0, offset),
+        current_user_id=current_user_id,
+        public_only=True,
+    )
 
 
 def get_home_feed(
@@ -1479,6 +1531,10 @@ def get_scope_feed(
             select(communities.c.id).where(communities.c.slug == normalized_slug)
         ).first()
         if row is None:
+            return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+        try:
+            assert_can_view_scope(db, current_user_id, "community", row[0])
+        except HTTPException:
             return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
         return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[], community_ids=[row[0]], current_user_id=current_user_id)
 

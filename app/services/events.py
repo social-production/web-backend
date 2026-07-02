@@ -40,6 +40,8 @@ from app.models import (
     user_follows,
     users,
 )
+from app.cache import cache_ttl_seconds
+from app.services.access_control import assert_can_view_entity
 from app.services.content import activity_status_tone
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
@@ -319,6 +321,7 @@ async def _write_signal_counts_cache(cache: Redis, event_id: UUID, counts: dict[
             "total": str(counts["total"]),
         },
     )
+    await cache.expire(key, cache_ttl_seconds())
 
 
 async def _get_signal_counts(db: Session, cache: Redis, event_id: UUID) -> dict[str, int]:
@@ -490,6 +493,8 @@ async def get_event_detail(
     viewer_is_member = current_user_id is not None and current_user_id in member_ids
     if row["is_private"] and not viewer_is_member:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    assert_can_view_entity(db, current_user_id, "event", event_id)
 
     editor_rows = db.execute(
         select(event_editors.c.user_id).where(event_editors.c.event_id == event_id)

@@ -23,6 +23,12 @@ from app.models import (
     threads,
     users,
 )
+from app.services.access_control import (
+    assert_can_view_entity,
+    assert_can_view_subject,
+    assert_can_view_vote_target,
+    can_view_post,
+)
 from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
@@ -319,6 +325,8 @@ def get_thread_by_slug(db: Session, slug: str, current_user_id: UUID | None = No
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
+    assert_can_view_entity(db, current_user_id, "thread", row["id"])
+
     active_vote = 0
     if current_user_id is not None:
         vote_row = db.execute(
@@ -414,6 +422,9 @@ def get_post_by_id(db: Session, post_id: UUID, current_user_id: UUID | None = No
         .where(posts.c.id == post_id)
     ).mappings().first()
     if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+
+    if not can_view_post(db, current_user_id, row):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
 
     active_vote = 0
@@ -771,6 +782,9 @@ def get_help_request_by_id(
     ).mappings().first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Help request not found")
+
+    assert_can_view_entity(db, current_user_id, "help_request", row["id"])
+
     roles = _load_help_request_roles(db, [help_request_id], current_user_id).get(str(help_request_id), [])
 
     active_vote = 0

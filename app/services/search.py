@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import searchable_documents
+from app.services.access_control import filter_search_results
 
 SEARCHABLE_ENTITY_TYPES = frozenset(
     {"project", "thread", "event", "channel", "community", "user"}
@@ -136,6 +137,7 @@ def search_documents(
     query: str,
     entity_types: Sequence[str] | None = None,
     limit: int = 20,
+    viewer_id: UUID | None = None,
 ) -> dict[str, object]:
     cleaned_query = query.strip()
     if not cleaned_query:
@@ -210,4 +212,5 @@ def search_documents(
             if len(items) >= safe_limit:
                 break
 
-    return {"total": len(items), "items": items}
+    filtered_items = filter_search_results(db, viewer_id, items)
+    return {"total": len(filtered_items), "items": filtered_items}

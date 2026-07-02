@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from app.models import (
     threads,
     users,
 )
+from app.services.access_control import assert_can_view_subject, assert_can_view_vote_target
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.utils.votes import required_votes
@@ -400,6 +401,7 @@ def add_comment(
         )
 
     _ensure_subject_exists(db, normalized_subject_type, subject_id)
+    assert_can_view_subject(db, current_user_id, normalized_subject_type, subject_id)
 
     if parent_id is not None:
         parent = db.execute(select(comments).where(comments.c.id == parent_id)).mappings().first()
@@ -481,6 +483,9 @@ def get_comments(
     subject_type: str,
     subject_id: UUID,
     current_user_id: UUID | None = None,
+    *,
+    limit: int = 200,
+    offset: int = 0,
 ) -> dict[str, object]:
     normalized_subject_type = subject_type.strip().lower()
     if normalized_subject_type not in COMMENTABLE_SUBJECT_TYPES:
@@ -490,6 +495,19 @@ def get_comments(
         )
 
     _ensure_subject_exists(db, normalized_subject_type, subject_id)
+    assert_can_view_subject(db, current_user_id, normalized_subject_type, subject_id)
+
+    safe_limit = max(1, min(limit, 200))
+    safe_offset = max(0, offset)
+
+    total = db.execute(
+        select(func.count())
+        .select_from(comments)
+        .where(
+            comments.c.subject_type == normalized_subject_type,
+            comments.c.subject_id == subject_id,
+        )
+    ).scalar_one()
 
     rows = db.execute(
         select(comments, users.c.username.label("author_username"))
@@ -499,6 +517,8 @@ def get_comments(
             comments.c.subject_id == subject_id,
         )
         .order_by(comments.c.created_at.asc())
+        .limit(safe_limit)
+        .offset(safe_offset)
     ).mappings().all()
 
     # Bulk-query the viewer's votes on all comments
@@ -537,12 +557,13 @@ def get_comments(
         top_level[root_id] = all_comments[root_id]
 
     items = [build_tree(item_id) for item_id in ordered_ids]
-    total = len(rows)
 
     return {
         "subject_type": normalized_subject_type,
         "subject_id": subject_id,
-        "total": total,
+        "total": int(total or 0),
+        "limit": safe_limit,
+        "offset": safe_offset,
         "items": items,
     }
 
@@ -569,6 +590,7 @@ def cast_vote(
         )
 
     _ensure_vote_target_exists(db, normalized_target_type, target_id)
+    assert_can_view_vote_target(db, current_user_id, normalized_target_type, target_id)
 
     new_value = VOTE_DIRECTIONS[normalized_direction]
 

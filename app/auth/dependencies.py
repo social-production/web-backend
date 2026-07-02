@@ -25,7 +25,11 @@ async def _is_blacklisted_jti(jti: str | None) -> bool:
         return False
 
     redis_client = get_redis_client()
-    return await redis_client.exists(f"{TOKEN_BLACKLIST_PREFIX}:{jti}") > 0
+    try:
+        return await redis_client.exists(f"{TOKEN_BLACKLIST_PREFIX}:{jti}") > 0
+    except Exception:
+        # Redis outage must not invalidate every active session.
+        return False
 
 
 async def get_current_user_token_payload(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)) -> dict[str, object]:
@@ -68,7 +72,13 @@ async def get_optional_current_user_id(
         return None
 
     jti = payload.get("jti")
-    if not isinstance(jti, str) or not jti or await _is_blacklisted_jti(jti):
+    if not isinstance(jti, str) or not jti:
+        return None
+
+    try:
+        if await _is_blacklisted_jti(jti):
+            return None
+    except Exception:
         return None
 
     subject = payload.get("sub")

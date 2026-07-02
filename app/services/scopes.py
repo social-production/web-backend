@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import channels, communities, scope_invites, scope_memberships, users
+from app.services.access_control import assert_can_view_scope
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
@@ -467,6 +468,7 @@ def get_channel_by_slug(db: Session, slug: str, current_user_id: UUID | None = N
 
 def get_community_by_slug(db: Session, slug: str, current_user_id: UUID | None = None) -> dict[str, object]:
     row = _get_community_row(db, slug)
+    assert_can_view_scope(db, current_user_id, COMMUNITY_SCOPE_KIND, row["id"])
     member_rows = db.execute(
         select(scope_memberships.c.user_id).where(
             scope_memberships.c.scope_kind == COMMUNITY_SCOPE_KIND,

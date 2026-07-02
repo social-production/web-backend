@@ -1,4 +1,5 @@
 services:
+  # Development stack — publishes Postgres/Redis on localhost. Use docker-compose.prod.yml for deployment.
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped

@@ -19,6 +19,7 @@ from app.models import (
     projects,
     users,
 )
+from app.services.access_control import assert_can_view_entity
 from app.services.messages import send_message, start_direct_conversation
 
 VALID_SERVICE_REQUEST_STATUS = frozenset({"open", "planned", "accepted", "declined"})
@@ -224,9 +225,15 @@ def create_service_request(
     }
 
 
-def list_service_requests(db: Session, project_slug: str, status_filter: str | None = None) -> dict[str, object]:
+def list_service_requests(
+    db: Session,
+    project_slug: str,
+    status_filter: str | None = None,
+    viewer_id: UUID | None = None,
+) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_service_project(project_row["project_mode"])
+    assert_can_view_entity(db, viewer_id, "project", project_row["id"])
 
     query = select(project_service_requests).where(project_service_requests.c.project_id == project_row["id"])
 

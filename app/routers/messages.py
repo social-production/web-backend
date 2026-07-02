@@ -207,6 +207,8 @@ def send_conversation_message(
 @router.get("/conversations/{conversation_id}/messages", response_model=ConversationMessagesResponse)
 def get_conversation_messages(
     conversation_id: UUID,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
@@ -214,6 +216,8 @@ def get_conversation_messages(
         db=db,
         current_user_id=current_user_id,
         conversation_id=conversation_id,
+        limit=limit,
+        offset=offset,
     )
 
 

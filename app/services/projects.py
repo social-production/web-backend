@@ -47,6 +47,8 @@ from app.models import (
     user_follows,
     users,
 )
+from app.services.access_control import assert_can_view_entity
+from app.cache import cache_ttl_seconds
 from app.services.content import activity_status_tone
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
@@ -233,6 +235,7 @@ async def _write_signal_counts_cache(cache: Redis, project_id: UUID, counts: dic
             "total": str(counts["total"]),
         },
     )
+    await cache.expire(key, cache_ttl_seconds())
 
 
 async def _get_signal_counts(db: Session, cache: Redis, project_id: UUID) -> dict[str, int]:
@@ -725,6 +728,7 @@ async def get_project_detail(
 ) -> dict[str, object]:
     row = _get_project_by_slug_row(db, slug)
     project_id = row["id"]
+    assert_can_view_entity(db, current_user_id, "project", project_id)
     member_count = int(row["member_count"] or 0)
     vote_context_population = resolve_project_vote_population(
         db,

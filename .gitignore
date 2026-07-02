@@ -21,3 +21,5 @@ venv/
 Thumbs.db
 .vscode/
 _*
+
+!.env.production.example

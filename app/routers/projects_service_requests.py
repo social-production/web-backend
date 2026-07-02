@@ -83,9 +83,15 @@ def create_project_service_request(
 def get_project_service_requests(
     slug: str,
     status: str | None = Query(default=None),
+    current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return list_service_requests(db=db, project_slug=slug, status_filter=status)
+    return list_service_requests(
+        db=db,
+        project_slug=slug,
+        status_filter=status,
+        viewer_id=current_user_id,
+    )
 
 
 @router.patch("/{slug}/service-requests/{request_id}", response_model=ServiceRequestResponse)

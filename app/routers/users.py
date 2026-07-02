@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -178,16 +178,20 @@ def get_profile(
 @router.get("/{username}/followers", response_model=FollowListResponse)
 def followers(
     username: str,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return get_followers(db, username, current_user_id)
+    return get_followers(db, username, current_user_id, limit=limit, offset=offset)
 
 
 @router.get("/{username}/following", response_model=FollowListResponse)
 def following(
     username: str,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return get_following(db, username, current_user_id)
+    return get_following(db, username, current_user_id, limit=limit, offset=offset)

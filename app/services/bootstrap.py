@@ -820,6 +820,15 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
     return items
 
 
+def get_bootstrap_summary(db: Session, current_user_id: UUID) -> dict[str, object]:
+    return {
+        "unreadCounts": {
+            "notifications": _get_unread_notification_count(db, current_user_id),
+            "messages": _get_unread_message_count(db, current_user_id),
+        },
+    }
+
+
 def get_bootstrap(db: Session, current_user_id: UUID) -> dict[str, object]:
     viewer = _get_viewer_row(db, current_user_id)
 

@@ -291,9 +291,18 @@ def unfollow_user(db: Session, current_user_id: UUID, username: str) -> dict[str
     return {"ok": True, "following": False, "follow_status": None, "username": target_user["username"]}
 
 
-def get_followers(db: Session, username: str, viewer_user_id: UUID | None = None) -> dict[str, object]:
+def get_followers(
+    db: Session,
+    username: str,
+    viewer_user_id: UUID | None = None,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, object]:
     target_user = _get_user_by_username(db, username)
     is_own_profile = viewer_user_id is not None and viewer_user_id == target_user["id"]
+    safe_limit = max(1, min(limit, 200))
+    safe_offset = max(0, offset)
 
     follower_users = users.alias("follower_users")
     query = (
@@ -313,7 +322,9 @@ def get_followers(db: Session, username: str, viewer_user_id: UUID | None = None
     if not is_own_profile:
         query = query.where(user_follows.c.status == "accepted")
 
-    rows = db.execute(query.order_by(follower_users.c.username.asc())).mappings().all()
+    rows = db.execute(
+        query.order_by(follower_users.c.username.asc()).limit(safe_limit).offset(safe_offset)
+    ).mappings().all()
 
     items = [
         {
@@ -333,13 +344,24 @@ def get_followers(db: Session, username: str, viewer_user_id: UUID | None = None
     return {
         "items": items,
         "total": int(accepted_total or 0),
+        "limit": safe_limit,
+        "offset": safe_offset,
         "username": target_user["username"],
     }
 
 
-def get_following(db: Session, username: str, viewer_user_id: UUID | None = None) -> dict[str, object]:
+def get_following(
+    db: Session,
+    username: str,
+    viewer_user_id: UUID | None = None,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, object]:
     target_user = _get_user_by_username(db, username)
     is_own_profile = viewer_user_id is not None and viewer_user_id == target_user["id"]
+    safe_limit = max(1, min(limit, 200))
+    safe_offset = max(0, offset)
 
     followed_users = users.alias("followed_users")
     query = (
@@ -359,7 +381,9 @@ def get_following(db: Session, username: str, viewer_user_id: UUID | None = None
     if not is_own_profile:
         query = query.where(user_follows.c.status == "accepted")
 
-    rows = db.execute(query.order_by(followed_users.c.username.asc())).mappings().all()
+    rows = db.execute(
+        query.order_by(followed_users.c.username.asc()).limit(safe_limit).offset(safe_offset)
+    ).mappings().all()
 
     items = [
         {
@@ -379,6 +403,8 @@ def get_following(db: Session, username: str, viewer_user_id: UUID | None = None
     return {
         "items": items,
         "total": int(accepted_total or 0),
+        "limit": safe_limit,
+        "offset": safe_offset,
         "username": target_user["username"],
     }
 
