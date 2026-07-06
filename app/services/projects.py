@@ -1399,8 +1399,8 @@ async def get_project_detail(
         }
         if is_personal_service
         else {
-            "viewerCanSignalDemand": viewer_is_member,
-            "viewerCanSignalOpposition": viewer_is_member,
+            "viewerCanSignalDemand": current_user_id is not None,
+            "viewerCanSignalOpposition": current_user_id is not None,
             "viewerCanAddValue": viewer_is_member,
             "viewerCanVoteOnValues": viewer_is_member,
         }

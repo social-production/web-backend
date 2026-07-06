@@ -1014,9 +1014,9 @@ async def get_event_detail(
         "phases": _event_lifecycle_phases(row["current_phase_id"]),
         "phaseOne": {
             "values": phase_one_values,
-            "viewerCanSignalDemand": viewer_is_member,
+            "viewerCanSignalDemand": current_user_id is not None,
             "viewerHasDemandSignal": viewer_signal == "demand",
-            "viewerCanSignalOpposition": viewer_is_member,
+            "viewerCanSignalOpposition": current_user_id is not None,
             "viewerHasOppositionSignal": viewer_signal == "opposition",
             "signalSummary": signal_summary,
             "viewerCanAddValue": viewer_is_member,
