@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost/social_production"
     jwt_secret: str = "dev-only-change-me"
-    jwt_expire_minutes: int = 60
+    jwt_expire_minutes: int = 60 * 24 * 7
     message_encryption_key: str = "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8="
     redis_url: str = "redis://localhost:6379/0"
     redis_socket_timeout_seconds: float = 2.0

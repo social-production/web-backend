@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -31,8 +33,8 @@ class NotificationOut(BaseModel):
     body: str
     href: str
     is_unread: bool
-    created_at: object
-    read_at: object
+    created_at: datetime
+    read_at: datetime | None = None
 
 
 class NotificationsListResponse(BaseModel):

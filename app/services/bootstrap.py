@@ -102,20 +102,30 @@ def _get_unread_message_count(db: Session, current_user_id: UUID) -> int:
     return get_total_unread_message_count(db, current_user_id)
 
 
-def _get_platform_directory_item(db: Session) -> dict[str, object] | None:
+def _get_platform_directory_item(db: Session, current_user_id: UUID) -> dict[str, object] | None:
     row = db.execute(
-        select(channels.c.slug, channels.c.name)
+        select(channels.c.id, channels.c.slug, channels.c.name)
         .where(channels.c.slug.in_(["platform", "stewardship"]))
         .order_by(channels.c.slug.asc())
         .limit(1)
     ).mappings().first()
     if row is None:
         return None
+
+    membership = db.execute(
+        select(scope_memberships.c.user_id).where(
+            scope_memberships.c.scope_kind == "channel",
+            scope_memberships.c.scope_id == row["id"],
+            scope_memberships.c.user_id == current_user_id,
+        )
+    ).first()
+
     return {
         "slug": row["slug"],
         "label": row["name"],
         "href": "/platform",
         "visibility": "public",
+        "viewerIsMember": membership is not None,
     }
 
 
@@ -128,6 +138,7 @@ def _get_channel_directory_items(db: Session, current_user_id: UUID) -> list[dic
         .where(
             scope_memberships.c.user_id == current_user_id,
             scope_memberships.c.scope_kind == "channel",
+            channels.c.slug.not_in(["platform", "stewardship"]),
         )
         .order_by(channels.c.name.asc())
     ).mappings().all()
@@ -606,7 +617,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": f"Phase change: {r['title']}",
                 "href": _vote_href("projects", r["slug"], "phase_change", r["id"]),
-                "meta": f"Phase change → {r['target_phase_id']}",
+                "meta": f"Advance to {str(r['target_phase_id']).replace('-', ' ').title()}?",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
                 "voteEntityKind": "project", "voteKindLabel": "phase_change",
@@ -632,9 +643,9 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
         for r in rows:
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
-                "title": r['title'],
+                "title": r['plan_title'] or r['title'],
                 "href": _vote_href("projects", r["slug"], "plan", r["id"]),
-                "meta": f"Plan vote",
+                "meta": f"Approve “{r['plan_title']}”?",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
                 "voteEntityKind": "project", "voteKindLabel": "plan",
@@ -721,7 +732,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": f"Phase change: {r['title']}",
                 "href": _vote_href("events", r["slug"], "phase_change", r["id"]),
-                "meta": f"Phase change → {r['target_phase_id']}",
+                "meta": f"Advance to {str(r['target_phase_id']).replace('-', ' ').title()}?",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
                 "voteEntityKind": "event", "voteKindLabel": "phase_change",
@@ -747,9 +758,9 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
         for r in rows:
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
             vote_items.append({"kind": "vote", "id": str(r["id"]),
-                "title": r['title'],
+                "title": r['plan_title'] or r['title'],
                 "href": _vote_href("events", r["slug"], "plan", r["id"]),
-                "meta": "Plan vote",
+                "meta": f"Approve “{r['plan_title']}”?",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
                 "voteEntityKind": "event", "voteKindLabel": "plan",
@@ -849,7 +860,7 @@ def get_bootstrap(db: Session, current_user_id: UUID) -> dict[str, object]:
             "messages": _get_unread_message_count(db, current_user_id),
         },
         "directory": {
-            "platform": _get_platform_directory_item(db),
+            "platform": _get_platform_directory_item(db, current_user_id),
             "channels": _get_channel_directory_items(db, current_user_id),
             "communities": _get_community_directory_items(db, current_user_id),
         },

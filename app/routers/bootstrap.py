@@ -36,6 +36,7 @@ class DirectoryItemOut(BaseModel):
     label: str
     href: str
     visibility: str | None = None
+    viewerIsMember: bool | None = None
 
 
 class DirectoryOut(BaseModel):

@@ -428,7 +428,10 @@ def _serialize_personal_item(
 ) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
-    vote_key = f"{row['entity_type']}:{row['id']}"
+    if row["entity_type"] == "comment_activity":
+        vote_key = f"comment:{row['id']}"
+    else:
+        vote_key = f"{row['entity_type']}:{row['id']}"
     update_data = (updates or {}).get(item_id, {})
     return {
         "id": item_id,
@@ -479,9 +482,13 @@ def _fetch_active_votes_for_rows(
         "project": [],
         "event": [],
         "help_request": [],
+        "comment": [],
     }
     for row in rows:
         entity_type = row["entity_type"]
+        if entity_type == "comment_activity":
+            item_ids_by_type["comment"].append(row["id"])
+            continue
         if entity_type in item_ids_by_type:
             item_ids_by_type[entity_type].append(row["id"])
 
@@ -713,6 +720,15 @@ def _comment_activity_select(
     if not followed_user_ids:
         return None
 
+    comment_replies = comments.alias("comment_replies")
+    reply_count_subq = (
+        select(func.count())
+        .select_from(comment_replies)
+        .where(comment_replies.c.parent_id == comments.c.id)
+        .correlate(comments)
+        .scalar_subquery()
+    )
+
     return (
         select(
             comments.c.id,
@@ -725,8 +741,8 @@ def _comment_activity_select(
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
-            _ZERO_INT.label("vote_count"),
-            _ZERO_INT.label("comment_count"),
+            comments.c.vote_count.label("vote_count"),
+            reply_count_subq.label("comment_count"),
             _ZERO_INT.label("member_count"),
             _ZERO_INT.label("going_count"),
             comments.c.created_at.label("last_activity_at"),

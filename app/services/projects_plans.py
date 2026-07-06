@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,7 +27,7 @@ ALLOWED_PLAN_TYPES_BY_MODE: dict[str, set[str]] = {
     "collective-service": {"organisation", "access"},
 }
 
-VALID_VOTES = {"yes", "no"}
+VALID_VOTES = {"yes", "no", "neutral"}
 VALID_PROJECT_SUBTYPES = {"standard", "software", "asset-management"}
 
 
@@ -344,7 +344,15 @@ def cast_project_plan_vote(
     ).first()
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(project_plan_votes).where(
+                        project_plan_votes.c.plan_id == plan_id,
+                        project_plan_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(project_plan_votes).values(
                     plan_id=plan_id,
@@ -479,7 +487,16 @@ def cast_project_plan_value_vote(
     ).first()
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(project_plan_value_votes).where(
+                        project_plan_value_votes.c.plan_id == plan_id,
+                        project_plan_value_votes.c.value_id == value_id,
+                        project_plan_value_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(project_plan_value_votes).values(
                     plan_id=plan_id,

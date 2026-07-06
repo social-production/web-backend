@@ -361,9 +361,13 @@ def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> d
     }
 
 
-def _phase_change_kind_for_project(target_phase_id: str) -> str:
+def _phase_change_kind_for_project(target_phase_id: str, current_phase_id: str) -> str:
     if target_phase_id == "phase-7":
         return "close"
+    target_order = PHASE_ORDER.get(target_phase_id, 0)
+    current_order = PHASE_ORDER.get(current_phase_id, 0)
+    if target_order > 0 and current_order > 0 and target_order < current_order:
+        return "return"
     return "advance"
 
 
@@ -404,7 +408,20 @@ def create_phase_change_request(
 
     _ensure_project_phase_plan_gate(db, project_row, normalized_target)
 
-    change_kind = _phase_change_kind_for_project(normalized_target)
+    change_kind = _phase_change_kind_for_project(normalized_target, current_phase_id)
+
+    open_request = db.execute(
+        select(project_phase_change_requests.c.id).where(
+            project_phase_change_requests.c.project_id == project_row["id"],
+            project_phase_change_requests.c.status == "open",
+            project_phase_change_requests.c.target_phase_id == normalized_target,
+        )
+    ).first()
+    if open_request:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A vote is already open — approve or reject it first.",
+        )
 
     try:
         created = db.execute(
@@ -620,20 +637,33 @@ def vote_phase_change_request(
     refreshed_project = db.execute(select(projects).where(projects.c.id == project_row["id"])).mappings().one()
     final_summary = _compute_vote_summary(db, request_id, _project_vote_population(db, refreshed_project))
 
-    if executed and request_row["author_id"] is not None:
-        create_notification(
-            db=db,
-            recipient_id=request_row["author_id"],
-            actor_id=current_user_id,
-            kind="prj-phase-done",
-            surface="project",
-            subject_type="phase-change",
-            subject_id=request_id,
-            target_id=project_row["id"],
-            title="Project phase change executed",
-            body=f"The project phase changed to {refreshed_project['current_phase_id']}.",
-            href=f"/projects/{project_row['slug']}",
+    if executed:
+        member_ids = db.execute(
+            select(project_memberships.c.user_id).where(
+                project_memberships.c.project_id == project_row["id"],
+            )
+        ).scalars().all()
+        target_label = display_stage_label(
+            str(refreshed_project["project_mode"]),
+            str(refreshed_project["project_subtype"]) if refreshed_project.get("project_subtype") else None,
+            str(refreshed_project["current_phase_id"]),
         )
+        for member_id in member_ids:
+            if member_id == current_user_id:
+                continue
+            create_notification(
+                db=db,
+                recipient_id=member_id,
+                actor_id=current_user_id,
+                kind="prj-phase-done",
+                surface="project",
+                subject_type="phase-change",
+                subject_id=request_id,
+                target_id=project_row["id"],
+                title="Project phase change executed",
+                body=f"The project phase changed to {target_label}.",
+                href=f"/projects/{project_row['slug']}",
+            )
 
     try:
         db.commit()
@@ -997,6 +1027,19 @@ def create_revert_phase_change_request(
             detail="target_phase_id must be earlier than current_phase_id for revert",
         )
 
+    open_return = db.execute(
+        select(project_phase_change_requests.c.id).where(
+            project_phase_change_requests.c.project_id == project_row["id"],
+            project_phase_change_requests.c.status == "open",
+            project_phase_change_requests.c.change_kind == "return",
+        )
+    ).first()
+    if open_return:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A vote is already open — approve or reject it first.",
+        )
+
     created = db.execute(
         insert(project_phase_change_requests)
         .values(
@@ -1129,20 +1172,33 @@ def vote_revert_phase_change_request(
     refreshed_project = db.execute(select(projects).where(projects.c.id == project_row["id"])).mappings().one()
     final_summary = _compute_vote_summary(db, request_id, _project_vote_population(db, refreshed_project))
 
-    if executed and request_row["author_id"] is not None:
-        create_notification(
-            db=db,
-            recipient_id=request_row["author_id"],
-            actor_id=current_user_id,
-            kind="prj-phase-done",
-            surface="project",
-            subject_type="phase-change",
-            subject_id=request_id,
-            target_id=project_row["id"],
-            title="Project phase change executed",
-            body=f"The project phase changed to {refreshed_project['current_phase_id']}.",
-            href=f"/projects/{project_row['slug']}",
+    if executed:
+        member_ids = db.execute(
+            select(project_memberships.c.user_id).where(
+                project_memberships.c.project_id == project_row["id"],
+            )
+        ).scalars().all()
+        target_label = display_stage_label(
+            str(refreshed_project["project_mode"]),
+            str(refreshed_project["project_subtype"]) if refreshed_project.get("project_subtype") else None,
+            str(refreshed_project["current_phase_id"]),
         )
+        for member_id in member_ids:
+            if member_id == current_user_id:
+                continue
+            create_notification(
+                db=db,
+                recipient_id=member_id,
+                actor_id=current_user_id,
+                kind="prj-phase-done",
+                surface="project",
+                subject_type="phase-change",
+                subject_id=request_id,
+                target_id=project_row["id"],
+                title="Project phase change executed",
+                body=f"The project phase changed to {target_label}.",
+                href=f"/projects/{project_row['slug']}",
+            )
 
     try:
         db.commit()

@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,7 +23,55 @@ from app.services.notifications import create_notification
 from app.utils.votes import required_votes, resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
-VALID_VOTES = {"yes", "no"}
+VALID_VOTES = {"yes", "no", "neutral"}
+
+
+def _schedule_start_utc_from_payload(schedule_payload: dict[str, object]) -> datetime | None:
+    start_at_utc = schedule_payload.get("startAtUtc") or schedule_payload.get("start_at_utc")
+
+    if not start_at_utc:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(str(start_at_utc).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+
+def _sync_event_schedule_from_leading_plan(
+    db: Session,
+    event_id: UUID,
+    plan_id: UUID,
+) -> None:
+    plan_row = db.execute(
+        select(
+            event_plans.c.schedule_payload,
+            event_plans.c.location_label,
+        ).where(event_plans.c.id == plan_id)
+    ).mappings().one()
+
+    schedule_payload = dict(plan_row["schedule_payload"] or {})
+    scheduled_at = _schedule_start_utc_from_payload(schedule_payload)
+    update_values: dict[str, object] = {}
+
+    if scheduled_at is not None:
+        update_values["scheduled_at"] = scheduled_at
+
+    location_label = str(plan_row["location_label"] or "").strip()
+    if location_label:
+        update_values["location_label"] = location_label
+
+    if update_values:
+        db.execute(
+            update(events)
+            .where(events.c.id == event_id)
+            .values(**update_values)
+        )
 
 
 def _serialize_plan(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
@@ -127,6 +177,7 @@ def sync_event_plan_leading_flags(
                 .where(event_plans.c.id == leader_id)
                 .values(is_leading=True, status="approved")
             )
+            _sync_event_schedule_from_leading_plan(db, event_id, leader_id)
 
     return leader_id
 
@@ -247,7 +298,15 @@ def cast_event_plan_vote(
     ).first()
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(event_plan_votes).where(
+                        event_plan_votes.c.plan_id == plan_id,
+                        event_plan_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(event_plan_votes).values(
                     plan_id=plan_id,
@@ -364,7 +423,16 @@ def cast_event_plan_value_vote(
     ).first()
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(event_plan_value_votes).where(
+                        event_plan_value_votes.c.plan_id == plan_id,
+                        event_plan_value_votes.c.value_id == value_id,
+                        event_plan_value_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(event_plan_value_votes).values(
                     plan_id=plan_id,

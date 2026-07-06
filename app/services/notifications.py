@@ -12,6 +12,14 @@ from sqlalchemy.orm import Session
 from app.models import notifications, users
 
 
+def _iso(value: object | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
 def _serialize_notification(row: Mapping[str, object]) -> dict[str, object]:
     return {
         "id": row["id"],
@@ -27,8 +35,8 @@ def _serialize_notification(row: Mapping[str, object]) -> dict[str, object]:
         "body": row["body"],
         "href": row["href"],
         "is_unread": row["is_unread"],
-        "created_at": row["created_at"],
-        "read_at": row["read_at"],
+        "created_at": _iso(row["created_at"]),
+        "read_at": _iso(row.get("read_at")),
     }
 
 

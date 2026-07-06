@@ -1021,6 +1021,16 @@ async def get_project_detail(
     phase_two_winning = phase_two_leading[0] if len(phase_two_leading) == 1 else None
     phase_three_winning = phase_three_leading[0] if len(phase_three_leading) == 1 else None
 
+    def _selectable_plan_phases_from_winning_plan() -> list[dict[str, str]]:
+        winning_id = phase_three_winning or phase_two_winning
+        if not winning_id:
+            return []
+        all_plans = [*phase_two_plans, *phase_three_plans]
+        winning_plan = next((plan for plan in all_plans if plan["id"] == winning_id), None)
+        if winning_plan is None:
+            return []
+        return [{"id": phase["id"], "label": phase["title"]} for phase in winning_plan.get("planPhases", [])]
+
     activities_rows = db.execute(
         select(project_activities).where(project_activities.c.project_id == project_id).order_by(project_activities.c.scheduled_at.desc())
     ).mappings().all()
@@ -1472,7 +1482,7 @@ async def get_project_detail(
             "activities": activities,
             "history": [],
             "viewerCanCreateActivities": viewer_can_create_activities,
-            "selectablePlanPhases": [],
+            "selectablePlanPhases": _selectable_plan_phases_from_winning_plan(),
             "softwareGovernance": software_governance,
         },
     }
@@ -2076,7 +2086,7 @@ def share_project_with_user(
         subject_id=project_row["id"],
         target_id=project_row["id"],
         title=project_row["title"],
-        body="A project was shared with you.",
+        body=f"A project was shared with you: {project_row['title']}. Open /projects/{project_row['slug']}",
         href=f"/projects/{project_row['slug']}",
     )
     return {"ok": True}

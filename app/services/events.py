@@ -818,9 +818,12 @@ async def get_event_detail(
         )
 
     selectable_plan_phases = []
-    for plan in event_plans_payload:
-        for phase in plan["planPhases"]:
-            selectable_plan_phases.append({"id": phase["id"], "label": phase["title"]})
+    if winning_plan_id is not None:
+        winning_plan = next((plan for plan in event_plans_payload if plan["id"] == winning_plan_id), None)
+        if winning_plan is not None:
+            selectable_plan_phases = [
+                {"id": phase["id"], "label": phase["title"]} for phase in winning_plan["planPhases"]
+            ]
 
     updates_rows = db.execute(
         select(event_updates).where(event_updates.c.event_id == event_id).order_by(event_updates.c.created_at.desc())
@@ -1721,7 +1724,7 @@ def share_event_with_user(
         subject_id=event_row["id"],
         target_id=event_row["id"],
         title=event_row["title"],
-        body="An event was shared with you.",
+        body=f"An event was shared with you: {event_row['title']}. Open /events/{event_row['slug']}",
         href=f"/events/{event_row['slug']}",
     )
     return {"ok": True}

@@ -32,14 +32,14 @@ class EventPlanSubmitRequest(BaseModel):
 class EventPlanVoteRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    vote: str = Field(pattern="^(yes|no)$")
+    vote: str = Field(pattern="^(yes|no|neutral)$")
 
 
 class EventPlanValueVoteRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     value_id: UUID
-    vote: str = Field(pattern="^(yes|no)$")
+    vote: str = Field(pattern="^(yes|no|neutral)$")
 
 
 class EventPlanVoteSummaryOut(BaseModel):
