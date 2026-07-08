@@ -7,7 +7,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, func, literal, not_, or_, select, union_all
 from sqlalchemy.orm import Session
 
-from app.services.content import format_schedule_rail_label
+
 from app.models import (
     channels,
     communities,
@@ -22,6 +22,7 @@ from app.models import (
     event_phase_change_votes,
     event_phase_change_requests,
     event_plan_votes,
+    event_plan_criterion_ratings,
     event_plans,
     event_update_request_votes,
     event_update_requests,
@@ -40,6 +41,7 @@ from app.models import (
     project_phase_change_requests,
     project_phase_change_votes,
     project_plan_votes,
+    project_plan_criterion_ratings,
     project_plans,
     project_service_requests,
     project_update_request_votes,
@@ -102,7 +104,7 @@ def _get_unread_message_count(db: Session, current_user_id: UUID) -> int:
     return get_total_unread_message_count(db, current_user_id)
 
 
-def _get_platform_directory_item(db: Session, current_user_id: UUID) -> dict[str, object] | None:
+def _get_platform_directory_item(db: Session, current_user_id: UUID | None) -> dict[str, object] | None:
     row = db.execute(
         select(channels.c.id, channels.c.slug, channels.c.name)
         .where(channels.c.slug.in_(["platform", "stewardship"]))
@@ -112,13 +114,15 @@ def _get_platform_directory_item(db: Session, current_user_id: UUID) -> dict[str
     if row is None:
         return None
 
-    membership = db.execute(
-        select(scope_memberships.c.user_id).where(
-            scope_memberships.c.scope_kind == "channel",
-            scope_memberships.c.scope_id == row["id"],
-            scope_memberships.c.user_id == current_user_id,
-        )
-    ).first()
+    membership = None
+    if current_user_id is not None:
+        membership = db.execute(
+            select(scope_memberships.c.user_id).where(
+                scope_memberships.c.scope_kind == "channel",
+                scope_memberships.c.scope_id == row["id"],
+                scope_memberships.c.user_id == current_user_id,
+            )
+        ).first()
 
     return {
         "slug": row["slug"],
@@ -129,7 +133,10 @@ def _get_platform_directory_item(db: Session, current_user_id: UUID) -> dict[str
     }
 
 
-def _get_channel_directory_items(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
+def _get_channel_directory_items(db: Session, current_user_id: UUID | None) -> list[dict[str, object]]:
+    if current_user_id is None:
+        return []
+
     rows = db.execute(
         select(channels.c.slug, channels.c.name)
         .select_from(
@@ -154,7 +161,10 @@ def _get_channel_directory_items(db: Session, current_user_id: UUID) -> list[dic
     ]
 
 
-def _get_community_directory_items(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
+def _get_community_directory_items(db: Session, current_user_id: UUID | None) -> list[dict[str, object]]:
+    if current_user_id is None:
+        return []
+
     rows = db.execute(
         select(communities.c.slug, communities.c.name, communities.c.join_policy)
         .select_from(
@@ -276,7 +286,6 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "href": f"/projects/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
                 "createdAt": _small_iso(r["scheduled_at"]),
-                "timeLabel": format_schedule_rail_label(r["scheduled_at"]) if r["scheduled_at"] else "",
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
                 "projectMode": r["project_mode"],
                 "projectSlug": r["parent_slug"],
@@ -336,7 +345,6 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "href": f"/events/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
                 "createdAt": _small_iso(r["scheduled_at"]),
-                "timeLabel": format_schedule_rail_label(r["scheduled_at"]) if r["scheduled_at"] else "",
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
                 "eventSlug": r["parent_slug"],
                 "activityId": aid,
@@ -516,8 +524,18 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
     def _build_count_label(yes: int, no: int) -> str:
         return f"{yes} yes / {no} no"
 
-    def _vote_href(surface: str, slug: str, vote_kind: str, target_id: object) -> str:
-        return f"/{surface}/{slug}?open=vote&voteKind={vote_kind}&voteTarget={target_id}"
+    def _vote_href(
+        surface: str,
+        slug: str,
+        vote_kind: str,
+        target_id: object,
+        *,
+        assess: bool = False,
+    ) -> str:
+        href = f"/{surface}/{slug}?open=vote&voteKind={vote_kind}&voteTarget={target_id}"
+        if assess:
+            href += "&assess=1"
+        return href
 
     # ── Open service requests the user can review ──
     request_rows = db.execute(
@@ -626,7 +644,8 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
     # Project plans
     rows = db.execute(
         select(project_plans.c.id, project_plans.c.created_at,
-               projects.c.slug, projects.c.title, project_plans.c.title.label("plan_title"))
+               projects.c.slug, projects.c.title, projects.c.current_phase_id,
+               project_plans.c.title.label("plan_title"))
         .select_from(
             project_plans.join(projects, projects.c.id == project_plans.c.project_id)
             .join(project_memberships, and_(project_memberships.c.project_id == projects.c.id,
@@ -642,14 +661,31 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                               [r["id"] for r in rows])
         for r in rows:
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            criterion_count = db.execute(
+                select(func.count())
+                .select_from(project_plan_criterion_ratings)
+                .where(
+                    project_plan_criterion_ratings.c.plan_id == r["id"],
+                    project_plan_criterion_ratings.c.voter_id == current_user_id,
+                )
+            ).scalar() or 0
+            phase_id = str(r["current_phase_id"])
+            plan_phase_id = phase_id if phase_id in {"phase-2", "phase-3"} else "phase-2"
+            vote_sub_kind = "criterion" if int(criterion_count) == 0 else "overall"
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['plan_title'] or r['title'],
-                "href": _vote_href("projects", r["slug"], "plan", r["id"]),
-                "meta": f"Approve “{r['plan_title']}”?",
+                "href": _vote_href(
+                    "projects", r["slug"], "plan", r["id"],
+                    assess=vote_sub_kind == "overall",
+                ),
+                "meta": "Assess and approve this plan" if vote_sub_kind == "criterion" else f"Approve “{r['plan_title']}”?",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
                 "voteEntityKind": "project", "voteKindLabel": "plan",
-                "voteTargetId": str(r["id"])})
+                "voteTargetId": str(r["id"]),
+                "planPhaseId": plan_phase_id if plan_phase_id in {"phase-2", "phase-3"} else "phase-2",
+                "voteSubKind": vote_sub_kind,
+                "projectSlug": r["slug"]})
 
     # Project update requests
     rows = db.execute(
@@ -757,14 +793,28 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                               [r["id"] for r in rows])
         for r in rows:
             c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            criterion_count = db.execute(
+                select(func.count())
+                .select_from(event_plan_criterion_ratings)
+                .where(
+                    event_plan_criterion_ratings.c.plan_id == r["id"],
+                    event_plan_criterion_ratings.c.voter_id == current_user_id,
+                )
+            ).scalar() or 0
+            vote_sub_kind = "criterion" if int(criterion_count) == 0 else "overall"
             vote_items.append({"kind": "vote", "id": str(r["id"]),
                 "title": r['plan_title'] or r['title'],
-                "href": _vote_href("events", r["slug"], "plan", r["id"]),
-                "meta": f"Approve “{r['plan_title']}”?",
+                "href": _vote_href(
+                    "events", r["slug"], "plan", r["id"],
+                    assess=vote_sub_kind == "overall",
+                ),
+                "meta": "Assess and approve this plan" if vote_sub_kind == "criterion" else f"Approve “{r['plan_title']}”?",
                 "createdAt": _small_iso(r["created_at"]),
                 "countLabel": _build_count_label(c["yes"], c["no"]),
                 "voteEntityKind": "event", "voteKindLabel": "plan",
-                "voteTargetId": str(r["id"])})
+                "voteTargetId": str(r["id"]),
+                "voteSubKind": vote_sub_kind,
+                "eventSlug": r["slug"]})
 
     # Event update requests
     rows = db.execute(
@@ -831,7 +881,15 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
     return items
 
 
-def get_bootstrap_summary(db: Session, current_user_id: UUID) -> dict[str, object]:
+def get_bootstrap_summary(db: Session, current_user_id: UUID | None) -> dict[str, object]:
+    if current_user_id is None:
+        return {
+            "unreadCounts": {
+                "notifications": 0,
+                "messages": 0,
+            },
+        }
+
     return {
         "unreadCounts": {
             "notifications": _get_unread_notification_count(db, current_user_id),
@@ -840,7 +898,28 @@ def get_bootstrap_summary(db: Session, current_user_id: UUID) -> dict[str, objec
     }
 
 
-def get_bootstrap(db: Session, current_user_id: UUID) -> dict[str, object]:
+def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object]:
+    if current_user_id is None:
+        return {
+            "viewer": None,
+            "featureFlags": {
+                "assets": False,
+                "funding": False,
+                "platform": True,
+            },
+            "unreadCounts": {
+                "notifications": 0,
+                "messages": 0,
+            },
+            "directory": {
+                "platform": _get_platform_directory_item(db, None),
+                "channels": [],
+                "communities": [],
+            },
+            "suggestedContacts": [],
+            "activityRail": [],
+        }
+
     viewer = _get_viewer_row(db, current_user_id)
 
     return {

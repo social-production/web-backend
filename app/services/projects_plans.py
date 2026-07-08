@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     project_memberships,
+    project_plan_criterion_ratings,
     project_plan_value_votes,
     project_plan_votes,
     project_plans,
@@ -18,6 +19,11 @@ from app.models import (
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
+from app.services.plan_criteria import (
+    VALID_PLAN_RATINGS,
+    assessment_criteria_for_plan,
+    parse_value_criterion_id,
+)
 from app.utils.votes import required_votes, resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
@@ -538,4 +544,127 @@ def cast_project_plan_value_vote(
         "plan_id": plan_id,
         "value_id": value_id,
         "vote": normalized_vote,
+    }
+
+
+def cast_project_plan_criterion_rating(
+    db: Session,
+    current_user_id: UUID,
+    project_slug: str,
+    plan_id: UUID,
+    criterion_id: str,
+    rating: int | None,
+) -> dict[str, object]:
+    project_row = _get_project_row_by_slug(db, project_slug)
+    _ensure_member(db, project_row["id"], current_user_id)
+
+    plan_row = db.execute(
+        select(project_plans).where(
+            project_plans.c.id == plan_id,
+            project_plans.c.project_id == project_row["id"],
+        )
+    ).mappings().first()
+    if plan_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+    value_rows = db.execute(
+        select(project_values.c.id, project_values.c.label).where(
+            project_values.c.project_id == project_row["id"]
+        )
+    ).all()
+    prominent_values = [(row[0], row[1]) for row in value_rows]
+    allowed_criteria = {
+        item["criterionId"]
+        for item in assessment_criteria_for_plan(
+            plan_kind=str(plan_row["phase_kind"]),
+            prominent_values=prominent_values,
+            project_subtype=plan_row["project_subtype"],
+        )
+    }
+    normalized_criterion_id = criterion_id.strip()
+    if normalized_criterion_id not in allowed_criteria:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown plan criterion")
+
+    value_id = parse_value_criterion_id(normalized_criterion_id)
+    if value_id is not None:
+        value_row = db.execute(
+            select(project_values.c.id).where(
+                project_values.c.id == value_id,
+                project_values.c.project_id == project_row["id"],
+            )
+        ).first()
+        if value_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project value not found")
+
+    existing_rating = db.execute(
+        select(project_plan_criterion_ratings.c.rating).where(
+            project_plan_criterion_ratings.c.plan_id == plan_id,
+            project_plan_criterion_ratings.c.criterion_id == normalized_criterion_id,
+            project_plan_criterion_ratings.c.voter_id == current_user_id,
+        )
+    ).first()
+
+    try:
+        if rating is None:
+            if existing_rating is not None:
+                db.execute(
+                    delete(project_plan_criterion_ratings).where(
+                        project_plan_criterion_ratings.c.plan_id == plan_id,
+                        project_plan_criterion_ratings.c.criterion_id == normalized_criterion_id,
+                        project_plan_criterion_ratings.c.voter_id == current_user_id,
+                    )
+                )
+            normalized_rating = None
+        else:
+            if rating not in VALID_PLAN_RATINGS:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="rating must be between 1 and 5",
+                )
+            if existing_rating is None:
+                db.execute(
+                    insert(project_plan_criterion_ratings).values(
+                        plan_id=plan_id,
+                        criterion_id=normalized_criterion_id,
+                        voter_id=current_user_id,
+                        rating=rating,
+                    )
+                )
+            else:
+                db.execute(
+                    update(project_plan_criterion_ratings)
+                    .where(
+                        project_plan_criterion_ratings.c.plan_id == plan_id,
+                        project_plan_criterion_ratings.c.criterion_id == normalized_criterion_id,
+                        project_plan_criterion_ratings.c.voter_id == current_user_id,
+                    )
+                    .values(rating=rating)
+                )
+            normalized_rating = rating
+
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={
+                "target_type": "project-plan-criterion",
+                "target_id": str(plan_id),
+                "criterion_id": normalized_criterion_id,
+                "rating": normalized_rating,
+            },
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not cast plan criterion rating",
+        ) from exc
+
+    return {
+        "ok": True,
+        "project_slug": project_row["slug"],
+        "plan_id": plan_id,
+        "criterion_id": normalized_criterion_id,
+        "rating": normalized_rating,
     }

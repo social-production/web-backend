@@ -26,6 +26,7 @@ from app.models import (
     project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
+    project_plan_criterion_ratings,
     project_plan_value_votes,
     project_plan_votes,
     project_plans,
@@ -55,6 +56,7 @@ from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.services.projects_software import get_project_software_governance
 from app.services.projects_plans import _plan_subtype_from_payload, _subtype_label
+from app.services.plan_criteria import assessment_criteria_for_plan, serialize_plan_criterion_assessments
 from app.utils.votes import required_votes, resolve_project_vote_population
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
@@ -438,12 +440,15 @@ def _username_lookup(db: Session, user_ids: set[UUID]) -> dict[UUID, dict[str, s
     if not user_ids:
         return {}
     rows = db.execute(
-        select(users.c.id, users.c.username, users.c.bio).where(users.c.id.in_(list(user_ids)))
+        select(users.c.id, users.c.username, users.c.bio, users.c.profile_image_url).where(
+            users.c.id.in_(list(user_ids))
+        )
     ).all()
     return {
         row[0]: {
             "username": row[1],
             "bio": row[2] or "",
+            "profileImageUrl": row[3],
         }
         for row in rows
     }
@@ -935,22 +940,31 @@ async def get_project_detail(
         )
 
         value_assessments = []
-        for value_id, value_label, _ in value_rows:
-            if importance_scores_by_value_id.get(value_id, 0) < 5:
-                continue
-            value_vote_rows = db.execute(
-                select(project_plan_value_votes.c.vote, project_plan_value_votes.c.voter_id)
-                .where(
-                    project_plan_value_votes.c.plan_id == plan["id"],
-                    project_plan_value_votes.c.value_id == value_id,
-                )
-            ).all()
-            summary, _, _ = _vote_summary(value_vote_rows, vote_context_population, current_user_id)
-            value_assessments.append({
-                "valueId": str(value_id),
-                "valueLabel": value_label,
-                **summary,
-            })
+        criterion_rating_rows = db.execute(
+            select(
+                project_plan_criterion_ratings.c.criterion_id,
+                project_plan_criterion_ratings.c.rating,
+                project_plan_criterion_ratings.c.voter_id,
+            ).where(project_plan_criterion_ratings.c.plan_id == plan["id"])
+        ).all()
+        ratings_by_criterion: dict[str, list[tuple[int, UUID]]] = {}
+        for criterion_id, rating, voter_id in criterion_rating_rows:
+            ratings_by_criterion.setdefault(criterion_id, []).append((rating, voter_id))
+
+        prominent_value_tuples = [
+            (value_id, value_label)
+            for value_id, value_label, _ in value_rows
+            if importance_scores_by_value_id.get(value_id, 0) >= 5
+        ]
+        criterion_assessments = serialize_plan_criterion_assessments(
+            assessment_criteria_for_plan(
+                plan_kind=str(plan["phase_kind"]),
+                prominent_values=prominent_value_tuples,
+                project_subtype=plan["project_subtype"],
+            ),
+            ratings_by_criterion,
+            current_user_id,
+        )
 
         plan_payload = dict(plan["plan_payload"] or {})
         value_consideration_notes = dict(plan_payload.get("valueConsiderationNotes") or {})
@@ -978,6 +992,7 @@ async def get_project_detail(
             "totalCostLabel": plan["total_cost_label"] or "",
             "planPhases": plan_phases,
             "valueAssessments": value_assessments,
+            "criterionAssessments": criterion_assessments,
             "overallApproval": overall_summary,
             "isLeading": bool(plan["is_leading"]),
             "leaderStatus": leader_status,
@@ -1081,6 +1096,13 @@ async def get_project_detail(
                     "requiredCount": int(role["required_count"] or 0),
                     "maximumCount": role["maximum_count"],
                     "isViewerAssigned": is_viewer_assigned,
+                    "assignees": [
+                        {
+                            "username": usernames.get(user_id, {}).get("username", "unknown"),
+                            "profileImageUrl": usernames.get(user_id, {}).get("profileImageUrl"),
+                        }
+                        for user_id in assigned_users
+                    ],
                 }
             )
 
@@ -1092,6 +1114,7 @@ async def get_project_detail(
                 "scheduledAt": _iso(activity["scheduled_at"]),
                 "startAt": _iso(activity["scheduled_at"]),
                 "endAt": _iso(activity["ends_at"]),
+                "isOnline": bool(activity.get("is_online", False)),
                 "locationLabel": activity["location_label"],
                 "minimumParticipants": minimum_participants,
                 "maximumParticipants": maximum_participants,
@@ -1803,6 +1826,7 @@ def create_project_activity(
     location_label: str,
     note: str,
     role_requirements: list[dict[str, object]],
+    is_online: bool = False,
     linked_plan_id: UUID | None = None,
     linked_plan_phase_id: str | None = None,
 ) -> dict[str, object]:
@@ -1827,6 +1851,7 @@ def create_project_activity(
                 author_id=current_user_id,
                 scheduled_at=scheduled_at,
                 ends_at=ends_at,
+                is_online=is_online,
                 location_label=location_label.strip(),
                 note=note.strip(),
                 status="active",
@@ -1838,6 +1863,7 @@ def create_project_activity(
                 project_activities.c.author_id,
                 project_activities.c.scheduled_at,
                 project_activities.c.ends_at,
+                project_activities.c.is_online,
                 project_activities.c.location_label,
                 project_activities.c.note,
                 project_activities.c.linked_plan_id,

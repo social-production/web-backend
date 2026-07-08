@@ -49,6 +49,7 @@ class UserSettings(BaseModel):
     hide_public_profile_activity_from_non_followers: bool
     require_follow_approval: bool
     preferred_language: str
+    display_timezone: str | None = None
 
 
 class PublicProfileResponse(BaseModel):
@@ -85,6 +86,7 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     hide_public_profile_activity_from_non_followers: bool | None = None
     require_follow_approval: bool | None = None
     preferred_language: str | None = None
+    display_timezone: str | None = None
 
 
 class FollowResponse(BaseModel):

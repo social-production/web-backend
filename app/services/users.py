@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from datetime import datetime, timezone
+from zoneinfo import available_timezones
 
 from app.models import notifications, user_follows, user_settings, users
 from app.services.meaningful_actions import record_meaningful_action
@@ -30,6 +31,7 @@ USER_SETTINGS_FIELDS = {
     "hide_public_profile_activity_from_non_followers",
     "require_follow_approval",
     "preferred_language",
+    "display_timezone",
 }
 
 
@@ -65,6 +67,7 @@ def _serialize_settings(row: Mapping[str, object]) -> dict[str, object]:
         ],
         "require_follow_approval": row["require_follow_approval"],
         "preferred_language": row["preferred_language"],
+        "display_timezone": row["display_timezone"],
     }
 
 
@@ -155,6 +158,19 @@ def update_own_profile_settings(db: Session, current_user_id: UUID, payload: dic
         if language not in VALID_LANGUAGES:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_preferred_language")
         settings_updates["preferred_language"] = language
+
+    if "display_timezone" in settings_updates:
+        timezone_value = settings_updates["display_timezone"]
+        if timezone_value is None or str(timezone_value).strip() == "":
+            settings_updates["display_timezone"] = None
+        else:
+            timezone_name = str(timezone_value).strip()
+            if timezone_name not in available_timezones():
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="invalid_display_timezone",
+                )
+            settings_updates["display_timezone"] = timezone_name
 
     if not profile_updates and not settings_updates:
         return get_own_profile(db, current_user_id)

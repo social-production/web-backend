@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     event_memberships,
+    event_plan_criterion_ratings,
     event_plan_value_votes,
     event_plan_votes,
     event_plans,
@@ -20,6 +21,11 @@ from app.models import (
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
+from app.services.plan_criteria import (
+    VALID_PLAN_RATINGS,
+    assessment_criteria_for_plan,
+    parse_value_criterion_id,
+)
 from app.utils.votes import required_votes, resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
@@ -474,4 +480,124 @@ def cast_event_plan_value_vote(
         "plan_id": plan_id,
         "value_id": value_id,
         "vote": normalized_vote,
+    }
+
+
+def cast_event_plan_criterion_rating(
+    db: Session,
+    current_user_id: UUID,
+    event_slug: str,
+    plan_id: UUID,
+    criterion_id: str,
+    rating: int | None,
+) -> dict[str, object]:
+    event_row = _get_event_row_by_slug(db, event_slug)
+    _ensure_member(db, event_row["id"], current_user_id)
+
+    plan_row = db.execute(
+        select(event_plans).where(
+            event_plans.c.id == plan_id,
+            event_plans.c.event_id == event_row["id"],
+        )
+    ).mappings().first()
+    if plan_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
+
+    value_rows = db.execute(
+        select(event_values.c.id, event_values.c.label).where(event_values.c.event_id == event_row["id"])
+    ).all()
+    prominent_values = [(row[0], row[1]) for row in value_rows]
+    allowed_criteria = {
+        item["criterionId"]
+        for item in assessment_criteria_for_plan(
+            plan_kind="event",
+            prominent_values=prominent_values,
+        )
+    }
+    normalized_criterion_id = criterion_id.strip()
+    if normalized_criterion_id not in allowed_criteria:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown plan criterion")
+
+    value_id = parse_value_criterion_id(normalized_criterion_id)
+    if value_id is not None:
+        value_row = db.execute(
+            select(event_values.c.id).where(
+                event_values.c.id == value_id,
+                event_values.c.event_id == event_row["id"],
+            )
+        ).first()
+        if value_row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event value not found")
+
+    existing_rating = db.execute(
+        select(event_plan_criterion_ratings.c.rating).where(
+            event_plan_criterion_ratings.c.plan_id == plan_id,
+            event_plan_criterion_ratings.c.criterion_id == normalized_criterion_id,
+            event_plan_criterion_ratings.c.voter_id == current_user_id,
+        )
+    ).first()
+
+    try:
+        if rating is None:
+            if existing_rating is not None:
+                db.execute(
+                    delete(event_plan_criterion_ratings).where(
+                        event_plan_criterion_ratings.c.plan_id == plan_id,
+                        event_plan_criterion_ratings.c.criterion_id == normalized_criterion_id,
+                        event_plan_criterion_ratings.c.voter_id == current_user_id,
+                    )
+                )
+            normalized_rating = None
+        else:
+            if rating not in VALID_PLAN_RATINGS:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="rating must be between 1 and 5",
+                )
+            if existing_rating is None:
+                db.execute(
+                    insert(event_plan_criterion_ratings).values(
+                        plan_id=plan_id,
+                        criterion_id=normalized_criterion_id,
+                        voter_id=current_user_id,
+                        rating=rating,
+                    )
+                )
+            else:
+                db.execute(
+                    update(event_plan_criterion_ratings)
+                    .where(
+                        event_plan_criterion_ratings.c.plan_id == plan_id,
+                        event_plan_criterion_ratings.c.criterion_id == normalized_criterion_id,
+                        event_plan_criterion_ratings.c.voter_id == current_user_id,
+                    )
+                    .values(rating=rating)
+                )
+            normalized_rating = rating
+
+        record_meaningful_action(
+            db=db,
+            user_id=current_user_id,
+            action_type="cast-vote",
+            metadata={
+                "target_type": "event-plan-criterion",
+                "target_id": str(plan_id),
+                "criterion_id": normalized_criterion_id,
+                "rating": normalized_rating,
+            },
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not cast event plan criterion rating",
+        ) from exc
+
+    return {
+        "ok": True,
+        "event_slug": event_slug,
+        "plan_id": plan_id,
+        "criterion_id": normalized_criterion_id,
+        "rating": normalized_rating,
     }

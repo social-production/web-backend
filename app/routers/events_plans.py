@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
 from app.services.events_plans import (
+    cast_event_plan_criterion_rating,
     cast_event_plan_value_vote,
     cast_event_plan_vote,
     list_event_plans,
@@ -40,6 +41,13 @@ class EventPlanValueVoteRequest(BaseModel):
 
     value_id: UUID
     vote: str = Field(pattern="^(yes|no|neutral)$")
+
+
+class EventPlanCriterionRatingRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    criterion_id: str = Field(min_length=1, max_length=120)
+    rating: int | None = Field(default=None, ge=1, le=5)
 
 
 class EventPlanVoteSummaryOut(BaseModel):
@@ -147,4 +155,22 @@ def vote_plan_value(
         plan_id=plan_id,
         value_id=payload.value_id,
         vote=payload.vote,
+    )
+
+
+@router.post("/{slug}/plans/{plan_id}/criterion-ratings")
+def rate_event_plan_criterion(
+    slug: str,
+    plan_id: UUID,
+    payload: EventPlanCriterionRatingRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return cast_event_plan_criterion_rating(
+        db=db,
+        current_user_id=current_user_id,
+        event_slug=slug,
+        plan_id=plan_id,
+        criterion_id=payload.criterion_id,
+        rating=payload.rating,
     )

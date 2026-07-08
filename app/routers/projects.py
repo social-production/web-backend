@@ -174,6 +174,7 @@ class ProjectActivityCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     scheduled_at: datetime
     ends_at: datetime
+    is_online: bool = False
     location_label: str = Field(min_length=1, max_length=160)
     note: str = Field(min_length=1)
     role_requirements: list[ProjectActivityRoleRequirementIn] = Field(default_factory=list)
@@ -339,6 +340,7 @@ async def create_activity_route(
         title=payload.title,
         scheduled_at=payload.scheduled_at,
         ends_at=payload.ends_at,
+        is_online=payload.is_online,
         location_label=payload.location_label,
         note=payload.note,
         role_requirements=[item.model_dump() for item in payload.role_requirements],

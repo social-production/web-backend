@@ -119,6 +119,15 @@ event_plan_value_votes = table(
     created_at(),
 )
 
+event_plan_criterion_ratings = table(
+    "event_plan_criterion_ratings",
+    sa.Column("plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("criterion_id", sa.String(120), primary_key=True),
+    sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("rating", sa.Integer, nullable=False),
+    created_at(),
+)
+
 event_activities = table(
     "event_activities",
     uuid_pk(),
@@ -129,6 +138,7 @@ event_activities = table(
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("ends_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("is_online", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("location_label", sa.String(160), nullable=False),
     sa.Column("note", sa.Text, nullable=False),
     created_at(),
