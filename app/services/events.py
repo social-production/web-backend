@@ -51,12 +51,30 @@ from app.services.plan_criteria import assessment_criteria_for_plan, serialize_p
 from app.utils.votes import is_platform_event, required_votes, resolve_event_vote_population
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
+_PLACEHOLDER_SCHEDULE_LABELS = frozenset({"tbd", "not specified", "to be determined"})
 EVENT_PHASES = (
     ("proposal", 1, "P1", "Proposal", "Collect demand and define event values."),
     ("event-plan", 2, "P2", "Event Plan", "Propose and approve event plans."),
     ("activity", 3, "P3", "Activity", "Run event activities."),
     ("closed", 4, "P4", "Closed", "Event is closed."),
 )
+
+
+def _is_meaningful_schedule_label(label: str | None) -> bool:
+    normalized = (label or "").strip()
+    return bool(normalized) and normalized.lower() not in _PLACEHOLDER_SCHEDULE_LABELS
+
+
+def _event_search_meta(time_label: str | None, location_label: str | None) -> str:
+    location = (location_label or "").strip()
+    if _is_meaningful_schedule_label(location):
+        return location
+
+    time = (time_label or "").strip()
+    if _is_meaningful_schedule_label(time):
+        return time
+
+    return "Event"
 
 
 def _iso(value: object | None) -> str | None:
@@ -455,7 +473,7 @@ def create_event(
         entity_id=created["id"],
         title=created["title"],
         summary=created["description"],
-        meta=created["location_label"],
+        meta=_event_search_meta(created["time_label"], created["location_label"]),
         href=f"/events/{created['slug']}",
     )
     return {"event": _serialize_event(created, tags, {"demand": 0, "opposition": 0, "total": 0})}
