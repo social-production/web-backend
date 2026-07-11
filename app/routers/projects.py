@@ -28,7 +28,7 @@ from app.services.projects import (
     update_project_details,
     vote_project_value_importance,
 )
-from app.models import project_activity_roles
+from app.services.activity_history import delete_project_activity_rating, upsert_project_activity_rating
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -185,6 +185,13 @@ class ProjectActivityCreateRequest(BaseModel):
 class ProjectActivityCommitRequest(BaseModel):
     role_label: str | None = Field(default=None, min_length=1, max_length=100)
     role_id: UUID | None = None
+
+
+class ProjectActivityRatingRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    rating: int = Field(ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=2000)
 
 
 class ProjectUpdateCreateRequest(BaseModel):
@@ -388,6 +395,39 @@ async def uncommit_activity_role_route(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return uncommit_project_activity_role(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        activity_id=activity_id,
+    )
+
+
+@router.put("/{slug}/activities/{activity_id}/rating")
+async def upsert_project_activity_rating_route(
+    slug: str,
+    activity_id: UUID,
+    payload: ProjectActivityRatingRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return upsert_project_activity_rating(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        activity_id=activity_id,
+        rating=payload.rating,
+        comment=payload.comment,
+    )
+
+
+@router.delete("/{slug}/activities/{activity_id}/rating")
+async def delete_project_activity_rating_route(
+    slug: str,
+    activity_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return delete_project_activity_rating(
         db=db,
         current_user_id=current_user_id,
         slug=slug,

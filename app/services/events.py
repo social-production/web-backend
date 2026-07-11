@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -43,6 +43,14 @@ from app.models import (
 )
 from app.cache import cache_ttl_seconds
 from app.services.access_control import assert_can_view_entity
+from app.services.activity_history import (
+    build_event_history_items,
+    ensure_activity_roles_unlocked,
+    ensure_future_scheduled_start,
+    is_activity_ended,
+    load_event_ratings_by_activity,
+    utc_now,
+)
 from app.services.content import activity_status_tone
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
@@ -83,6 +91,85 @@ def _iso(value: object | None) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_plan_local_datetime(date_value: str | None, time_value: str | None, fallback_time: str) -> datetime | None:
+    normalized_date = (date_value or "").strip()
+    if not normalized_date:
+        return None
+
+    normalized_time = (time_value or "").strip() or fallback_time
+    if len(normalized_time) != 5 or ":" not in normalized_time:
+        normalized_time = fallback_time
+
+    try:
+        parsed = datetime.fromisoformat(f"{normalized_date}T{normalized_time}")
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _event_plan_schedule_bounds(schedule: dict | None) -> tuple[datetime | None, datetime | None]:
+    if not schedule:
+        return None, None
+
+    start_date = schedule.get("startDate") or ""
+    end_date = schedule.get("endDate") or start_date
+    start = _parse_plan_local_datetime(start_date, schedule.get("startTimeLabel"), "00:00")
+    end = _parse_plan_local_datetime(end_date, schedule.get("finishTimeLabel"), "23:59")
+    return start, end
+
+
+def _iter_plan_day_isos(schedule: dict | None) -> list[str]:
+    if not schedule:
+        return []
+
+    start_date = (schedule.get("startDate") or "").strip()
+    if not start_date:
+        return []
+
+    end_date = (schedule.get("endDate") or start_date).strip()
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except ValueError:
+        return [start_date]
+
+    if end < start:
+        return [start_date]
+
+    days: list[str] = []
+    cursor = start
+    while cursor <= end:
+        days.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return days
+
+
+def _is_future_selectable_plan_day(schedule: dict | None, iso_day: str, now: datetime) -> bool:
+    today = now.date().isoformat()
+    if iso_day > today:
+        return True
+    if iso_day < today:
+        return False
+
+    _, schedule_end = _event_plan_schedule_bounds(schedule)
+    return schedule_end is not None and schedule_end > now
+
+
+def _can_propose_event_activity(schedule: dict | None, now: datetime | None = None) -> bool:
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+
+    _, schedule_end = _event_plan_schedule_bounds(schedule)
+    if schedule_end is None or schedule_end <= reference:
+        return False
+
+    return any(_is_future_selectable_plan_day(schedule, iso_day, reference) for iso_day in _iter_plan_day_isos(schedule))
 
 
 def _username_lookup(db: Session, user_ids: set[UUID]) -> dict[UUID, dict[str, str]]:
@@ -797,7 +884,10 @@ async def get_event_detail(
     for role in role_rows:
         roles_by_activity.setdefault(role["activity_id"], []).append(role)
 
-    activities = []
+    live_activities: list[dict[str, object]] = []
+    ended_activity_payloads: list[dict[str, object]] = []
+    assignments_by_activity: dict[UUID, set[UUID]] = {}
+    now = utc_now()
     for activity in activities_rows:
         activity_roles = []
         minimum_participants = 0
@@ -835,35 +925,53 @@ async def get_event_detail(
                 }
             )
 
-        activities.append(
-            {
-                "id": str(activity["id"]),
-                "title": activity["title"],
-                "authorUsername": usernames.get(activity["author_id"], {}).get("username", "unknown"),
-                "scheduledAt": _iso(activity["scheduled_at"]),
-                "startAt": _iso(activity["scheduled_at"]),
-                "endAt": _iso(activity["ends_at"]),
-                "isOnline": bool(activity.get("is_online", False)),
-                "locationLabel": activity["location_label"],
-                "minimumParticipants": minimum_participants,
-                "maximumParticipants": maximum_participants,
-                "committedCount": len(committed_users),
-                "viewerAssignedRoleLabel": viewer_assigned_label,
-                "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
-                "statusTone": activity_status_tone(len(committed_users), minimum_participants),
-                "roles": activity_roles,
-                "note": activity["note"],
-                "isActive": True,
-            }
-        )
+        activity_payload = {
+            "id": str(activity["id"]),
+            "title": activity["title"],
+            "authorUsername": usernames.get(activity["author_id"], {}).get("username", "unknown"),
+            "scheduledAt": _iso(activity["scheduled_at"]),
+            "startAt": _iso(activity["scheduled_at"]),
+            "endAt": _iso(activity["ends_at"]),
+            "isOnline": bool(activity.get("is_online", False)),
+            "locationLabel": activity["location_label"],
+            "minimumParticipants": minimum_participants,
+            "maximumParticipants": maximum_participants,
+            "committedCount": len(committed_users),
+            "viewerAssignedRoleLabel": viewer_assigned_label,
+            "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
+            "statusTone": activity_status_tone(len(committed_users), minimum_participants),
+            "roles": activity_roles,
+            "note": activity["note"],
+            "isActive": not is_activity_ended(activity["ends_at"], now),
+            "rolesLocked": is_activity_ended(activity["ends_at"], now),
+        }
+        assignments_by_activity[activity["id"]] = committed_users
+        if is_activity_ended(activity["ends_at"], now):
+            ended_activity_payloads.append(activity_payload)
+        else:
+            live_activities.append(activity_payload)
+
+    ended_activity_ids = [UUID(activity["id"]) for activity in ended_activity_payloads]
+    event_ratings_by_activity = load_event_ratings_by_activity(db, ended_activity_ids, usernames)
+    activity_history = build_event_history_items(
+        ended_activities=ended_activity_payloads,
+        assignments_by_activity=assignments_by_activity,
+        current_user_id=current_user_id,
+        ratings_by_activity=event_ratings_by_activity,
+    )
 
     selectable_plan_phases = []
+    winning_plan = None
     if winning_plan_id is not None:
         winning_plan = next((plan for plan in event_plans_payload if plan["id"] == winning_plan_id), None)
         if winning_plan is not None:
             selectable_plan_phases = [
                 {"id": phase["id"], "label": phase["title"]} for phase in winning_plan["planPhases"]
             ]
+
+    can_propose_activities = _can_propose_event_activity(
+        winning_plan.get("schedule") if winning_plan is not None else None
+    )
 
     updates_rows = db.execute(
         select(event_updates).where(event_updates.c.event_id == event_id).order_by(event_updates.c.created_at.desc())
@@ -1069,8 +1177,9 @@ async def get_event_detail(
             "viewerCanVoteOnPlans": viewer_is_member,
         },
         "activity": {
-            "activities": activities,
-            "viewerCanCreateActivities": viewer_is_member,
+            "activities": live_activities,
+            "history": activity_history,
+            "viewerCanCreateActivities": viewer_is_member and can_propose_activities,
             "selectablePlanPhases": selectable_plan_phases,
         },
         "viewerCanRequestPhaseChanges": viewer_is_member,
@@ -1559,6 +1668,7 @@ def create_event_activity(
 
     if ends_at <= scheduled_at:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
+    ensure_future_scheduled_start(scheduled_at)
 
     try:
         created = db.execute(
@@ -1652,6 +1762,7 @@ def commit_event_activity_role(
     ).mappings().first()
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+    ensure_activity_roles_unlocked(activity_row["ends_at"])
 
     role_row = db.execute(
         select(event_activity_roles).where(
@@ -1699,6 +1810,16 @@ def uncommit_event_activity_role(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
+
+    activity_row = db.execute(
+        select(event_activities).where(
+            event_activities.c.id == activity_id,
+            event_activities.c.event_id == event_row["id"],
+        )
+    ).mappings().first()
+    if activity_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+    ensure_activity_roles_unlocked(activity_row["ends_at"])
 
     role_ids = db.execute(
         select(event_activity_roles.c.id).where(event_activity_roles.c.activity_id == activity_id)

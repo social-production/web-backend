@@ -48,7 +48,16 @@ from app.models import (
     user_follows,
     users,
 )
-from app.services.access_control import assert_can_view_entity
+from app.services.activity_history import (
+    build_event_history_items,
+    build_project_history_items,
+    ensure_activity_roles_unlocked,
+    ensure_future_scheduled_start,
+    is_activity_ended,
+    load_event_ratings_by_activity,
+    load_project_ratings_by_activity,
+    utc_now,
+)
 from app.cache import cache_ttl_seconds
 from app.services.content import activity_status_tone
 from app.services.meaningful_actions import record_meaningful_action
@@ -1068,7 +1077,11 @@ async def get_project_detail(
     for role in role_rows:
         roles_by_activity.setdefault(role["activity_id"], []).append(role)
 
-    activities = []
+    live_activities: list[dict[str, object]] = []
+    ended_activity_payloads: list[dict[str, object]] = []
+    activity_rows_by_id: dict[UUID, Mapping[str, object]] = {}
+    assignments_by_activity: dict[UUID, set[UUID]] = {}
+    now = utc_now()
     for activity in activities_rows:
         activity_roles = []
         minimum_participants = 0
@@ -1106,27 +1119,45 @@ async def get_project_detail(
                 }
             )
 
-        activities.append(
-            {
-                "id": str(activity["id"]),
-                "title": activity["title"],
-                "authorUsername": usernames.get(activity["author_id"], {}).get("username", "unknown"),
-                "scheduledAt": _iso(activity["scheduled_at"]),
-                "startAt": _iso(activity["scheduled_at"]),
-                "endAt": _iso(activity["ends_at"]),
-                "isOnline": bool(activity.get("is_online", False)),
-                "locationLabel": activity["location_label"],
-                "minimumParticipants": minimum_participants,
-                "maximumParticipants": maximum_participants,
-                "committedCount": len(committed_users),
-                "viewerAssignedRoleLabel": viewer_assigned_label,
-                "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
-                "statusTone": activity_status_tone(len(committed_users), minimum_participants),
-                "roles": activity_roles,
-                "note": activity["note"],
-                "isActive": activity["status"] == "active",
-            }
-        )
+        activity_payload = {
+            "id": str(activity["id"]),
+            "title": activity["title"],
+            "authorUsername": usernames.get(activity["author_id"], {}).get("username", "unknown"),
+            "scheduledAt": _iso(activity["scheduled_at"]),
+            "startAt": _iso(activity["scheduled_at"]),
+            "endAt": _iso(activity["ends_at"]),
+            "isOnline": bool(activity.get("is_online", False)),
+            "locationLabel": activity["location_label"],
+            "minimumParticipants": minimum_participants,
+            "maximumParticipants": maximum_participants,
+            "committedCount": len(committed_users),
+            "viewerAssignedRoleLabel": viewer_assigned_label,
+            "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
+            "statusTone": activity_status_tone(len(committed_users), minimum_participants),
+            "roles": activity_roles,
+            "note": activity["note"],
+            "isActive": not is_activity_ended(activity["ends_at"], now),
+            "rolesLocked": is_activity_ended(activity["ends_at"], now),
+        }
+        activity_rows_by_id[activity["id"]] = activity
+        assignments_by_activity[activity["id"]] = committed_users
+        if is_activity_ended(activity["ends_at"], now):
+            ended_activity_payloads.append(activity_payload)
+        else:
+            live_activities.append(activity_payload)
+
+    ended_activity_ids = [UUID(activity["id"]) for activity in ended_activity_payloads]
+    project_ratings_by_activity = load_project_ratings_by_activity(db, ended_activity_ids, usernames)
+    history = build_project_history_items(
+        db,
+        project_id=project_id,
+        ended_activities=ended_activity_payloads,
+        activity_rows_by_id=activity_rows_by_id,
+        assignments_by_activity=assignments_by_activity,
+        usernames=usernames,
+        current_user_id=current_user_id,
+        ratings_by_activity=project_ratings_by_activity,
+    )
 
     updates_rows = db.execute(
         select(project_updates).where(project_updates.c.project_id == project_id).order_by(project_updates.c.created_at.desc())
@@ -1502,8 +1533,8 @@ async def get_project_detail(
         },
         "phaseFour": None,
         "phaseFive": {
-            "activities": activities,
-            "history": [],
+            "activities": live_activities,
+            "history": history,
             "viewerCanCreateActivities": viewer_can_create_activities,
             "selectablePlanPhases": _selectable_plan_phases_from_winning_plan(),
             "softwareGovernance": software_governance,
@@ -1838,6 +1869,7 @@ def create_project_activity(
 
     if ends_at <= scheduled_at:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
+    ensure_future_scheduled_start(scheduled_at)
 
     try:
         created = db.execute(
@@ -1934,6 +1966,7 @@ def commit_project_activity_role(
     ).mappings().first()
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+    ensure_activity_roles_unlocked(activity_row["ends_at"])
 
     role_row = db.execute(
         select(project_activity_roles).where(
@@ -1981,6 +2014,16 @@ def uncommit_project_activity_role(
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     _ensure_project_member(db, project_row["id"], current_user_id)
+
+    activity_row = db.execute(
+        select(project_activities).where(
+            project_activities.c.id == activity_id,
+            project_activities.c.project_id == project_row["id"],
+        )
+    ).mappings().first()
+    if activity_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
+    ensure_activity_roles_unlocked(activity_row["ends_at"])
 
     role_ids = db.execute(
         select(project_activity_roles.c.id).where(project_activity_roles.c.activity_id == activity_id)

@@ -161,6 +161,17 @@ event_activity_assignments = table(
     created_at(),
 )
 
+event_activity_ratings = table(
+    "event_activity_ratings",
+    sa.Column("activity_id", UUID, sa.ForeignKey("event_activities.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("rating", sa.Integer, nullable=False),
+    sa.Column("comment", sa.Text, nullable=True),
+    created_at(),
+    updated_at(),
+    sa.CheckConstraint("rating >= 1 AND rating <= 5", name="event_activity_ratings_rating_range"),
+)
+
 event_updates = table(
     "event_updates",
     uuid_pk(),

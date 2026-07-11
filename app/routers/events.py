@@ -28,7 +28,7 @@ from app.services.events import (
     uncommit_event_activity_role,
     vote_event_value_importance,
 )
-from app.models import event_activity_roles
+from app.services.activity_history import delete_event_activity_rating, upsert_event_activity_rating
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -193,6 +193,13 @@ class EventActivityCreateRequest(BaseModel):
 class EventActivityCommitRequest(BaseModel):
     role_label: str | None = Field(default=None, min_length=1, max_length=100)
     role_id: UUID | None = None
+
+
+class EventActivityRatingRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    rating: int = Field(ge=1, le=5)
+    comment: str | None = Field(default=None, max_length=2000)
 
 
 class ShareTargetRequest(BaseModel):
@@ -412,6 +419,39 @@ async def uncommit_event_activity_route(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return uncommit_event_activity_role(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        activity_id=activity_id,
+    )
+
+
+@router.put("/{slug}/activities/{activity_id}/rating")
+async def upsert_event_activity_rating_route(
+    slug: str,
+    activity_id: UUID,
+    payload: EventActivityRatingRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return upsert_event_activity_rating(
+        db=db,
+        current_user_id=current_user_id,
+        slug=slug,
+        activity_id=activity_id,
+        rating=payload.rating,
+        comment=payload.comment,
+    )
+
+
+@router.delete("/{slug}/activities/{activity_id}/rating")
+async def delete_event_activity_rating_route(
+    slug: str,
+    activity_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return delete_event_activity_rating(
         db=db,
         current_user_id=current_user_id,
         slug=slug,

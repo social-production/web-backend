@@ -228,11 +228,13 @@ def _small_iso(dt) -> str:
 
 def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
+    now = datetime.now(timezone.utc)
 
     # ── Scheduled activities from projects the user is a member of ──
     proj_activity_rows = db.execute(
         select(
             project_activities.c.id, project_activities.c.title, project_activities.c.scheduled_at,
+            project_activities.c.ends_at,
             project_activities.c.location_label,
             projects.c.slug.label("parent_slug"), projects.c.title.label("parent_title"),
             projects.c.project_mode,
@@ -245,6 +247,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             project_memberships.c.user_id == current_user_id,
             projects.c.is_closed.is_(False),
             projects.c.current_phase_id == "phase-5",
+            project_activities.c.ends_at > now,
         )
         .order_by(project_activities.c.scheduled_at.asc())
         .limit(4)
@@ -286,6 +289,8 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "href": f"/projects/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
                 "createdAt": _small_iso(r["scheduled_at"]),
+                "scheduledAt": _small_iso(r["scheduled_at"]),
+                "endsAt": _small_iso(r["ends_at"]),
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
                 "projectMode": r["project_mode"],
                 "projectSlug": r["parent_slug"],
@@ -296,6 +301,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
     evt_activity_rows = db.execute(
         select(
             event_activities.c.id, event_activities.c.title, event_activities.c.scheduled_at,
+            event_activities.c.ends_at,
             event_activities.c.location_label,
             events.c.slug.label("parent_slug"), events.c.title.label("parent_title"),
         )
@@ -306,6 +312,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
         .where(
             event_memberships.c.user_id == current_user_id,
             events.c.current_phase_id.in_(["event-plan", "activity"]),
+            event_activities.c.ends_at > now,
         )
         .order_by(event_activities.c.scheduled_at.asc())
         .limit(4)
@@ -345,6 +352,8 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 "href": f"/events/{r['parent_slug']}?activity={aid}",
                 "meta": r["parent_title"],
                 "createdAt": _small_iso(r["scheduled_at"]),
+                "scheduledAt": _small_iso(r["scheduled_at"]),
+                "endsAt": _small_iso(r["ends_at"]),
                 "countLabel": f"{signed} signed up · {needed} needed" if needed > 0 else f"{signed} signed up",
                 "eventSlug": r["parent_slug"],
                 "activityId": aid,
@@ -881,6 +890,230 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
     return items
 
 
+def _viewer_assigned_activity_ids(
+    db: Session,
+    *,
+    project_activity_ids: list[UUID],
+    event_activity_ids: list[UUID],
+    user_id: UUID,
+) -> set[UUID]:
+    assigned: set[UUID] = set()
+
+    if project_activity_ids:
+        project_rows = db.execute(
+            select(project_activity_roles.c.activity_id)
+            .select_from(
+                project_activity_roles.join(
+                    project_activity_assignments,
+                    project_activity_assignments.c.role_id == project_activity_roles.c.id,
+                )
+            )
+            .where(
+                project_activity_roles.c.activity_id.in_(project_activity_ids),
+                project_activity_assignments.c.user_id == user_id,
+            )
+        ).all()
+        assigned.update(row[0] for row in project_rows)
+
+    if event_activity_ids:
+        event_rows = db.execute(
+            select(event_activity_roles.c.activity_id)
+            .select_from(
+                event_activity_roles.join(
+                    event_activity_assignments,
+                    event_activity_assignments.c.role_id == event_activity_roles.c.id,
+                )
+            )
+            .where(
+                event_activity_roles.c.activity_id.in_(event_activity_ids),
+                event_activity_assignments.c.user_id == user_id,
+            )
+        ).all()
+        assigned.update(row[0] for row in event_rows)
+
+    return assigned
+
+
+def _build_activity_rail_history(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
+    now = datetime.now(timezone.utc)
+    items: list[dict[str, object]] = []
+
+    proj_history_rows = db.execute(
+        select(
+            project_activities.c.id,
+            project_activities.c.title,
+            project_activities.c.scheduled_at,
+            project_activities.c.ends_at,
+            projects.c.slug.label("parent_slug"),
+            projects.c.title.label("parent_title"),
+            projects.c.project_mode,
+        )
+        .select_from(
+            project_memberships.join(projects, projects.c.id == project_memberships.c.project_id)
+            .join(project_activities, project_activities.c.project_id == projects.c.id)
+        )
+        .where(
+            project_memberships.c.user_id == current_user_id,
+            project_activities.c.ends_at <= now,
+        )
+        .order_by(project_activities.c.ends_at.desc())
+        .limit(20)
+    ).mappings().all()
+
+    evt_history_rows = db.execute(
+        select(
+            event_activities.c.id,
+            event_activities.c.title,
+            event_activities.c.scheduled_at,
+            event_activities.c.ends_at,
+            events.c.slug.label("parent_slug"),
+            events.c.title.label("parent_title"),
+        )
+        .select_from(
+            event_memberships.join(events, events.c.id == event_memberships.c.event_id)
+            .join(event_activities, event_activities.c.event_id == events.c.id)
+        )
+        .where(
+            event_memberships.c.user_id == current_user_id,
+            event_activities.c.ends_at <= now,
+        )
+        .order_by(event_activities.c.ends_at.desc())
+        .limit(20)
+    ).mappings().all()
+
+    project_activity_ids = [row["id"] for row in proj_history_rows]
+    event_activity_ids = [row["id"] for row in evt_history_rows]
+    assigned_activity_ids = _viewer_assigned_activity_ids(
+        db,
+        project_activity_ids=project_activity_ids,
+        event_activity_ids=event_activity_ids,
+        user_id=current_user_id,
+    )
+
+    for row in proj_history_rows:
+        aid = row["id"]
+        items.append(
+            {
+                "kind": "project",
+                "id": str(aid),
+                "subjectId": row["parent_slug"],
+                "title": row["title"],
+                "href": f"/projects/{row['parent_slug']}?activity={aid}",
+                "meta": row["parent_title"],
+                "createdAt": _small_iso(row["scheduled_at"]),
+                "scheduledAt": _small_iso(row["scheduled_at"]),
+                "endsAt": _small_iso(row["ends_at"]),
+                "projectMode": row["project_mode"],
+                "projectSlug": row["parent_slug"],
+                "activityId": str(aid),
+                "viewerParticipated": aid in assigned_activity_ids,
+            }
+        )
+
+    for row in evt_history_rows:
+        aid = row["id"]
+        items.append(
+            {
+                "kind": "event",
+                "id": str(aid),
+                "subjectId": row["parent_slug"],
+                "title": row["title"],
+                "href": f"/events/{row['parent_slug']}?activity={aid}",
+                "meta": row["parent_title"],
+                "createdAt": _small_iso(row["scheduled_at"]),
+                "scheduledAt": _small_iso(row["scheduled_at"]),
+                "endsAt": _small_iso(row["ends_at"]),
+                "eventSlug": row["parent_slug"],
+                "activityId": str(aid),
+                "viewerParticipated": aid in assigned_activity_ids,
+            }
+        )
+
+    past_author_rows = db.execute(
+        select(
+            help_requests.c.id,
+            help_requests.c.title,
+            help_requests.c.body,
+            help_requests.c.needed_at,
+            help_requests.c.schedule_label,
+        )
+        .where(
+            help_requests.c.author_id == current_user_id,
+            help_requests.c.needed_at <= now,
+        )
+        .order_by(help_requests.c.needed_at.desc())
+        .limit(10)
+    ).mappings().all()
+
+    for row in past_author_rows:
+        hr_id = str(row["id"])
+        items.append(
+            {
+                "kind": "help-request-owned",
+                "id": hr_id,
+                "subjectId": hr_id,
+                "title": row["title"],
+                "href": f"/help-requests/{hr_id}",
+                "meta": "Your request",
+                "createdAt": _small_iso(row["needed_at"]),
+                "scheduledAt": _small_iso(row["needed_at"]),
+                "endsAt": _small_iso(row["needed_at"]),
+                "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                "viewerIsAuthor": True,
+                "viewerParticipated": True,
+                "body": _truncate_update_body(str(row["body"] or "")),
+            }
+        )
+
+    past_signup_rows = db.execute(
+        select(
+            help_requests.c.id,
+            help_requests.c.title,
+            help_requests.c.body,
+            help_requests.c.needed_at,
+            help_requests.c.schedule_label,
+        )
+        .select_from(
+            help_request_role_assignments.join(
+                help_request_roles,
+                help_request_roles.c.id == help_request_role_assignments.c.role_id,
+            ).join(help_requests, help_requests.c.id == help_request_roles.c.help_request_id)
+        )
+        .where(
+            help_request_role_assignments.c.user_id == current_user_id,
+            help_requests.c.needed_at <= now,
+        )
+        .distinct()
+        .order_by(help_requests.c.needed_at.desc())
+        .limit(10)
+    ).mappings().all()
+
+    seen_help_ids = {item["id"] for item in items if item["kind"].startswith("help-request")}
+    for row in past_signup_rows:
+        hr_id = str(row["id"])
+        if hr_id in seen_help_ids:
+            continue
+        items.append(
+            {
+                "kind": "help-request-signup",
+                "id": hr_id,
+                "subjectId": hr_id,
+                "title": row["title"],
+                "href": f"/help-requests/{hr_id}",
+                "meta": "You signed up",
+                "createdAt": _small_iso(row["needed_at"]),
+                "scheduledAt": _small_iso(row["needed_at"]),
+                "endsAt": _small_iso(row["needed_at"]),
+                "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                "viewerParticipated": True,
+                "body": _truncate_update_body(str(row["body"] or "")),
+            }
+        )
+
+    items.sort(key=lambda item: str(item.get("endsAt") or item.get("createdAt") or ""), reverse=True)
+    return items[:20]
+
+
 def get_bootstrap_summary(db: Session, current_user_id: UUID | None) -> dict[str, object]:
     if current_user_id is None:
         return {
@@ -918,6 +1151,7 @@ def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object
             },
             "suggestedContacts": [],
             "activityRail": [],
+            "activityRailHistory": [],
         }
 
     viewer = _get_viewer_row(db, current_user_id)
@@ -945,4 +1179,5 @@ def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object
         },
         "suggestedContacts": _get_suggested_contacts(db, current_user_id),
         "activityRail": _build_activity_rail(db, current_user_id),
+        "activityRailHistory": _build_activity_rail_history(db, current_user_id),
     }

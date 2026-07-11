@@ -226,6 +226,7 @@ project_activities = table(
     sa.Column("location_label", sa.String(160), nullable=False),
     sa.Column("note", sa.Text, nullable=False),
     sa.Column("status", sa.String(24), nullable=False, server_default="active"),
+    sa.Column("participant_auto_uncompleted_at", sa.DateTime(timezone=True), nullable=True),
     created_at(),
     updated_at(),
 )
@@ -245,6 +246,17 @@ project_activity_assignments = table(
     sa.Column("role_id", UUID, sa.ForeignKey("project_activity_roles.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     created_at(),
+)
+
+project_activity_ratings = table(
+    "project_activity_ratings",
+    sa.Column("activity_id", UUID, sa.ForeignKey("project_activities.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("rating", sa.Integer, nullable=False),
+    sa.Column("comment", sa.Text, nullable=True),
+    created_at(),
+    updated_at(),
+    sa.CheckConstraint("rating >= 1 AND rating <= 5", name="project_activity_ratings_rating_range"),
 )
 
 project_service_request_settings = table(

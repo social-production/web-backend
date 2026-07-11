@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     project_activities,
+    project_activity_assignments,
     project_activity_roles,
     project_memberships,
     project_service_history_completions,
@@ -19,7 +20,7 @@ from app.models import (
     projects,
     users,
 )
-from app.services.access_control import assert_can_view_entity
+from app.services.activity_history import is_activity_ended
 from app.services.messages import send_message, start_direct_conversation
 
 VALID_SERVICE_REQUEST_STATUS = frozenset({"open", "planned", "accepted", "declined"})
@@ -445,7 +446,22 @@ def toggle_service_history_completion(
     selection: str | None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_collective_service(project_row["project_mode"])
+
+    try:
+        activity_id = UUID(history_item_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History item not found") from exc
+
+    activity_row = db.execute(
+        select(project_activities).where(
+            project_activities.c.id == activity_id,
+            project_activities.c.project_id == project_row["id"],
+        )
+    ).mappings().first()
+    if activity_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History item not found")
+    if not is_activity_ended(activity_row["ends_at"]):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet")
 
     normalized_role = role.strip().lower()
     if normalized_role not in {"requester", "participants"}:
@@ -463,6 +479,32 @@ def toggle_service_history_completion(
 
     requester_user_id = current_user_id if normalized_role == "requester" else None
     participant_user_id = current_user_id if normalized_role == "participants" else None
+
+    if normalized_role == "requester":
+        request_row = db.execute(
+            select(project_service_requests.c.requester_id).where(
+                project_service_requests.c.linked_activity_id == activity_id,
+                project_service_requests.c.project_id == project_row["id"],
+            )
+        ).first()
+        if request_row is None or request_row[0] != current_user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the requester can set requester completion")
+    else:
+        assigned = db.execute(
+            select(project_activity_assignments.c.user_id)
+            .select_from(
+                project_activity_assignments.join(
+                    project_activity_roles,
+                    project_activity_roles.c.id == project_activity_assignments.c.role_id,
+                )
+            )
+            .where(
+                project_activity_roles.c.activity_id == activity_id,
+                project_activity_assignments.c.user_id == current_user_id,
+            )
+        ).first()
+        if assigned is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only assigned participants can set participant completion")
 
     existing = db.execute(
         select(project_service_history_completions).where(
