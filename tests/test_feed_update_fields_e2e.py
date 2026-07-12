@@ -49,9 +49,9 @@ def test_public_feed_includes_latest_project_update_fields() -> None:
             vote_count=0,
             comment_count=0,
             member_count=1,
-            created_at=earlier,
-            updated_at=earlier,
-            last_activity_at=earlier,
+            created_at=now,
+            updated_at=now,
+            last_activity_at=now,
         )
     )
     db.execute(

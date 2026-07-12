@@ -184,7 +184,7 @@ def run() -> None:
         event_phase_request = client.post(
             f"/events/{event_slug}/phase-requests",
             headers=_auth_header(seeded["owner_token"]),
-            json={"target_phase_id": "phase-2", "reason": "Ready"},
+            json={"target_phase_id": "event-plan", "reason": "Ready"},
         )
         assert event_phase_request.status_code == 200, event_phase_request.text
         event_phase_request_id = event_phase_request.json()["request"]["id"]

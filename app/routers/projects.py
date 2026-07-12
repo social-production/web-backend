@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_cache, get_db
+from app.models import project_activity_roles
 from app.services.projects import (
     add_project_value,
     add_project_update,

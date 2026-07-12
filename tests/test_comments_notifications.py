@@ -128,8 +128,9 @@ def test_thread_nested_reply_is_returned_and_notifies_parent_author() -> None:
     assert discussion[0]["replies"][0]["body"] == "Nested reply"
 
     thread_payload = get_thread_by_slug(db, slug, author_id)
-    assert len(thread_payload["discussion"]) == 1
-    assert len(thread_payload["discussion"][0]["replies"]) == 1
+    thread_discussion = thread_payload["thread"]["discussion"]
+    assert len(thread_discussion) == 1
+    assert len(thread_discussion[0]["replies"]) == 1
 
     owner_notifications = db.execute(
         select(notifications.c.kind, notifications.c.href).where(

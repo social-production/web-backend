@@ -234,13 +234,14 @@ def run() -> None:
         )
         assert value_vote.status_code == 200, value_vote.text
 
+        activity_now = datetime.now(timezone.utc)
         activity = client.post(
             f"/projects/{seeded['project_slug']}/activities",
             headers=_auth_header(seeded["owner_token"]),
             json={
                 "title": "Build session",
-                "scheduled_at": datetime.now(timezone.utc).isoformat(),
-                "ends_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+                "scheduled_at": (activity_now + timedelta(hours=1)).isoformat(),
+                "ends_at": (activity_now + timedelta(hours=3)).isoformat(),
                 "location_label": "Workshop",
                 "note": "Bring tools",
                 "role_requirements": [

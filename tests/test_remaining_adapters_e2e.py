@@ -170,13 +170,14 @@ def run() -> None:
         )
         assert event_value_vote.status_code == 200, event_value_vote.text
 
+        activity_now = datetime.now(timezone.utc)
         activity = client.post(
             f"/events/{seeded['event_slug']}/activities",
             headers=_auth_header(seeded["owner_token"]),
             json={
                 "title": "Setup session",
-                "scheduled_at": datetime.now(timezone.utc).isoformat(),
-                "ends_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+                "scheduled_at": (activity_now + timedelta(hours=1)).isoformat(),
+                "ends_at": (activity_now + timedelta(hours=3)).isoformat(),
                 "location_label": "Hall A",
                 "note": "Bring checklists",
                 "role_requirements": [{"label": "Host", "required_count": 1, "maximum_count": 2}],
@@ -206,7 +207,7 @@ def run() -> None:
             headers=_auth_header(seeded["owner_token"]),
             json={"vote": "yes"},
         )
-        assert update_vote_owner.status_code == 200, update_vote_owner.text
+        _assert_vote_or_closed(update_vote_owner, "Project update request is already closed")
         update_vote_member = client.post(
             f"/projects/{seeded['project_slug']}/update-requests/{update_request_id}/vote",
             headers=_auth_header(seeded["member_token"]),

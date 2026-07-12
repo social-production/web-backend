@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
 from app.dependencies import get_cache, get_db
+from app.models import event_activity_roles
 from app.services.events import (
     add_event_value,
     commit_event_activity_role,

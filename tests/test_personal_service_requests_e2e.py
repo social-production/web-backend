@@ -117,7 +117,7 @@ def run() -> None:
 
         messages = client.get("/messages/conversations", headers=_auth_header(seeded["creator_token"]))
         assert messages.status_code == 200, messages.text
-        conversation_ids = [item["id"] for item in messages.json()["conversations"]]
+        conversation_ids = [item["id"] for item in messages.json()["items"]]
         assert conversation_id in conversation_ids
 
         thread = client.get(
@@ -125,7 +125,7 @@ def run() -> None:
             headers=_auth_header(seeded["creator_token"]),
         )
         assert thread.status_code == 200, thread.text
-        assert any("Need help with algebra" in message["body"] for message in thread.json()["messages"])
+        assert any("Need help with algebra" in message["body"] for message in thread.json()["items"])
 
         print(
             json.dumps(

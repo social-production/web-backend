@@ -10,7 +10,7 @@ from sqlalchemy import insert, update
 from app.auth.jwt import create_access_token
 from app.db import SessionLocal
 from app.main import app
-from app.models import channels, projects, users
+from app.models import channels, projects, scope_memberships, users
 from app.services.projects_phases import display_stage_label, visible_phase_ids_for_project
 
 
@@ -47,6 +47,16 @@ def _seed() -> dict[str, object]:
             created_by=creator_id,
             created_at=now,
             updated_at=now,
+        )
+    )
+    db.execute(
+        insert(scope_memberships).values(
+            id=uuid4(),
+            scope_kind="channel",
+            scope_id=channel_id,
+            user_id=creator_id,
+            role="member",
+            created_at=now,
         )
     )
     db.commit()
