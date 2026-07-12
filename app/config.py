@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,16 @@ class Settings(BaseSettings):
     github_token: str = ""
     github_repo: str = "social-production/web"
     disable_openapi_in_production: bool = True
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        url = (value or "").strip()
+        if url.startswith("postgres://"):
+            return url.replace("postgres://", "postgresql+psycopg://", 1)
+        if url.startswith("postgresql://") and "+psycopg" not in url:
+            return url.replace("postgresql://", "postgresql+psycopg://", 1)
+        return url
 
     @property
     def is_production(self) -> bool:

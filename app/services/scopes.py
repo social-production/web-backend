@@ -551,8 +551,14 @@ def leave_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) 
     return {"ok": True, "joined": False, "scope_kind": scope_kind, "slug": scope_row["slug"]}
 
 
-def list_scope_members(db: Session, scope_kind: str, slug: str) -> dict[str, object]:
+def list_scope_members(
+    db: Session,
+    scope_kind: str,
+    slug: str,
+    current_user_id: UUID | None = None,
+) -> dict[str, object]:
     scope_row = _get_scope_row(db, scope_kind, slug)
+    assert_can_view_scope(db, current_user_id, scope_kind, scope_row["id"])
     member_users = users.alias(f"{scope_kind}_members")
     rows = db.execute(
         select(

@@ -26,8 +26,11 @@ tests/test_feedback.py
 tests/test_feeds_e2e.py
 tests/test_missing_endpoints_e2e.py
 tests/test_new_writes_e2e.py
+tests/test_notifications_serialization.py
 tests/test_personal_service_requests_e2e.py
+tests/test_phase_close_vote_e2e.py
 tests/test_phase_naming_e2e.py
 tests/test_project_detail_shape_e2e.py
 tests/test_projects_software_e2e.py
+tests/test_public_community_event_e2e.py
 tests/test_remaining_adapters_e2e.py

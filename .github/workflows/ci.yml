@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: social_production
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d social_production"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/social_production
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: ci-test-jwt-secret-not-for-production
+      MESSAGE_ENCRYPTION_KEY: IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e .
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Pytest
+        run: python -m pytest tests/ -v

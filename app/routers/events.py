@@ -28,7 +28,11 @@ from app.services.events import (
     uncommit_event_activity_role,
     vote_event_value_importance,
 )
-from app.services.activity_history import delete_event_activity_rating, upsert_event_activity_rating
+from app.services.activity_history import (
+    delete_event_activity_rating,
+    toggle_event_history_completion,
+    upsert_event_activity_rating,
+)
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -200,6 +204,11 @@ class EventActivityRatingRequest(BaseModel):
 
     rating: int = Field(ge=1, le=5)
     comment: str | None = Field(default=None, max_length=2000)
+
+
+class EventHistoryCompletionIn(BaseModel):
+    role: str = Field(pattern="^participants$")
+    selection: str | None = Field(default=None)
 
 
 class ShareTargetRequest(BaseModel):
@@ -456,6 +465,24 @@ async def delete_event_activity_rating_route(
         current_user_id=current_user_id,
         slug=slug,
         activity_id=activity_id,
+    )
+
+
+@router.post("/{slug}/activity-history/{history_id}/completion")
+async def toggle_event_history_completion_route(
+    slug: str,
+    history_id: str,
+    payload: EventHistoryCompletionIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return toggle_event_history_completion(
+        db=db,
+        current_user_id=current_user_id,
+        event_slug=slug,
+        history_item_key=history_id,
+        role=payload.role,
+        selection=payload.selection,
     )
 
 

@@ -221,13 +221,21 @@ def leave_community(
 
 
 @router.get("/channels/{slug}/members", dependencies=[Depends(get_current_user_id)], response_model=ScopeMembersResponse)
-def channel_members(slug: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return list_scope_members(db, "channel", slug)
+def channel_members(
+    slug: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return list_scope_members(db, "channel", slug, current_user_id)
 
 
 @router.get("/communities/{slug}/members", dependencies=[Depends(get_current_user_id)], response_model=ScopeMembersResponse)
-def community_members(slug: str, db: Session = Depends(get_db)) -> dict[str, object]:
-    return list_scope_members(db, "community", slug)
+def community_members(
+    slug: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return list_scope_members(db, "community", slug, current_user_id)
 
 
 @router.post(

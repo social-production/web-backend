@@ -20,7 +20,11 @@ from app.models import (
     projects,
     users,
 )
-from app.services.activity_history import is_activity_ended
+from app.services.activity_history import (
+    _staffing_failed,
+    is_activity_ended,
+    project_activity_staffing_counts,
+)
 from app.services.messages import send_message, start_direct_conversation
 
 VALID_SERVICE_REQUEST_STATUS = frozenset({"open", "planned", "accepted", "declined"})
@@ -505,6 +509,12 @@ def toggle_service_history_completion(
         ).first()
         if assigned is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only assigned participants can set participant completion")
+        committed_count, minimum_participants = project_activity_staffing_counts(db, activity_id)
+        if _staffing_failed(committed_count, minimum_participants):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Participant completion is unavailable when no participants signed up",
+            )
 
     existing = db.execute(
         select(project_service_history_completions).where(
@@ -518,17 +528,22 @@ def toggle_service_history_completion(
 
     try:
         if normalized_selection is None:
-            if existing is not None:
-                db.execute(
-                    delete(project_service_history_completions).where(
-                        project_service_history_completions.c.project_id == project_row["id"],
-                        project_service_history_completions.c.history_item_key == history_item_key,
-                        project_service_history_completions.c.role == normalized_role,
-                        project_service_history_completions.c.requester_user_id == requester_user_id,
-                        project_service_history_completions.c.participant_user_id == participant_user_id,
-                    )
-                )
-        elif existing is None:
+            db.commit()
+            return {
+                "ok": True,
+                "history_item_key": history_item_key,
+                "role": normalized_role,
+                "selection": existing["completion_state"] if existing is not None else None,
+            }
+        if existing is not None and existing["completion_state"] == normalized_selection:
+            db.commit()
+            return {
+                "ok": True,
+                "history_item_key": history_item_key,
+                "role": normalized_role,
+                "selection": normalized_selection,
+            }
+        if existing is None:
             db.execute(
                 insert(project_service_history_completions).values(
                     project_id=project_row["id"],

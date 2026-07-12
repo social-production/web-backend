@@ -141,6 +141,7 @@ event_activities = table(
     sa.Column("is_online", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("location_label", sa.String(160), nullable=False),
     sa.Column("note", sa.Text, nullable=False),
+    sa.Column("participant_auto_uncompleted_at", sa.DateTime(timezone=True), nullable=True),
     created_at(),
 )
 
@@ -170,6 +171,25 @@ event_activity_ratings = table(
     created_at(),
     updated_at(),
     sa.CheckConstraint("rating >= 1 AND rating <= 5", name="event_activity_ratings_rating_range"),
+)
+
+event_activity_history_completions = table(
+    "event_activity_history_completions",
+    uuid_pk(),
+    event_fk("event_id", nullable=False),
+    sa.Column("history_item_key", sa.String(120), nullable=False),
+    sa.Column("participant_user_id", UUID, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Column("role", sa.String(16), nullable=False),
+    sa.Column("completion_state", sa.String(16), nullable=False),
+    created_at(),
+    updated_at(),
+    sa.UniqueConstraint(
+        "event_id",
+        "history_item_key",
+        "role",
+        "participant_user_id",
+        name="uq_event_activity_history_completions_key",
+    ),
 )
 
 event_updates = table(

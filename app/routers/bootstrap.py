@@ -52,6 +52,7 @@ class BootstrapResponse(BaseModel):
     directory: DirectoryOut
     suggestedContacts: list[ViewerSummaryOut]
     activityRail: list[dict[str, object]]
+    activityRailHistory: list[dict[str, object]] = []
 
 
 class OnboardingAccountModeOut(BaseModel):

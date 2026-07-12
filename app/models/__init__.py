@@ -17,6 +17,7 @@ from app.models.events import (
     event_activity_assignments,
     event_activity_roles,
     event_activities,
+    event_activity_history_completions,
     event_activity_ratings,
     event_attendance,
     event_edit_request_votes,

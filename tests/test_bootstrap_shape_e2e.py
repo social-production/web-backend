@@ -19,6 +19,7 @@ BOOTSTRAP_PAYLOAD_KEYS = {
     "directory",
     "suggestedContacts",
     "activityRail",
+    "activityRailHistory",
 }
 
 

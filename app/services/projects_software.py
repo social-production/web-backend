@@ -147,7 +147,7 @@ def _get_project_by_slug(db: Session, slug: str) -> Mapping[str, object]:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    from app.services.projects import _resolve_effective_project_subtype
+    from app.services.projects.helpers import _resolve_effective_project_subtype
 
     effective_subtype = _resolve_effective_project_subtype(db, row["id"], row["project_subtype"])
     if effective_subtype != "software":
