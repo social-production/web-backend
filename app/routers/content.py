@@ -4,11 +4,10 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
+from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
 from app.services.content import (
     commit_help_request_role,
@@ -58,27 +57,6 @@ class TagRefOut(BaseModel):
 
 
 DiscussionCommentOut.model_rebuild()
-
-
-async def _get_optional_user_id(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> UUID | None:
-    if credentials is None or not credentials.credentials:
-        return None
-
-    try:
-        payload = await get_current_user_token_payload(credentials)
-    except HTTPException:
-        return None
-
-    subject = payload.get("sub")
-    if not isinstance(subject, str) or not subject:
-        return None
-
-    try:
-        return UUID(subject)
-    except ValueError:
-        return None
 
 
 class ChannelTagOut(BaseModel):
@@ -197,7 +175,7 @@ def create_new_thread(
 def get_thread(
     slug: str,
     db: Session = Depends(get_db),
-    current_user_id: UUID | None = Depends(_get_optional_user_id),
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
     return get_thread_by_slug(db, slug, current_user_id=current_user_id)
 
@@ -215,7 +193,7 @@ def create_new_post(
 def get_post(
     post_id: UUID,
     db: Session = Depends(get_db),
-    current_user_id: UUID | None = Depends(_get_optional_user_id),
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
     return get_post_by_id(db, post_id, current_user_id=current_user_id)
 
@@ -243,7 +221,7 @@ def create_new_help_request(
 def get_help_request(
     help_request_id: UUID,
     db: Session = Depends(get_db),
-    current_user_id: UUID | None = Depends(_get_optional_user_id),
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
     return get_help_request_by_id(db, help_request_id, current_user_id=current_user_id)
 

@@ -8,8 +8,11 @@ from sqlalchemy import text
 
 from app.cache import close_redis_client
 from app.config import get_settings
-from app.dependencies import get_cache
 from app.db import engine
+from app.dependencies import get_cache
+from app.middleware.csrf import CsrfMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routers.auth import router as auth_router
 from app.routers.board import router as board_router
 from app.routers.bootstrap import router as bootstrap_router
@@ -17,23 +20,24 @@ from app.routers.content import router as content_router
 from app.routers.events import router as events_router
 from app.routers.events_phases import router as events_phases_router
 from app.routers.events_plans import router as events_plans_router
+from app.routers.feedback import router as feedback_router
+from app.routers.feeds import router as feeds_router
 from app.routers.governance import router as governance_router
 from app.routers.messages import router as messages_router
 from app.routers.notifications import router as notifications_router
+from app.routers.platform import router as platform_router
 from app.routers.projects import router as projects_router
 from app.routers.projects_links import router as projects_links_router
 from app.routers.projects_phases import router as projects_phases_router
 from app.routers.projects_plans import router as projects_plans_router
+from app.routers.projects_service_request_settings import (
+    router as projects_service_request_settings_router,
+)
 from app.routers.projects_service_requests import router as projects_service_requests_router
-from app.routers.projects_service_request_settings import router as projects_service_request_settings_router
 from app.routers.projects_software import router as projects_software_router
-from app.routers.feedback import router as feedback_router
-from app.routers.feeds import router as feeds_router
-from app.routers.platform import router as platform_router
-from app.routers.search import router as search_router
 from app.routers.scopes import router as scopes_router
+from app.routers.search import router as search_router
 from app.routers.users import router as users_router
-from app.middleware.rate_limit import RateLimitMiddleware
 
 
 @asynccontextmanager
@@ -45,8 +49,14 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.validate_runtime_settings()
-    docs_url = None if settings.is_production and settings.disable_openapi_in_production else "/docs"
-    openapi_url = None if settings.is_production and settings.disable_openapi_in_production else "/openapi.json"
+    docs_url = (
+        None if settings.is_production and settings.disable_openapi_in_production else "/docs"
+    )
+    openapi_url = (
+        None
+        if settings.is_production and settings.disable_openapi_in_production
+        else "/openapi.json"
+    )
     app = FastAPI(
         title="Social Production Backend",
         version="0.1.0",
@@ -63,6 +73,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(CsrfMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RateLimitMiddleware)
 
     @app.get("/healthz")

@@ -3,37 +3,15 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
+from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
 from app.services.governance import add_comment, cast_vote, get_comments
 from app.services.governance import submit_report, vote_report
 
 router = APIRouter(prefix="/governance", tags=["governance"])
-
-
-async def _get_optional_user_id(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> UUID | None:
-    if credentials is None or not credentials.credentials:
-        return None
-
-    try:
-        payload = await get_current_user_token_payload(credentials)
-    except HTTPException:
-        return None
-
-    subject = payload.get("sub")
-    if not isinstance(subject, str) or not subject:
-        return None
-
-    try:
-        return UUID(subject)
-    except ValueError:
-        return None
 
 
 class CommentCreateRequest(BaseModel):
@@ -155,7 +133,7 @@ def list_comments(
     subject_type: str = Query(pattern="^(thread|post|event|project|help_request)$"),
     subject_id: UUID = Query(),
     db: Session = Depends(get_db),
-    current_user_id: UUID | None = Depends(_get_optional_user_id),
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
     return get_comments(db=db, subject_type=subject_type, subject_id=subject_id, current_user_id=current_user_id)
 

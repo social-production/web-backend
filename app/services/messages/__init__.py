@@ -1,0 +1,33 @@
+from app.services.messages.api import (
+    add_group_member,
+    create_group_conversation,
+    find_direct_conversation_between,
+    get_linked_chats,
+    get_messages_for_conversation,
+    get_total_unread_message_count,
+    list_conversations,
+    mark_conversation_as_read,
+    mark_linked_chat_read,
+    remove_group_member,
+    rename_group_conversation,
+    search_message_contacts,
+    send_message,
+    start_direct_conversation,
+)
+
+__all__ = [
+    "add_group_member",
+    "create_group_conversation",
+    "find_direct_conversation_between",
+    "get_linked_chats",
+    "get_messages_for_conversation",
+    "get_total_unread_message_count",
+    "list_conversations",
+    "mark_conversation_as_read",
+    "mark_linked_chat_read",
+    "remove_group_member",
+    "rename_group_conversation",
+    "search_message_contacts",
+    "send_message",
+    "start_direct_conversation",
+]

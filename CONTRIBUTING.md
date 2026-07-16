@@ -27,6 +27,8 @@ Authorization must be enforced in the service layer. Never rely on the frontend 
 
 ## Tests
 
+See [`docs/CI_TESTING.md`](docs/CI_TESTING.md) for CI maintenance and E2E test guidance.
+
 ```bash
 docker compose exec backend python -m pytest tests/ -v
 ```

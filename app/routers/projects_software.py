@@ -3,11 +3,10 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
+from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
 from app.services.projects_software import (
     get_project_software_governance,
@@ -170,31 +169,10 @@ class MergeRecordIn(BaseModel):
     mergeId: str = Field(min_length=1)
 
 
-async def _get_optional_user_id(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> UUID | None:
-    if credentials is None or not credentials.credentials:
-        return None
-
-    try:
-        payload = await get_current_user_token_payload(credentials)
-    except HTTPException:
-        return None
-
-    subject = payload.get("sub")
-    if not isinstance(subject, str) or not subject:
-        return None
-
-    try:
-        return UUID(subject)
-    except ValueError:
-        return None
-
-
 @router.get("/{slug}/software", response_model=ProjectSoftwareGovernanceDataOut)
 def get_project_software(
     slug: str,
-    viewer_user_id: UUID | None = Depends(_get_optional_user_id),
+    viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return get_project_software_governance(db=db, project_slug=slug, current_user_id=viewer_user_id)

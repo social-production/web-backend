@@ -3,11 +3,10 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import bearer_scheme, get_current_user_token_payload
+from app.auth.dependencies import get_optional_current_user_id
 from app.dependencies import get_db
 from app.services.platform import get_platform_page
 
@@ -72,33 +71,12 @@ class PlatformPageResponse(BaseModel):
     feed: PlatformFeedOut
 
 
-async def _get_optional_user_id(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> UUID | None:
-    if credentials is None or not credentials.credentials:
-        return None
-
-    try:
-        payload = await get_current_user_token_payload(credentials)
-    except HTTPException:
-        return None
-
-    subject = payload.get("sub")
-    if not isinstance(subject, str) or not subject:
-        return None
-
-    try:
-        return UUID(subject)
-    except ValueError:
-        return None
-
-
 @router.get("/platform", response_model=PlatformPageResponse)
 def platform_page(
     sort: str = Query(default="recent", pattern="^(popular|recent)$"),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    viewer_user_id: UUID | None = Depends(_get_optional_user_id),
+    viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return get_platform_page(

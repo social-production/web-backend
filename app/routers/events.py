@@ -5,15 +5,13 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload
+from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_cache, get_db
-from app.models import event_activity_roles
 from app.services.events import (
     add_event_value,
     commit_event_activity_role,
@@ -218,27 +216,6 @@ class ShareTargetRequest(BaseModel):
     username: str = Field(min_length=1, max_length=32)
 
 
-async def _get_optional_user_id(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> UUID | None:
-    if credentials is None or not credentials.credentials:
-        return None
-
-    try:
-        payload = await get_current_user_token_payload(credentials)
-    except HTTPException:
-        return None
-
-    subject = payload.get("sub")
-    if not isinstance(subject, str) or not subject:
-        return None
-
-    try:
-        return UUID(subject)
-    except ValueError:
-        return None
-
-
 @router.post("", response_model=EventResponse)
 async def create_new_event(
     payload: EventCreateRequest,
@@ -263,7 +240,7 @@ async def create_new_event(
 @router.get("/{slug}", response_model=EventDetailResponse)
 async def get_event(
     slug: str,
-    viewer_user_id: UUID | None = Depends(_get_optional_user_id),
+    viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
     cache: Redis = Depends(get_cache),
 ) -> dict[str, object]:
@@ -398,26 +375,13 @@ async def commit_event_activity_route(
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    role_label = payload.role_label
-    if role_label is None and payload.role_id is not None:
-        role_label = db.execute(
-            select(event_activity_roles.c.label).where(
-                event_activity_roles.c.id == payload.role_id,
-                event_activity_roles.c.activity_id == activity_id,
-            )
-        ).scalar_one_or_none()
-        if role_label is None:
-            raise HTTPException(status_code=404, detail="Role not found")
-
-    if role_label is None:
-        raise HTTPException(status_code=422, detail="role_label is required")
-
     return commit_event_activity_role(
         db=db,
         current_user_id=current_user_id,
         slug=slug,
         activity_id=activity_id,
-        role_label=role_label,
+        role_label=payload.role_label,
+        role_id=payload.role_id,
     )
 
 

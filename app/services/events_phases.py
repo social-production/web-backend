@@ -24,7 +24,8 @@ from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.utils.votes import required_votes, resolve_event_vote_population
 
-APPROVAL_THRESHOLD = 0.66
+from app.services.governance_votes import APPROVAL_THRESHOLD, compute_vote_summary
+
 VALID_PHASE_IDS = frozenset({"proposal", "event-plan", "activity", "closed"})
 EVENT_PHASE_ORDER = {
     "proposal": 1,
@@ -63,45 +64,7 @@ def _compute_votes(
     request_id: UUID,
     member_count: int,
 ) -> dict[str, object]:
-    rows = db.execute(
-        select(table.c.vote).where(table.c.request_id == request_id)
-    ).all()
-
-    yes_count = 0
-    no_count = 0
-    for (vote,) in rows:
-        if vote == "yes":
-            yes_count += 1
-        elif vote == "no":
-            no_count += 1
-
-    total_votes = yes_count + no_count
-    approval_ratio = (yes_count / total_votes) if total_votes > 0 else 0.0
-    votes_required = required_votes(member_count)
-    meets_quorum = total_votes >= votes_required
-    meets_approval = approval_ratio >= APPROVAL_THRESHOLD
-    is_passing = meets_quorum and meets_approval
-
-    remaining_eligible = max(0, member_count - total_votes)
-    max_yes = yes_count + remaining_eligible
-    max_total = total_votes + remaining_eligible
-    can_meet_quorum = max_total >= votes_required
-    can_meet_approval = (max_yes / max_total * 100.0) >= (APPROVAL_THRESHOLD * 100.0) if max_total > 0 else False
-    can_still_pass = (not is_passing) and can_meet_quorum and can_meet_approval
-
-    return {
-        "yes_count": yes_count,
-        "no_count": no_count,
-        "total_votes": total_votes,
-        "approval_ratio": approval_ratio,
-        "approval_threshold": APPROVAL_THRESHOLD,
-        "votes_required": votes_required,
-        "member_count": member_count,
-        "meets_quorum": meets_quorum,
-        "meets_approval": meets_approval,
-        "is_passing": is_passing,
-        "can_still_pass": can_still_pass,
-    }
+    return compute_vote_summary(db, table, request_id, member_count)
 
 
 def _serialize_phase_request(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:

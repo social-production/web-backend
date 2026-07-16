@@ -1,34 +1,46 @@
 # Security posture and hardening backlog
 
-## Current model (test deployment)
+## Current model
 
 - **API gateway only**: clients never access Postgres/Redis directly
-- **JWT bearer auth** on personal data, messages, notifications, settings
+- **httpOnly cookie sessions** with CSRF double-submit (`sp_access`, `sp_refresh`, `sp_csrf`)
+- **Bearer tokens** still accepted for tests and API clients
 - **Central access control** in `app/services/access_control.py`
 - **Messages encrypted at rest** (Fernet)
-- **IP rate limiting** via Redis
+- **IP + per-user rate limiting** via Redis (fail-closed in production)
+- **Security headers** on API and SvelteKit responses
 - **Production secret validation** at startup
+- **Shorter access tokens** (15 min) with refresh rotation (7 days)
 
-## Fixed for test deploy
+## Completed hardening (engineering phase 2)
 
-- Closed community member list requires scope visibility (`list_scope_members` + `assert_can_view_scope`)
+| Item | Status |
+|------|--------|
+| httpOnly cookie auth | Done |
+| CSRF strategy (SameSite=Lax + `X-CSRF-Token`) | Done |
+| Security headers | Done (API middleware + `hooks.server.ts`) |
+| Fail-closed Redis for rate limits | Done in production |
+| Shorter JWT + refresh tokens | Done |
+| Per-user rate limits on search/feeds/bootstrap | Done |
+| Dependency scanning in CI | Done (`pip audit`, `npm audit`) |
+| Ruff in CI | Done |
 
-## Deferred hardening (post-test)
+## Deferred
 
 | Priority | Item | Notes |
 |----------|------|-------|
-| High | httpOnly cookie auth | Replace `localStorage` JWT; add CSRF strategy |
-| High | Security headers | HSTS, CSP, X-Frame-Options, X-Content-Type-Options |
-| Medium | Fail-closed Redis | Token revocation + rate limits when Redis unavailable |
-| Medium | Shorter JWT + refresh tokens | Default 7-day access tokens |
-| Medium | Per-user rate limits | Complement IP limits on search/feeds/bootstrap |
-| Low | Dependency scanning | Dependabot / audit in CI |
 | Low | Custom domain + WAF | Production edge |
+| Low | Dependabot config file | CI audit covers PRs; add Dependabot for auto-PRs |
+| Research | P2P auth model | Phase 3 product roadmap |
 
-## Test-deploy limitations
+## Test-deploy notes
 
-- Frontend route guards are client-only (`ssr = false`) — API must remain authoritative
+- Frontend route guards are client-only (`ssr = false`) — API remains authoritative
 - OpenAPI disabled in production by default
-- Trusted testers only until hardening phase completes
+- See also [`CI_TESTING.md`](CI_TESTING.md) for test maintenance guidance
 
-Track implementation in GitHub issues as you prioritize each item.
+## Frontend
+
+Cookie auth driver: [`web/src/lib/api/drivers/fastapi/client.ts`](https://github.com/social-production/web/blob/main/src/lib/api/drivers/fastapi/client.ts)
+
+Adapter audit: [`web/docs/ADAPTER_AUDIT.md`](https://github.com/social-production/web/blob/main/docs/ADAPTER_AUDIT.md)

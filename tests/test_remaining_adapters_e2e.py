@@ -285,7 +285,7 @@ def run() -> None:
         assert listed_item["unread_count"] >= 1
 
         contacts = client.get(
-            f"/messages/contacts?q={seeded['member_username'][:4]}",
+            f"/messages/contacts?q={seeded['member_username']}",
             headers=_auth_header(seeded["owner_token"]),
         )
         assert contacts.status_code == 200, contacts.text

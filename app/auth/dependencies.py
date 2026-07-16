@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 
+from app.auth.cookies import ACCESS_COOKIE, REFRESH_COOKIE
 from app.auth.jwt import get_access_token_payload
 from app.cache import get_redis_client
 
@@ -14,10 +15,32 @@ bearer_scheme = HTTPBearer(auto_error=False)
 TOKEN_BLACKLIST_PREFIX = "token-blacklist"
 
 
-def get_current_user_token(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)) -> str:
-    if credentials is None or not credentials.credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return credentials.credentials
+def resolve_access_token(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str:
+    if credentials is not None and credentials.credentials:
+        return credentials.credentials
+
+    cookie_token = request.cookies.get(ACCESS_COOKIE)
+    if cookie_token:
+        return cookie_token
+
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+
+def resolve_refresh_token(request: Request) -> str:
+    cookie_token = request.cookies.get(REFRESH_COOKIE)
+    if cookie_token:
+        return cookie_token
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+
+def get_current_user_token(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> str:
+    return resolve_access_token(request, credentials)
 
 
 async def _is_blacklisted_jti(jti: str | None) -> bool:
@@ -28,12 +51,21 @@ async def _is_blacklisted_jti(jti: str | None) -> bool:
     try:
         return await redis_client.exists(f"{TOKEN_BLACKLIST_PREFIX}:{jti}") > 0
     except Exception:
-        # Redis outage must not invalidate every active session.
+        from app.config import get_settings
+
+        if get_settings().rate_limit_fail_closed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service temporarily unavailable",
+            )
         return False
 
 
-async def get_current_user_token_payload(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)) -> dict[str, object]:
-    token = get_current_user_token(credentials)
+async def get_current_user_token_payload(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict[str, object]:
+    token = resolve_access_token(request, credentials)
     try:
         payload = get_access_token_payload(token)
     except JWTError as exc:
@@ -61,13 +93,20 @@ async def get_current_user_id(payload: dict[str, object] = Depends(get_current_u
 
 
 async def get_optional_current_user_id(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> UUID | None:
-    if credentials is None or not credentials.credentials:
+    token: str | None = None
+    if credentials is not None and credentials.credentials:
+        token = credentials.credentials
+    elif request.cookies.get(ACCESS_COOKIE):
+        token = request.cookies.get(ACCESS_COOKIE)
+
+    if token is None:
         return None
 
     try:
-        payload = get_access_token_payload(credentials.credentials)
+        payload = get_access_token_payload(token)
     except JWTError:
         return None
 
@@ -78,7 +117,7 @@ async def get_optional_current_user_id(
     try:
         if await _is_blacklisted_jti(jti):
             return None
-    except Exception:
+    except HTTPException:
         return None
 
     subject = payload.get("sub")

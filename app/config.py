@@ -10,7 +10,10 @@ class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost/social_production"
     jwt_secret: str = "dev-only-change-me"
+    jwt_access_expire_minutes: int = 15
+    jwt_refresh_expire_days: int = 7
     jwt_expire_minutes: int = 60 * 24 * 7
+    rate_limit_fail_closed: bool = False
     message_encryption_key: str = "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8="
     redis_url: str = "redis://localhost:6379/0"
     redis_socket_timeout_seconds: float = 2.0
@@ -47,6 +50,8 @@ class Settings(BaseSettings):
     def validate_runtime_settings(self) -> None:
         if not self.is_production:
             return
+
+        self.rate_limit_fail_closed = True
 
         weak_jwt_secrets = {"change-me", "dev-only-change-me", ""}
         weak_message_keys = {"change-me-too", "dev-only-change-me-too", "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=", ""}

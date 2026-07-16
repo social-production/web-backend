@@ -25,6 +25,8 @@ from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.utils.votes import required_votes, resolve_project_vote_population
 
+from app.services.governance_votes import compute_vote_summary
+
 APPROVAL_THRESHOLD = 0.66
 VALID_PHASE_IDS = frozenset({"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"})
 VALID_VOTES = frozenset({"yes", "no"})
@@ -217,43 +219,11 @@ def _compute_simple_vote_summary(
     request_id: UUID,
     member_count: int,
 ) -> dict[str, object]:
-    rows = db.execute(select(vote_table.c.vote).where(vote_table.c.request_id == request_id)).all()
+    return compute_vote_summary(db, vote_table, request_id, member_count)
 
-    yes_count = 0
-    no_count = 0
-    for (vote,) in rows:
-        if vote == "yes":
-            yes_count += 1
-        elif vote == "no":
-            no_count += 1
 
-    total_votes = yes_count + no_count
-    approval_ratio = (yes_count / total_votes) if total_votes > 0 else 0.0
-    votes_required = required_votes(member_count)
-    meets_quorum = total_votes >= votes_required
-    meets_approval = approval_ratio >= APPROVAL_THRESHOLD
-    is_passing = meets_quorum and meets_approval
-
-    remaining_eligible = max(0, member_count - total_votes)
-    max_yes = yes_count + remaining_eligible
-    max_total = total_votes + remaining_eligible
-    can_meet_quorum = max_total >= votes_required
-    can_meet_approval = (max_yes / max_total * 100.0) >= (APPROVAL_THRESHOLD * 100.0) if max_total > 0 else False
-    can_still_pass = (not is_passing) and can_meet_quorum and can_meet_approval
-
-    return {
-        "yes_count": yes_count,
-        "no_count": no_count,
-        "total_votes": total_votes,
-        "approval_ratio": approval_ratio,
-        "approval_threshold": APPROVAL_THRESHOLD,
-        "votes_required": votes_required,
-        "member_count": member_count,
-        "meets_quorum": meets_quorum,
-        "meets_approval": meets_approval,
-        "is_passing": is_passing,
-        "can_still_pass": can_still_pass,
-    }
+def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> dict[str, object]:
+    return compute_vote_summary(db, project_phase_change_votes, request_id, member_count)
 
 
 def _serialize_update_request(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
@@ -317,48 +287,6 @@ def _ensure_manager(db: Session, project_id: UUID, user_id: UUID) -> None:
     ).first()
     if membership is None or not bool(membership[0]):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project managers can perform this action")
-
-
-def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> dict[str, object]:
-    rows = db.execute(
-        select(project_phase_change_votes.c.vote).where(project_phase_change_votes.c.request_id == request_id)
-    ).all()
-
-    yes_count = 0
-    no_count = 0
-    for (vote,) in rows:
-        if vote == "yes":
-            yes_count += 1
-        elif vote == "no":
-            no_count += 1
-
-    total_votes = yes_count + no_count
-    approval_ratio = (yes_count / total_votes) if total_votes > 0 else 0.0
-    votes_required = required_votes(member_count)
-    meets_quorum = total_votes >= votes_required
-    meets_approval = approval_ratio >= APPROVAL_THRESHOLD
-    is_passing = meets_quorum and meets_approval
-
-    remaining_eligible = max(0, member_count - total_votes)
-    max_yes = yes_count + remaining_eligible
-    max_total = total_votes + remaining_eligible
-    can_meet_quorum = max_total >= votes_required
-    can_meet_approval = (max_yes / max_total * 100.0) >= (APPROVAL_THRESHOLD * 100.0) if max_total > 0 else False
-    can_still_pass = (not is_passing) and can_meet_quorum and can_meet_approval
-
-    return {
-        "yes_count": yes_count,
-        "no_count": no_count,
-        "total_votes": total_votes,
-        "approval_ratio": approval_ratio,
-        "approval_threshold": APPROVAL_THRESHOLD,
-        "votes_required": votes_required,
-        "member_count": member_count,
-        "meets_quorum": meets_quorum,
-        "meets_approval": meets_approval,
-        "is_passing": is_passing,
-        "can_still_pass": can_still_pass,
-    }
 
 
 def _phase_change_kind_for_project(target_phase_id: str, current_phase_id: str) -> str:

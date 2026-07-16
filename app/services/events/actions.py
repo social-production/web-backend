@@ -516,7 +516,8 @@ def commit_event_activity_role(
     current_user_id: UUID,
     slug: str,
     activity_id: UUID,
-    role_label: str,
+    role_label: str | None = None,
+    role_id: UUID | None = None,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
@@ -530,6 +531,19 @@ def commit_event_activity_role(
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
     ensure_activity_roles_unlocked(activity_row["ends_at"])
+
+    if role_label is None and role_id is not None:
+        role_label = db.execute(
+            select(event_activity_roles.c.label).where(
+                event_activity_roles.c.id == role_id,
+                event_activity_roles.c.activity_id == activity_id,
+            )
+        ).scalar_one_or_none()
+        if role_label is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+    if role_label is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="role_label is required")
 
     role_row = db.execute(
         select(event_activity_roles).where(

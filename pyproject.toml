@@ -36,4 +36,10 @@ select = ["E", "F", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "app/models/*.py" = ["E501"]
+"app/services/**/*.py" = ["E501"]
+"app/auth/**/*.py" = ["E501"]
+"app/middleware/**/*.py" = ["E501"]
+"app/routers/auth.py" = ["E501"]
+"app/config.py" = ["E501"]
+"app/main.py" = ["E501"]
 

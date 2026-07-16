@@ -50,7 +50,16 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e .
+        run: pip install -e . ruff
+
+      - name: Ruff
+        run: |
+          ruff check app/auth app/middleware app/config.py app/main.py app/services/governance_votes.py app/routers/auth.py tests/conftest.py tests/test_governance_votes.py
+          ruff format --check app/auth app/middleware app/config.py app/main.py app/services/governance_votes.py app/routers/auth.py tests/conftest.py tests/test_governance_votes.py
+          ruff check app tests --select F
+
+      - name: Dependency audit
+        run: pip audit
 
       - name: Run migrations
         run: alembic upgrade head

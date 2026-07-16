@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import time
 from datetime import datetime, timezone
 from collections.abc import Mapping
@@ -10,7 +11,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth.jwt import get_access_token_payload, create_access_token
+from app.auth.jwt import create_access_token, create_refresh_token, get_access_token_payload, verify_refresh_token
 from app.auth.passwords import hash_password, verify_password
 from app.cache import get_redis_client
 from app.models import user_settings, users
@@ -36,12 +37,36 @@ def _serialize_user(user_row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _build_auth_response(user_row: Mapping[str, object], access_token: str) -> dict[str, object]:
-    return {
+def _build_auth_response(
+    user_row: Mapping[str, object],
+    access_token: str,
+    *,
+    refresh_token: str | None = None,
+    csrf_token: str | None = None,
+) -> dict[str, object]:
+    response = {
         "access_token": access_token,
         "token_type": "bearer",
         "user": _serialize_user(user_row),
     }
+    if refresh_token is not None:
+        response["refresh_token"] = refresh_token
+    if csrf_token is not None:
+        response["csrf_token"] = csrf_token
+    return response
+
+
+def _issue_auth_bundle(user_row: Mapping[str, object]) -> dict[str, object]:
+    user_id = str(user_row["id"])
+    access_token = create_access_token(user_id)
+    refresh_token = create_refresh_token(user_id)
+    csrf_token = secrets.token_urlsafe(32)
+    return _build_auth_response(
+        user_row,
+        access_token,
+        refresh_token=refresh_token,
+        csrf_token=csrf_token,
+    )
 
 
 async def enforce_auth_rate_limit(request: Request) -> None:
@@ -104,8 +129,7 @@ def register_user(db: Session, username: str, password: str, profile_bio: str | 
         meta="user",
         href=f"/profile/{created_user['username']}",
     )
-    access_token = create_access_token(str(created_user["id"]))
-    return _build_auth_response(created_user, access_token)
+    return _issue_auth_bundle(created_user)
 
 
 def authenticate_user(db: Session, username: str, password: str) -> dict[str, object]:
@@ -135,8 +159,58 @@ def authenticate_user(db: Session, username: str, password: str) -> dict[str, ob
     if not password_matches:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
-    access_token = create_access_token(str(user_row["id"]))
-    return _build_auth_response(user_row, access_token)
+    return _issue_auth_bundle(user_row)
+
+
+async def refresh_auth_session(refresh_token: str) -> dict[str, object]:
+    try:
+        payload = verify_refresh_token(refresh_token)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
+
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    subject = payload.get("sub")
+    if not isinstance(jti, str) or not jti or not isinstance(exp, int) or not isinstance(subject, str):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    if await _is_token_blacklisted(jti):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been revoked")
+
+    await _blacklist_token(jti, exp)
+
+    access_token = create_access_token(subject)
+    rotated_refresh = create_refresh_token(subject)
+    csrf_token = secrets.token_urlsafe(32)
+    return {
+        "access_token": access_token,
+        "refresh_token": rotated_refresh,
+        "csrf_token": csrf_token,
+        "token_type": "bearer",
+    }
+
+
+async def _blacklist_token(jti: str, exp: int) -> None:
+    ttl_seconds = exp - int(datetime.now(timezone.utc).timestamp())
+    if ttl_seconds <= 0:
+        return
+    redis_client: Redis = get_redis_client()
+    await redis_client.set(f"{TOKEN_BLACKLIST_PREFIX}:{jti}", "1", ex=ttl_seconds)
+
+
+async def _is_token_blacklisted(jti: str) -> bool:
+    redis_client: Redis = get_redis_client()
+    try:
+        return await redis_client.exists(f"{TOKEN_BLACKLIST_PREFIX}:{jti}") > 0
+    except Exception:
+        from app.config import get_settings
+
+        if get_settings().rate_limit_fail_closed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service temporarily unavailable",
+            )
+        return False
 
 
 async def logout_user(token: str) -> dict[str, bool]:
@@ -154,7 +228,21 @@ async def logout_user(token: str) -> dict[str, bool]:
 
     ttl_seconds = exp - int(datetime.now(timezone.utc).timestamp())
     if ttl_seconds > 0:
-        redis_client: Redis = get_redis_client()
-        await redis_client.set(f"{TOKEN_BLACKLIST_PREFIX}:{jti}", "1", ex=ttl_seconds)
+        await _blacklist_token(jti, exp)
 
+    return {"ok": True}
+
+
+async def logout_refresh_token(refresh_token: str) -> dict[str, bool]:
+    try:
+        payload = verify_refresh_token(refresh_token)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
+
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not isinstance(jti, str) or not jti or not isinstance(exp, int):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    await _blacklist_token(jti, exp)
     return {"ok": True}
