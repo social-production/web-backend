@@ -50,35 +50,15 @@ def _project_vote_population(db: Session, project_row: Mapping[str, object]) -> 
     )
 
 
+from app.services.governance_votes import compute_vote_summary
+
+
 def _compute_vote_summary(
     db: Session, request_id: UUID, member_count: int
 ) -> dict[str, object]:
-    rows = db.execute(
-        select(project_service_request_setting_change_votes.c.vote).where(
-            project_service_request_setting_change_votes.c.request_id == request_id
-        )
-    ).all()
-
-    yes_count = sum(1 for (v,) in rows if v == "yes")
-    no_count = sum(1 for (v,) in rows if v == "no")
-    total_votes = yes_count + no_count
-    approval_ratio = yes_count / total_votes if total_votes > 0 else 0.0
-    votes_required = required_votes(member_count)
-    meets_quorum = total_votes >= votes_required
-    meets_approval = approval_ratio >= APPROVAL_THRESHOLD
-
-    return {
-        "yes_count": yes_count,
-        "no_count": no_count,
-        "total_votes": total_votes,
-        "approval_ratio": approval_ratio,
-        "approval_threshold": APPROVAL_THRESHOLD,
-        "votes_required": votes_required,
-        "member_count": member_count,
-        "meets_quorum": meets_quorum,
-        "meets_approval": meets_approval,
-        "is_passing": meets_quorum and meets_approval,
-    }
+    return compute_vote_summary(
+        db, project_service_request_setting_change_votes, request_id, member_count
+    )
 
 
 def _serialize_change_request(

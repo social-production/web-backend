@@ -54,8 +54,8 @@ jobs:
 
       - name: Ruff
         run: |
-          ruff check app/auth app/middleware app/config.py app/main.py app/services/governance_votes.py app/routers/auth.py tests/conftest.py tests/test_governance_votes.py
-          ruff format --check app/auth app/middleware app/config.py app/main.py app/services/governance_votes.py app/routers/auth.py tests/conftest.py tests/test_governance_votes.py
+          ruff check app/services app/routers app/auth app/middleware app/config.py app/main.py app/utils tests
+          ruff format --check app/services app/routers app/auth app/middleware app/config.py app/main.py app/utils tests
           ruff check app tests --select F
 
       - name: Dependency audit

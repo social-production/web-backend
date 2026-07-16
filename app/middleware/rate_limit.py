@@ -13,6 +13,7 @@ from app.auth.cookies import ACCESS_COOKIE
 from app.auth.jwt import get_access_token_payload
 from app.cache import get_redis_client
 from app.config import get_settings
+from app.utils.request import get_client_ip
 
 DEFAULT_LIMIT = 120
 DEFAULT_WINDOW_SECONDS = 60
@@ -96,8 +97,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path_limit, window_seconds = self._limits_for_path(request.url.path)
-        client = request.client
-        client_host = client.host if client and client.host else "unknown"
+        client_host = get_client_ip(request)
         window_bucket = int(time.time() // window_seconds)
         user_id = self._user_rate_key(request)
         identity = f"user:{user_id}" if user_id else f"ip:{client_host}"

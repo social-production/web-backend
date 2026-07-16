@@ -118,37 +118,11 @@ def _ensure_member(db: Session, event_id: UUID, user_id: UUID) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only event members can submit or vote on plans")
 
 
+from app.services.governance_votes import compute_plan_vote_summary
+
+
 def _compute_vote_summary(db: Session, plan_id: UUID, member_count: int) -> dict[str, object]:
-    rows = db.execute(
-        select(event_plan_votes.c.vote).where(event_plan_votes.c.plan_id == plan_id)
-    ).all()
-
-    yes_count = 0
-    no_count = 0
-    for (vote,) in rows:
-        if vote == "yes":
-            yes_count += 1
-        elif vote == "no":
-            no_count += 1
-
-    total_votes = yes_count + no_count
-    approval_ratio = (yes_count / total_votes) if total_votes > 0 else 0.0
-    votes_required = required_votes(member_count)
-    meets_quorum = total_votes >= votes_required
-    meets_approval = approval_ratio >= APPROVAL_THRESHOLD
-
-    return {
-        "yes_count": yes_count,
-        "no_count": no_count,
-        "total_votes": total_votes,
-        "approval_ratio": approval_ratio,
-        "approval_threshold": APPROVAL_THRESHOLD,
-        "votes_required": votes_required,
-        "member_count": member_count,
-        "meets_quorum": meets_quorum,
-        "meets_approval": meets_approval,
-        "is_winning": meets_quorum and meets_approval,
-    }
+    return compute_plan_vote_summary(db, event_plan_votes, plan_id, member_count)
 
 
 def sync_event_plan_leading_flags(

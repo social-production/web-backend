@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.cache import get_redis_client
 from app.config import Settings, get_settings
 from app.models import users
+from app.utils.request import get_client_ip
 
 FEEDBACK_RATE_LIMIT = 5
 FEEDBACK_RATE_LIMIT_WINDOW_SECONDS = 3600
@@ -22,8 +23,7 @@ VALID_CATEGORIES = {"bug", "idea"}
 
 
 async def enforce_feedback_rate_limit(request: Request) -> None:
-    client = request.client
-    client_host = client.host if client and client.host else "unknown"
+    client_host = get_client_ip(request)
     window_bucket = int(time.time() // FEEDBACK_RATE_LIMIT_WINDOW_SECONDS)
     key = f"{FEEDBACK_RATE_LIMIT_PREFIX}:{client_host}:{window_bucket}"
 
@@ -33,6 +33,11 @@ async def enforce_feedback_rate_limit(request: Request) -> None:
         if current_count == 1:
             await redis_client.expire(key, FEEDBACK_RATE_LIMIT_WINDOW_SECONDS + 1)
     except Exception:
+        if get_settings().rate_limit_fail_closed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Rate limiting service temporarily unavailable",
+            )
         return
 
     if current_count > FEEDBACK_RATE_LIMIT:

@@ -21,6 +21,7 @@ from app.services.auth import (
     enforce_auth_rate_limit,
     logout_refresh_token,
     logout_user,
+    public_auth_payload,
     refresh_auth_session,
     register_user,
 )
@@ -52,18 +53,18 @@ class AuthUser(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    access_token: str
-    token_type: Literal["bearer"]
+    access_token: str | None = None
+    token_type: Literal["bearer"] = "bearer"
     user: AuthUser
     refresh_token: str | None = None
     csrf_token: str | None = None
 
 
 class RefreshResponse(BaseModel):
-    access_token: str
-    token_type: Literal["bearer"]
-    refresh_token: str
-    csrf_token: str
+    access_token: str | None = None
+    token_type: Literal["bearer"] = "bearer"
+    refresh_token: str | None = None
+    csrf_token: str | None = None
 
 
 class LogoutResponse(BaseModel):
@@ -92,19 +93,25 @@ def _apply_auth_cookies(response: Response, payload: dict[str, object]) -> None:
 @router.post("/register", response_model=AuthResponse, dependencies=[Depends(enforce_auth_rate_limit)])
 def register(
     payload: RegisterRequest,
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     auth_payload = register_user(db, payload.username, payload.password, payload.profile_bio)
     _apply_auth_cookies(response, auth_payload)
-    return auth_payload
+    return public_auth_payload(request, auth_payload)
 
 
 @router.post("/login", response_model=AuthResponse, dependencies=[Depends(enforce_auth_rate_limit)])
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> dict[str, object]:
+def login(
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
     auth_payload = authenticate_user(db, payload.username, payload.password)
     _apply_auth_cookies(response, auth_payload)
-    return auth_payload
+    return public_auth_payload(request, auth_payload)
 
 
 @router.post("/refresh", response_model=RefreshResponse, dependencies=[Depends(enforce_auth_rate_limit)])
@@ -112,7 +119,7 @@ async def refresh(request: Request, response: Response) -> dict[str, object]:
     refresh_token = resolve_refresh_token(request)
     auth_payload = await refresh_auth_session(refresh_token)
     _apply_auth_cookies(response, auth_payload)
-    return auth_payload
+    return public_auth_payload(request, auth_payload)
 
 
 @router.post("/logout", response_model=LogoutResponse, dependencies=[Depends(enforce_auth_rate_limit)])

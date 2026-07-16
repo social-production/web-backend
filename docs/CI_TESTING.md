@@ -42,6 +42,6 @@ Activity commit routes referenced `project_activity_roles` / `event_activity_rol
 
 ## Preventing recurrence
 
-- Prefer [`tests/conftest.py`](../tests/conftest.py) helpers (`future_scheduled_at`, `seed_scope_membership`) over copy-pasted seeds.
+- Prefer [`tests/conftest.py`](../tests/conftest.py) helpers (`future_scheduled_at`, `seed_user`, `seed_channel_with_membership`, `seed_scope_membership`, `seed_project`, `seed_event`, `register_and_login_client`) over copy-pasted seeds.
 - Keep E2E script assertions aligned with [`WEB_BACKEND_CONTRACT.md`](https://github.com/social-production/web/blob/main/docs/WEB_BACKEND_CONTRACT.md).
 - Run `python -m pytest tests/ -q` locally before pushing (Postgres + Redis required).

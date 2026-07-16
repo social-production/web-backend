@@ -48,9 +48,31 @@ EVENT_STAGE_LABEL_BY_PHASE_ID = {
 
 _ZERO_INT = literal(0, Integer)
 _EMPTY_ROLES = cast(literal("[]"), JSONB)
-import importlib
-_mod = importlib.import_module('app.services.feeds.helpers')
-globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('__') or k == '__all__'})
+
+from app.services.feeds.builder import _build_feed
+from app.services.feeds.scope import _get_followed_user_ids, _get_user_scope_ids
+from app.services.feeds.selects import (
+    _comment_activity_select,
+    _comments_select_for_followed,
+    _events_select,
+    _events_select_for_followed,
+    _help_requests_select,
+    _help_requests_select_for_followed,
+    _posts_select_discovery,
+    _posts_select_for_followed,
+    _projects_select,
+    _projects_select_for_followed,
+    _threads_select,
+    _threads_select_discovery,
+    _threads_select_for_followed,
+)
+from app.services.feeds.serializers import (
+    _fetch_active_votes_for_rows,
+    _fetch_latest_updates_for_items,
+    _fetch_tags_for_items,
+    _serialize_personal_item,
+)
+from app.services.content import _help_request_role_summaries, _load_help_request_roles
 
 def get_public_feed(
     db: Session,

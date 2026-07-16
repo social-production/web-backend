@@ -57,68 +57,51 @@ from app.services.messages import find_direct_conversation_between, get_total_un
 
 
 
-from app.services.bootstrap.activity_rail import _build_activity_rail
-from app.services.bootstrap.activity_rail_history import _build_activity_rail_history
-from app.services.bootstrap.directory import (
-    _get_channel_directory_items,
-    _get_community_directory_items,
-    _get_platform_directory_item,
-    _get_suggested_contacts,
-)
-from app.services.bootstrap.summary import (
-    _get_unread_message_count,
-    _get_unread_notification_count,
-    _get_viewer_row,
-    get_bootstrap_summary,
-)
+def _get_viewer_row(db: Session, current_user_id: UUID):
+    row = db.execute(
+        select(users.c.id, users.c.username, users.c.bio, users.c.profile_image_url).where(
+            users.c.id == current_user_id
+        )
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Viewer not found")
+    return row
 
-def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object]:
+
+def _get_unread_notification_count(db: Session, current_user_id: UUID) -> int:
+    count = db.execute(
+        select(func.count())
+        .select_from(notifications)
+        .where(
+            notifications.c.recipient_id == current_user_id,
+            notifications.c.is_unread.is_(True),
+        )
+    ).scalar_one()
+    return int(count or 0)
+
+
+def _get_unread_message_count(db: Session, current_user_id: UUID) -> int:
+    return get_total_unread_message_count(db, current_user_id)
+
+
+def _small_iso(dt) -> str:
+    if dt is None:
+        return ""
+    return dt.isoformat()
+
+
+def get_bootstrap_summary(db: Session, current_user_id: UUID | None) -> dict[str, object]:
     if current_user_id is None:
         return {
-            "viewer": None,
-            "featureFlags": {
-                "assets": False,
-                "funding": False,
-                "platform": True,
-            },
             "unreadCounts": {
                 "notifications": 0,
                 "messages": 0,
             },
-            "directory": {
-                "platform": _get_platform_directory_item(db, None),
-                "channels": [],
-                "communities": [],
-            },
-            "suggestedContacts": [],
-            "activityRail": [],
-            "activityRailHistory": [],
         }
 
-    viewer = _get_viewer_row(db, current_user_id)
-
     return {
-        "viewer": {
-            "id": viewer["id"],
-            "username": viewer["username"],
-            "bio": viewer["bio"],
-            "profileImageUrl": viewer["profile_image_url"],
-        },
-        "featureFlags": {
-            "assets": False,
-            "funding": False,
-            "platform": True,
-        },
         "unreadCounts": {
             "notifications": _get_unread_notification_count(db, current_user_id),
             "messages": _get_unread_message_count(db, current_user_id),
         },
-        "directory": {
-            "platform": _get_platform_directory_item(db, current_user_id),
-            "channels": _get_channel_directory_items(db, current_user_id),
-            "communities": _get_community_directory_items(db, current_user_id),
-        },
-        "suggestedContacts": _get_suggested_contacts(db, current_user_id),
-        "activityRail": _build_activity_rail(db, current_user_id),
-        "activityRailHistory": _build_activity_rail_history(db, current_user_id),
     }

@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 from app.auth.jwt import create_access_token, create_refresh_token, get_access_token_payload, verify_refresh_token
 from app.auth.passwords import hash_password, verify_password
 from app.cache import get_redis_client
+from app.config import get_settings
 from app.models import user_settings, users
 from app.services.search import index_document
+from app.utils.request import get_client_ip
 
 AUTH_RATE_LIMIT = 10
 AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -69,9 +71,23 @@ def _issue_auth_bundle(user_row: Mapping[str, object]) -> dict[str, object]:
     )
 
 
+def _include_tokens_in_response(request: Request) -> bool:
+    return request.headers.get("x-include-tokens", "").lower() in {"1", "true", "yes"}
+
+
+def public_auth_payload(request: Request, payload: dict[str, object]) -> dict[str, object]:
+    if _include_tokens_in_response(request):
+        return payload
+    if "user" in payload:
+        return {
+            "token_type": payload.get("token_type", "bearer"),
+            "user": payload["user"],
+        }
+    return {"token_type": payload.get("token_type", "bearer")}
+
+
 async def enforce_auth_rate_limit(request: Request) -> None:
-    client = request.client
-    client_host = client.host if client and client.host else "unknown"
+    client_host = get_client_ip(request)
     window_bucket = int(time.time() // AUTH_RATE_LIMIT_WINDOW_SECONDS)
     key = f"{AUTH_RATE_LIMIT_PREFIX}:{client_host}:{window_bucket}"
 
@@ -81,6 +97,11 @@ async def enforce_auth_rate_limit(request: Request) -> None:
         if current_count == 1:
             await redis_client.expire(key, AUTH_RATE_LIMIT_WINDOW_SECONDS + 1)
     except Exception:
+        if get_settings().rate_limit_fail_closed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Rate limiting service temporarily unavailable",
+            )
         return
 
     if current_count > AUTH_RATE_LIMIT:
