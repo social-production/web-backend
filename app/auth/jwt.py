@@ -4,12 +4,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 
 from app.config import get_settings
 
 ALGORITHM = "HS256"
 TokenKind = Literal["access", "refresh"]
+JWTError = InvalidTokenError
 
 
 def create_access_token(

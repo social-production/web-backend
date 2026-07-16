@@ -5,12 +5,11 @@ from uuid import UUID
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from jose import JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from app.auth.cookies import ACCESS_COOKIE
-from app.auth.jwt import get_access_token_payload
+from app.auth.jwt import JWTError, get_access_token_payload
 from app.cache import get_redis_client
 from app.config import get_settings
 from app.utils.request import get_client_ip

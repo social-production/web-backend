@@ -4,10 +4,9 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError
 
 from app.auth.cookies import ACCESS_COOKIE, REFRESH_COOKIE
-from app.auth.jwt import get_access_token_payload
+from app.auth.jwt import JWTError, get_access_token_payload
 from app.cache import get_redis_client
 
 bearer_scheme = HTTPBearer(auto_error=False)
