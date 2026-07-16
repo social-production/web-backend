@@ -43,7 +43,7 @@ jobs:
       MESSAGE_ENCRYPTION_KEY: IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
