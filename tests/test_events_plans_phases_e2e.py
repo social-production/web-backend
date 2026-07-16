@@ -4,7 +4,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import insert
@@ -14,7 +14,9 @@ from app.db import SessionLocal
 from app.models import channels, users
 
 
-def _request_json(url: str, method: str = "GET", body: dict[str, object] | None = None, token: str | None = None) -> dict[str, object]:
+def _request_json(
+    url: str, method: str = "GET", body: dict[str, object] | None = None, token: str | None = None
+) -> dict[str, object]:
     payload = None
     headers = {"Content-Type": "application/json"}
     if body is not None:
@@ -47,7 +49,7 @@ def _request_json_or_closed(
 
 def _seed_users_and_channel() -> dict[str, str]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     user_a = uuid4()
     user_b = uuid4()
@@ -147,12 +149,15 @@ def run() -> None:
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    voted_plan = _request_json_or_closed(
-        f"{base}/events/{event_slug}/plans/{plan_id}/vote",
-        method="POST",
-        token=seeded["token_b"],
-        body={"vote": "yes"},
-    ) or first_plan_vote
+    voted_plan = (
+        _request_json_or_closed(
+            f"{base}/events/{event_slug}/plans/{plan_id}/vote",
+            method="POST",
+            token=seeded["token_b"],
+            body={"vote": "yes"},
+        )
+        or first_plan_vote
+    )
     assert voted_plan["is_leading"] is True
     assert voted_plan["plan"]["vote_summary"]["is_winning"] is True
 
@@ -170,13 +175,16 @@ def run() -> None:
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    phase_vote = _request_json_or_closed(
-        f"{base}/events/{event_slug}/phase-requests/{phase_request_id}/vote",
-        method="POST",
-        token=seeded["token_b"],
-        body={"vote": "yes"},
-        expected_closed_detail="Phase change request is already closed",
-    ) or first_phase_vote
+    phase_vote = (
+        _request_json_or_closed(
+            f"{base}/events/{event_slug}/phase-requests/{phase_request_id}/vote",
+            method="POST",
+            token=seeded["token_b"],
+            body={"vote": "yes"},
+            expected_closed_detail="Phase change request is already closed",
+        )
+        or first_phase_vote
+    )
     assert phase_vote["executed"] is True
     assert phase_vote["current_phase_id"] == "phase-2"
 
@@ -194,13 +202,16 @@ def run() -> None:
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    update_vote = _request_json_or_closed(
-        f"{base}/events/{event_slug}/update-requests/{update_request_id}/vote",
-        method="POST",
-        token=seeded["token_b"],
-        body={"vote": "yes"},
-        expected_closed_detail="Update request is already closed",
-    ) or first_update_vote
+    update_vote = (
+        _request_json_or_closed(
+            f"{base}/events/{event_slug}/update-requests/{update_request_id}/vote",
+            method="POST",
+            token=seeded["token_b"],
+            body={"vote": "yes"},
+            expected_closed_detail="Update request is already closed",
+        )
+        or first_update_vote
+    )
     assert update_vote["executed"] is True
     assert update_vote["request"]["status"] == "approved"
 
@@ -218,13 +229,16 @@ def run() -> None:
         token=seeded["token_a"],
         body={"vote": "yes"},
     )
-    edit_vote = _request_json_or_closed(
-        f"{base}/events/{event_slug}/edit-requests/{edit_request_id}/vote",
-        method="POST",
-        token=seeded["token_b"],
-        body={"vote": "yes"},
-        expected_closed_detail="Edit request is already closed",
-    ) or first_edit_vote
+    edit_vote = (
+        _request_json_or_closed(
+            f"{base}/events/{event_slug}/edit-requests/{edit_request_id}/vote",
+            method="POST",
+            token=seeded["token_b"],
+            body={"vote": "yes"},
+            expected_closed_detail="Edit request is already closed",
+        )
+        or first_edit_vote
+    )
     assert edit_vote["executed"] is True
     assert edit_vote["request"]["status"] == "approved"
 

@@ -4,21 +4,25 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_cache, get_db
+from app.services.activity_history import (
+    delete_event_activity_rating,
+    toggle_event_history_completion,
+    upsert_event_activity_rating,
+)
 from app.services.events import (
     add_event_value,
     commit_event_activity_role,
     create_event,
     create_event_activity,
-    grant_event_editor,
     get_event_detail,
+    grant_event_editor,
     join_event,
     leave_event,
     revoke_event_editor,
@@ -26,11 +30,6 @@ from app.services.events import (
     toggle_event_signal,
     uncommit_event_activity_role,
     vote_event_value_importance,
-)
-from app.services.activity_history import (
-    delete_event_activity_rating,
-    toggle_event_history_completion,
-    upsert_event_activity_rating,
 )
 
 router = APIRouter(prefix="/events", tags=["events"])

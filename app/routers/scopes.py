@@ -17,8 +17,8 @@ from app.services.scopes import (
     invite_user_to_community,
     join_scope,
     leave_scope,
-    list_taggable_scopes,
     list_scope_members,
+    list_taggable_scopes,
     redeem_scope_invite,
 )
 
@@ -115,7 +115,9 @@ class TaggableScopesResponse(BaseModel):
     communities: list[TaggableScopeItem]
 
 
-@router.post("/channels", dependencies=[Depends(get_current_user_id)], response_model=ChannelResponse)
+@router.post(
+    "/channels", dependencies=[Depends(get_current_user_id)], response_model=ChannelResponse
+)
 def create_new_channel(
     payload: ChannelCreateRequest,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -124,16 +126,22 @@ def create_new_channel(
     return create_channel(db, current_user_id, payload.slug, payload.name, payload.description)
 
 
-@router.post("/communities", dependencies=[Depends(get_current_user_id)], response_model=CommunityResponse)
+@router.post(
+    "/communities", dependencies=[Depends(get_current_user_id)], response_model=CommunityResponse
+)
 def create_new_community(
     payload: CommunityCreateRequest,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return create_community(db, current_user_id, payload.slug, payload.name, payload.description, payload.join_policy)
+    return create_community(
+        db, current_user_id, payload.slug, payload.name, payload.description, payload.join_policy
+    )
 
 
-@router.get("/taggable", dependencies=[Depends(get_current_user_id)], response_model=TaggableScopesResponse)
+@router.get(
+    "/taggable", dependencies=[Depends(get_current_user_id)], response_model=TaggableScopesResponse
+)
 def get_taggable_scopes(
     q: str = "",
     kind: str | None = None,
@@ -141,7 +149,9 @@ def get_taggable_scopes(
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return list_taggable_scopes(db=db, current_user_id=current_user_id, query=q, kind=kind, limit=limit)
+    return list_taggable_scopes(
+        db=db, current_user_id=current_user_id, query=q, kind=kind, limit=limit
+    )
 
 
 @router.get("/channels/{slug}", response_model=ChannelResponse)
@@ -162,7 +172,11 @@ def get_community(
     return get_community_by_slug(db, slug, current_user_id)
 
 
-@router.post("/channels/{slug}/join", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)
+@router.post(
+    "/channels/{slug}/join",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=ScopeJoinResponse,
+)
 def join_channel(
     slug: str,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -171,7 +185,11 @@ def join_channel(
     return join_scope(db, current_user_id, "channel", slug)
 
 
-@router.delete("/channels/{slug}/leave", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)
+@router.delete(
+    "/channels/{slug}/leave",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=ScopeJoinResponse,
+)
 def leave_channel(
     slug: str,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -180,7 +198,11 @@ def leave_channel(
     return leave_scope(db, current_user_id, "channel", slug)
 
 
-@router.post("/communities/{slug}/join", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)
+@router.post(
+    "/communities/{slug}/join",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=ScopeJoinResponse,
+)
 def join_community(
     slug: str,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -189,7 +211,11 @@ def join_community(
     return join_scope(db, current_user_id, "community", slug)
 
 
-@router.delete("/communities/{slug}/leave", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)
+@router.delete(
+    "/communities/{slug}/leave",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=ScopeJoinResponse,
+)
 def leave_community(
     slug: str,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -198,7 +224,11 @@ def leave_community(
     return leave_scope(db, current_user_id, "community", slug)
 
 
-@router.get("/channels/{slug}/members", dependencies=[Depends(get_current_user_id)], response_model=ScopeMembersResponse)
+@router.get(
+    "/channels/{slug}/members",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=ScopeMembersResponse,
+)
 def channel_members(
     slug: str,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -207,7 +237,11 @@ def channel_members(
     return list_scope_members(db, "channel", slug, current_user_id)
 
 
-@router.get("/communities/{slug}/members", dependencies=[Depends(get_current_user_id)], response_model=ScopeMembersResponse)
+@router.get(
+    "/communities/{slug}/members",
+    dependencies=[Depends(get_current_user_id)],
+    response_model=ScopeMembersResponse,
+)
 def community_members(
     slug: str,
     current_user_id: UUID = Depends(get_current_user_id),
@@ -235,7 +269,9 @@ def invite_user_to_community_route(
     )
 
 
-@router.post("/invites/redeem", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse)
+@router.post(
+    "/invites/redeem", dependencies=[Depends(get_current_user_id)], response_model=ScopeJoinResponse
+)
 def redeem_invite(
     payload: InviteRedeemRequest,
     current_user_id: UUID = Depends(get_current_user_id),

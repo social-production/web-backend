@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -19,7 +19,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 def _seed() -> dict[str, object]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     owner_id = uuid4()
     member_id = uuid4()
@@ -302,8 +302,17 @@ def run() -> None:
 
     db.close()
 
-    expected_actions = {"cast-vote", "create-post", "create-comment", "signal-demand", "join-project", "join-event"}
-    assert expected_actions.issubset(action_types), {"missing_actions": sorted(expected_actions - action_types)}
+    expected_actions = {
+        "cast-vote",
+        "create-post",
+        "create-comment",
+        "signal-demand",
+        "join-project",
+        "join-event",
+    }
+    assert expected_actions.issubset(action_types), {
+        "missing_actions": sorted(expected_actions - action_types)
+    }
 
     assert project_doc is not None and project_doc[0] == "Actions Project Edited"
     assert event_doc is not None and event_doc[0] == "Actions Event Edited"

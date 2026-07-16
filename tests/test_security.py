@@ -27,8 +27,12 @@ def unique_ip():
 def _register_and_login(client: TestClient, username: str, *, unique_ip: str) -> dict[str, str]:
     password = "password-123"
     headers = {"X-Forwarded-For": unique_ip}
-    client.post("/auth/register", json={"username": username, "password": password}, headers=headers)
-    response = client.post("/auth/login", json={"username": username, "password": password}, headers=headers)
+    client.post(
+        "/auth/register", json={"username": username, "password": password}, headers=headers
+    )
+    response = client.post(
+        "/auth/login", json={"username": username, "password": password}, headers=headers
+    )
     assert response.status_code == 200, response.text
     csrf = client.cookies.get(CSRF_COOKIE, "")
     return {
@@ -43,8 +47,12 @@ def test_login_sets_httponly_cookies(client: TestClient, unique_ip: str):
     username = "sec-cookie-user"
     password = "password-123"
     headers = {"X-Forwarded-For": unique_ip}
-    client.post("/auth/register", json={"username": username, "password": password}, headers=headers)
-    response = client.post("/auth/login", json={"username": username, "password": password}, headers=headers)
+    client.post(
+        "/auth/register", json={"username": username, "password": password}, headers=headers
+    )
+    response = client.post(
+        "/auth/login", json={"username": username, "password": password}, headers=headers
+    )
     assert response.status_code == 200
 
     set_cookie_headers = response.headers.get_list("set-cookie")
@@ -57,8 +65,12 @@ def test_login_json_omits_tokens_without_include_header(client: TestClient, uniq
     username = "sec-no-tokens"
     password = "password-123"
     headers = {"X-Forwarded-For": unique_ip}
-    client.post("/auth/register", json={"username": username, "password": password}, headers=headers)
-    response = client.post("/auth/login", json={"username": username, "password": password}, headers=headers)
+    client.post(
+        "/auth/register", json={"username": username, "password": password}, headers=headers
+    )
+    response = client.post(
+        "/auth/login", json={"username": username, "password": password}, headers=headers
+    )
     body = response.json()
     assert "user" in body
     assert body.get("access_token") is None
@@ -69,7 +81,9 @@ def test_login_json_includes_tokens_with_include_header(client: TestClient, uniq
     username = "sec-with-tokens"
     password = "password-123"
     headers = {"X-Forwarded-For": unique_ip, "X-Include-Tokens": "true"}
-    client.post("/auth/register", json={"username": username, "password": password}, headers=headers)
+    client.post(
+        "/auth/register", json={"username": username, "password": password}, headers=headers
+    )
     response = client.post(
         "/auth/login",
         json={"username": username, "password": password},
@@ -105,7 +119,9 @@ def test_bearer_auth_bypasses_csrf(client: TestClient, unique_ip: str):
     username = "sec-bearer"
     password = "password-123"
     headers = {"X-Forwarded-For": unique_ip, "X-Include-Tokens": "true"}
-    client.post("/auth/register", json={"username": username, "password": password}, headers=headers)
+    client.post(
+        "/auth/register", json={"username": username, "password": password}, headers=headers
+    )
     login = client.post(
         "/auth/login",
         json={"username": username, "password": password},
@@ -150,7 +166,9 @@ def test_refresh_rotates_tokens(client: TestClient, unique_ip: str):
     assert new_refresh
     assert new_refresh != old_refresh
 
-    stale = client.post("/auth/refresh", cookies={REFRESH_COOKIE: old_refresh}, headers=session["headers"])
+    stale = client.post(
+        "/auth/refresh", cookies={REFRESH_COOKIE: old_refresh}, headers=session["headers"]
+    )
     assert stale.status_code == 401
 
 

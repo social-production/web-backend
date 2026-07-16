@@ -43,7 +43,9 @@ def compute_vote_summary(
     max_yes = yes_count + remaining_eligible
     max_total = total_votes + remaining_eligible
     can_meet_quorum = max_total >= votes_required
-    can_meet_approval = (max_yes / max_total * 100.0) >= (approval_threshold * 100.0) if max_total > 0 else False
+    can_meet_approval = (
+        (max_yes / max_total * 100.0) >= (approval_threshold * 100.0) if max_total > 0 else False
+    )
     can_still_pass = (not is_passing) and can_meet_quorum and can_meet_approval
 
     return {
@@ -113,11 +115,15 @@ def compute_software_vote_summary(
     remaining_eligible_votes = max(0, eligible_voter_count - total_votes)
     max_yes = yes_count + remaining_eligible_votes
     max_total = total_votes + remaining_eligible_votes
-    can_meet_approval = (max_yes / max_total) >= approval_threshold_ratio if max_total > 0 else False
+    can_meet_approval = (
+        (max_yes / max_total) >= approval_threshold_ratio if max_total > 0 else False
+    )
     can_meet_quorum = max_total >= votes_required
     can_still_pass = (not passes) and can_meet_approval and can_meet_quorum
 
-    quorum_threshold_percent = (votes_required / eligible_voter_count * 100.0) if eligible_voter_count > 0 else 0.0
+    quorum_threshold_percent = (
+        (votes_required / eligible_voter_count * 100.0) if eligible_voter_count > 0 else 0.0
+    )
 
     summary = {
         "yesCount": yes_count,

@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from app.models.base import JSONB, UUID, created_at, event_fk, project_fk, table, updated_at, user_fk, uuid_pk
+from app.models.base import (
+    JSONB,
+    UUID,
+    created_at,
+    project_fk,
+    table,
+    updated_at,
+    user_fk,
+    uuid_pk,
+)
 
 projects = table(
     "projects",
@@ -32,7 +41,9 @@ projects = table(
 
 project_memberships = table(
     "project_memberships",
-    sa.Column("project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("is_manager", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("is_manager_candidate", sa.Boolean, nullable=False, server_default=sa.false()),
@@ -45,8 +56,12 @@ project_tags = table(
     sa.Column("project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
     sa.Column("tag_kind", sa.String(16), nullable=False),
     sa.Column("channel_id", UUID, sa.ForeignKey("channels.id", ondelete="CASCADE"), nullable=True),
-    sa.Column("community_id", UUID, sa.ForeignKey("communities.id", ondelete="CASCADE"), nullable=True),
-    sa.UniqueConstraint("project_id", "tag_kind", "channel_id", "community_id", name="uq_project_tags_tag"),
+    sa.Column(
+        "community_id", UUID, sa.ForeignKey("communities.id", ondelete="CASCADE"), nullable=True
+    ),
+    sa.UniqueConstraint(
+        "project_id", "tag_kind", "channel_id", "community_id", name="uq_project_tags_tag"
+    ),
 )
 
 project_signals = table(
@@ -70,7 +85,9 @@ project_values = table(
 
 project_value_importance_votes = table(
     "project_value_importance_votes",
-    sa.Column("value_id", UUID, sa.ForeignKey("project_values.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "value_id", UUID, sa.ForeignKey("project_values.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("importance", sa.SmallInteger, nullable=False),
     created_at(),
@@ -97,7 +114,9 @@ project_plans = table(
 
 project_plan_votes = table(
     "project_plan_votes",
-    sa.Column("plan_id", UUID, sa.ForeignKey("project_plans.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "plan_id", UUID, sa.ForeignKey("project_plans.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -105,8 +124,12 @@ project_plan_votes = table(
 
 project_plan_value_votes = table(
     "project_plan_value_votes",
-    sa.Column("plan_id", UUID, sa.ForeignKey("project_plans.id", ondelete="CASCADE"), primary_key=True),
-    sa.Column("value_id", UUID, sa.ForeignKey("project_values.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "plan_id", UUID, sa.ForeignKey("project_plans.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column(
+        "value_id", UUID, sa.ForeignKey("project_values.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -114,7 +137,9 @@ project_plan_value_votes = table(
 
 project_plan_criterion_ratings = table(
     "project_plan_criterion_ratings",
-    sa.Column("plan_id", UUID, sa.ForeignKey("project_plans.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "plan_id", UUID, sa.ForeignKey("project_plans.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("criterion_id", sa.String(120), primary_key=True),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("rating", sa.Integer, nullable=False),
@@ -134,14 +159,21 @@ project_pull_requests = table(
     sa.Column("stage", sa.String(24), nullable=False, server_default="approval"),
     sa.Column("merge_id", sa.String(120), nullable=True),
     user_fk("merged_by_user_id", nullable=True, ondelete="SET NULL"),
-    sa.Column("approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"),
+    sa.Column(
+        "approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"
+    ),
     created_at(),
     updated_at(),
 )
 
 project_pull_request_votes = table(
     "project_pull_request_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("project_pull_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_pull_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -149,7 +181,9 @@ project_pull_request_votes = table(
 
 project_merge_capability_members = table(
     "project_merge_capability_members",
-    sa.Column("project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("source_label", sa.String(120), nullable=False, server_default="approved-request"),
     created_at(),
@@ -161,10 +195,14 @@ project_merge_capability_change_requests = table(
     project_fk("project_id", nullable=False),
     sa.Column("decision_id", UUID, nullable=False),
     sa.Column("action", sa.String(8), nullable=False),
-    sa.Column("target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    ),
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     sa.Column("status", sa.String(24), nullable=False, server_default="open"),
-    sa.Column("approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"),
+    sa.Column(
+        "approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"
+    ),
     created_at(),
     updated_at(),
 )
@@ -190,10 +228,17 @@ project_repository_replacement_requests = table(
     sa.Column("repository_url", sa.Text, nullable=False),
     sa.Column("previous_repository_url", sa.Text, nullable=False, server_default=""),
     sa.Column("reason", sa.Text, nullable=False),
-    sa.Column("related_pull_request_id", UUID, sa.ForeignKey("project_pull_requests.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "related_pull_request_id",
+        UUID,
+        sa.ForeignKey("project_pull_requests.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     sa.Column("status", sa.String(24), nullable=False, server_default="open"),
-    sa.Column("approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"),
+    sa.Column(
+        "approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"
+    ),
     created_at(),
     updated_at(),
 )
@@ -215,7 +260,12 @@ project_activities = table(
     "project_activities",
     uuid_pk(),
     project_fk("project_id", nullable=False),
-    sa.Column("linked_plan_id", UUID, sa.ForeignKey("project_plans.id", ondelete="SET NULL"), nullable=True),
+    sa.Column(
+        "linked_plan_id",
+        UUID,
+        sa.ForeignKey("project_plans.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Column("linked_plan_phase_id", sa.String(64), nullable=True),
     sa.Column("linked_request_id", UUID, nullable=True),
     sa.Column("title", sa.String(200), nullable=False),
@@ -234,7 +284,12 @@ project_activities = table(
 project_activity_roles = table(
     "project_activity_roles",
     uuid_pk(),
-    sa.Column("activity_id", UUID, sa.ForeignKey("project_activities.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "activity_id",
+        UUID,
+        sa.ForeignKey("project_activities.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     sa.Column("label", sa.String(100), nullable=False),
     sa.Column("required_count", sa.Integer, nullable=False),
     sa.Column("maximum_count", sa.Integer, nullable=True),
@@ -243,14 +298,24 @@ project_activity_roles = table(
 
 project_activity_assignments = table(
     "project_activity_assignments",
-    sa.Column("role_id", UUID, sa.ForeignKey("project_activity_roles.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "role_id",
+        UUID,
+        sa.ForeignKey("project_activity_roles.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     created_at(),
 )
 
 project_activity_ratings = table(
     "project_activity_ratings",
-    sa.Column("activity_id", UUID, sa.ForeignKey("project_activities.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "activity_id",
+        UUID,
+        sa.ForeignKey("project_activities.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("rating", sa.Integer, nullable=False),
     sa.Column("comment", sa.Text, nullable=True),
@@ -261,7 +326,9 @@ project_activity_ratings = table(
 
 project_service_request_settings = table(
     "project_service_request_settings",
-    sa.Column("project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("enabled", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("request_mode", sa.String(16), nullable=False, server_default="both"),
     sa.Column("allow_off_schedule_requests", sa.Boolean, nullable=False, server_default=sa.false()),
@@ -279,7 +346,12 @@ project_service_requests = table(
     sa.Column("status", sa.String(24), nullable=False),
     sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("ends_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("linked_activity_id", UUID, sa.ForeignKey("project_activities.id", ondelete="SET NULL"), nullable=True),
+    sa.Column(
+        "linked_activity_id",
+        UUID,
+        sa.ForeignKey("project_activities.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     created_at(),
     updated_at(),
 )
@@ -299,7 +371,12 @@ project_service_request_setting_changes = table(
 
 project_service_request_setting_change_votes = table(
     "project_service_request_setting_change_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("project_service_request_setting_changes.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_service_request_setting_changes.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -327,7 +404,12 @@ project_update_requests = table(
 
 project_update_request_votes = table(
     "project_update_request_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("project_update_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_update_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -346,7 +428,12 @@ project_edit_requests = table(
 
 project_edit_request_votes = table(
     "project_edit_request_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("project_edit_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_edit_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -370,7 +457,12 @@ project_phase_change_requests = table(
 
 project_phase_change_votes = table(
     "project_phase_change_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("project_phase_change_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_phase_change_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -381,14 +473,28 @@ project_service_history_completions = table(
     uuid_pk(),
     project_fk("project_id", nullable=False),
     sa.Column("history_item_key", sa.String(120), nullable=False),
-    sa.Column("requester_user_id", UUID, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
-    sa.Column("participant_user_id", UUID, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Column(
+        "requester_user_id", UUID, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    ),
+    sa.Column(
+        "participant_user_id", UUID, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    ),
     sa.Column("role", sa.String(16), nullable=False),
     sa.Column("completion_state", sa.String(16), nullable=False),
     created_at(),
     updated_at(),
-    sa.CheckConstraint("(requester_user_id IS NOT NULL) <> (participant_user_id IS NOT NULL)", name="project_service_history_completions_one_actor"),
-    sa.UniqueConstraint("project_id", "history_item_key", "role", "requester_user_id", "participant_user_id", name="uq_project_service_history_completions_key"),
+    sa.CheckConstraint(
+        "(requester_user_id IS NOT NULL) <> (participant_user_id IS NOT NULL)",
+        name="project_service_history_completions_one_actor",
+    ),
+    sa.UniqueConstraint(
+        "project_id",
+        "history_item_key",
+        "role",
+        "requester_user_id",
+        "participant_user_id",
+        name="uq_project_service_history_completions_key",
+    ),
 )
 
 project_revert_history = table(
@@ -404,8 +510,12 @@ project_revert_history = table(
 project_links = table(
     "project_links",
     uuid_pk(),
-    sa.Column("source_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
-    sa.Column("target_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "source_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    ),
+    sa.Column(
+        "target_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    ),
     sa.Column("relationship_label", sa.String(120), nullable=False),
     sa.Column("summary", sa.Text, nullable=False),
     sa.Column("link_kind", sa.String(24), nullable=False),
@@ -416,8 +526,12 @@ project_links = table(
 project_link_requests = table(
     "project_link_requests",
     uuid_pk(),
-    sa.Column("source_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
-    sa.Column("target_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "source_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    ),
+    sa.Column(
+        "target_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    ),
     sa.Column("relationship_label", sa.String(120), nullable=False),
     sa.Column("summary", sa.Text, nullable=False),
     user_fk("proposed_by", nullable=True, ondelete="SET NULL"),
@@ -427,7 +541,12 @@ project_link_requests = table(
 
 project_link_request_votes = table(
     "project_link_request_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("project_link_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_link_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     sa.Column("vote_scope", sa.String(16), nullable=False, primary_key=True),
@@ -437,8 +556,18 @@ project_link_request_votes = table(
 project_conversions = table(
     "project_conversions",
     uuid_pk(),
-    sa.Column("predecessor_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
-    sa.Column("successor_project_id", UUID, sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "predecessor_project_id",
+        UUID,
+        sa.ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column(
+        "successor_project_id",
+        UUID,
+        sa.ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     sa.Column("summary", sa.Text, nullable=False),
     sa.Column("inventory_note", sa.Text, nullable=False),
     sa.Column("permanence_note", sa.Text, nullable=False),

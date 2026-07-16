@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 import secrets
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote
 from uuid import UUID
 
@@ -63,7 +63,9 @@ def _slug_in_use(db: Session, slug: str) -> bool:
     if not normalized:
         return False
     channel_exists = db.execute(select(channels.c.id).where(channels.c.slug == normalized)).first()
-    community_exists = db.execute(select(communities.c.id).where(communities.c.slug == normalized)).first()
+    community_exists = db.execute(
+        select(communities.c.id).where(communities.c.slug == normalized)
+    ).first()
     return channel_exists is not None or community_exists is not None
 
 
@@ -81,18 +83,16 @@ def _name_in_use(db: Session, name: str) -> bool:
 
 
 def _get_channel_row(db: Session, slug: str) -> Mapping[str, object]:
-    row = db.execute(
-        select(channels).where(channels.c.slug == slug.lower())
-    ).mappings().first()
+    row = db.execute(select(channels).where(channels.c.slug == slug.lower())).mappings().first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
     return row
 
 
 def _get_community_row(db: Session, slug: str) -> Mapping[str, object]:
-    row = db.execute(
-        select(communities).where(communities.c.slug == slug.lower())
-    ).mappings().first()
+    row = (
+        db.execute(select(communities).where(communities.c.slug == slug.lower())).mappings().first()
+    )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Community not found")
     return row
@@ -186,11 +186,14 @@ def create_scope_invite(
 ) -> dict[str, object]:
     scope_row = _get_scope_row(db, scope_kind, slug)
     if not _can_create_scope_invite(db, scope_kind, scope_row, current_user_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only community members can create invites")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only community members can create invites",
+        )
 
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     try:
         db.execute(
@@ -207,7 +210,9 @@ def create_scope_invite(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create invite") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create invite"
+        ) from exc
 
     redeem_url = _invite_redeem_url(scope_kind, scope_row["slug"], token)
     return {"token": token, "redeem_url": redeem_url}
@@ -236,27 +241,31 @@ def list_taggable_scopes(
                 )
             )
 
-        channel_rows = db.execute(
-            select(
-                channels.c.id,
-                channels.c.slug,
-                channels.c.name,
-                scope_memberships.c.user_id.label("member_user_id"),
-            )
-            .select_from(
-                channels.outerjoin(
-                    scope_memberships,
-                    and_(
-                        scope_memberships.c.scope_kind == CHANNEL_SCOPE_KIND,
-                        scope_memberships.c.scope_id == channels.c.id,
-                        scope_memberships.c.user_id == current_user_id,
-                    ),
+        channel_rows = (
+            db.execute(
+                select(
+                    channels.c.id,
+                    channels.c.slug,
+                    channels.c.name,
+                    scope_memberships.c.user_id.label("member_user_id"),
                 )
+                .select_from(
+                    channels.outerjoin(
+                        scope_memberships,
+                        and_(
+                            scope_memberships.c.scope_kind == CHANNEL_SCOPE_KIND,
+                            scope_memberships.c.scope_id == channels.c.id,
+                            scope_memberships.c.user_id == current_user_id,
+                        ),
+                    )
+                )
+                .where(*channel_conditions)
+                .order_by(channels.c.name.asc())
+                .limit(capped_limit)
             )
-            .where(*channel_conditions)
-            .order_by(channels.c.name.asc())
-            .limit(capped_limit)
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
         channel_items = [
             {
@@ -284,28 +293,32 @@ def list_taggable_scopes(
                 )
             )
 
-        community_rows = db.execute(
-            select(
-                communities.c.id,
-                communities.c.slug,
-                communities.c.name,
-                communities.c.join_policy,
-                scope_memberships.c.user_id.label("member_user_id"),
-            )
-            .select_from(
-                communities.outerjoin(
-                    scope_memberships,
-                    and_(
-                        scope_memberships.c.scope_kind == COMMUNITY_SCOPE_KIND,
-                        scope_memberships.c.scope_id == communities.c.id,
-                        scope_memberships.c.user_id == current_user_id,
-                    ),
+        community_rows = (
+            db.execute(
+                select(
+                    communities.c.id,
+                    communities.c.slug,
+                    communities.c.name,
+                    communities.c.join_policy,
+                    scope_memberships.c.user_id.label("member_user_id"),
                 )
+                .select_from(
+                    communities.outerjoin(
+                        scope_memberships,
+                        and_(
+                            scope_memberships.c.scope_kind == COMMUNITY_SCOPE_KIND,
+                            scope_memberships.c.scope_id == communities.c.id,
+                            scope_memberships.c.user_id == current_user_id,
+                        ),
+                    )
+                )
+                .where(*community_conditions)
+                .order_by(communities.c.name.asc())
+                .limit(capped_limit)
             )
-            .where(*community_conditions)
-            .order_by(communities.c.name.asc())
-            .limit(capped_limit)
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
         community_items = [
             {
@@ -321,13 +334,19 @@ def list_taggable_scopes(
     return {"channels": channel_items, "communities": community_items}
 
 
-def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, description: str) -> dict[str, object]:
+def create_channel(
+    db: Session, current_user_id: UUID, slug: str, name: str, description: str
+) -> dict[str, object]:
     normalized_slug = slug.strip().lower()
     normalized_name = name.strip()
     if not normalized_slug:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
+        )
     if not normalized_name:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required"
+        )
     if _slug_in_use(db, normalized_slug):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -340,24 +359,28 @@ def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, des
         )
 
     try:
-        created_row = db.execute(
-            insert(channels)
-            .values(
-                slug=normalized_slug,
-                name=normalized_name,
-                description=description.strip(),
-                created_by=current_user_id,
+        created_row = (
+            db.execute(
+                insert(channels)
+                .values(
+                    slug=normalized_slug,
+                    name=normalized_name,
+                    description=description.strip(),
+                    created_by=current_user_id,
+                )
+                .returning(
+                    channels.c.id,
+                    channels.c.slug,
+                    channels.c.name,
+                    channels.c.description,
+                    channels.c.created_by,
+                    channels.c.created_at,
+                    channels.c.updated_at,
+                )
             )
-            .returning(
-                channels.c.id,
-                channels.c.slug,
-                channels.c.name,
-                channels.c.description,
-                channels.c.created_by,
-                channels.c.created_at,
-                channels.c.updated_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.execute(
             insert(scope_memberships).values(
                 scope_kind=CHANNEL_SCOPE_KIND,
@@ -369,7 +392,9 @@ def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, des
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Channel slug already exists") from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Channel slug already exists"
+        ) from exc
 
     index_document(
         db=db,
@@ -383,14 +408,25 @@ def create_channel(db: Session, current_user_id: UUID, slug: str, name: str, des
     return {"channel": _serialize_channel(created_row)}
 
 
-def create_community(db: Session, current_user_id: UUID, slug: str, name: str, description: str, join_policy: str = "open") -> dict[str, object]:
+def create_community(
+    db: Session,
+    current_user_id: UUID,
+    slug: str,
+    name: str,
+    description: str,
+    join_policy: str = "open",
+) -> dict[str, object]:
     normalized_slug = slug.strip().lower()
     normalized_name = name.strip()
     normalized_join_policy = join_policy.strip().lower()
     if not normalized_slug:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
+        )
     if not normalized_name:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required"
+        )
     if _slug_in_use(db, normalized_slug):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -403,26 +439,30 @@ def create_community(db: Session, current_user_id: UUID, slug: str, name: str, d
         )
 
     try:
-        created_row = db.execute(
-            insert(communities)
-            .values(
-                slug=normalized_slug,
-                name=normalized_name,
-                description=description.strip(),
-                join_policy=normalized_join_policy,
-                created_by=current_user_id,
+        created_row = (
+            db.execute(
+                insert(communities)
+                .values(
+                    slug=normalized_slug,
+                    name=normalized_name,
+                    description=description.strip(),
+                    join_policy=normalized_join_policy,
+                    created_by=current_user_id,
+                )
+                .returning(
+                    communities.c.id,
+                    communities.c.slug,
+                    communities.c.name,
+                    communities.c.description,
+                    communities.c.join_policy,
+                    communities.c.created_by,
+                    communities.c.created_at,
+                    communities.c.updated_at,
+                )
             )
-            .returning(
-                communities.c.id,
-                communities.c.slug,
-                communities.c.name,
-                communities.c.description,
-                communities.c.join_policy,
-                communities.c.created_by,
-                communities.c.created_at,
-                communities.c.updated_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.execute(
             insert(scope_memberships).values(
                 scope_kind=COMMUNITY_SCOPE_KIND,
@@ -434,7 +474,9 @@ def create_community(db: Session, current_user_id: UUID, slug: str, name: str, d
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Community slug already exists") from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Community slug already exists"
+        ) from exc
 
     index_document(
         db=db,
@@ -448,7 +490,9 @@ def create_community(db: Session, current_user_id: UUID, slug: str, name: str, d
     return {"community": _serialize_community(created_row)}
 
 
-def get_channel_by_slug(db: Session, slug: str, current_user_id: UUID | None = None) -> dict[str, object]:
+def get_channel_by_slug(
+    db: Session, slug: str, current_user_id: UUID | None = None
+) -> dict[str, object]:
     row = _get_channel_row(db, slug)
     member_rows = db.execute(
         select(scope_memberships.c.user_id).where(
@@ -466,7 +510,9 @@ def get_channel_by_slug(db: Session, slug: str, current_user_id: UUID | None = N
     }
 
 
-def get_community_by_slug(db: Session, slug: str, current_user_id: UUID | None = None) -> dict[str, object]:
+def get_community_by_slug(
+    db: Session, slug: str, current_user_id: UUID | None = None
+) -> dict[str, object]:
     row = _get_community_row(db, slug)
     assert_can_view_scope(db, current_user_id, COMMUNITY_SCOPE_KIND, row["id"])
     member_rows = db.execute(
@@ -501,7 +547,13 @@ def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -
         )
     ).first()
     if existing is not None:
-        return {"ok": True, "joined": False, "scope_kind": scope_kind, "slug": scope_row["slug"], "detail": "Already a member"}
+        return {
+            "ok": True,
+            "joined": False,
+            "scope_kind": scope_kind,
+            "slug": scope_row["slug"],
+            "detail": "Already a member",
+        }
 
     try:
         db.execute(
@@ -515,7 +567,9 @@ def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join scope")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join scope"
+        )
 
     # Record the meaningful action AFTER the commit, so it can't roll back the membership
     try:
@@ -533,7 +587,9 @@ def join_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -
     return {"ok": True, "joined": True, "scope_kind": scope_kind, "slug": scope_row["slug"]}
 
 
-def leave_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) -> dict[str, object]:
+def leave_scope(
+    db: Session, current_user_id: UUID, scope_kind: str, slug: str
+) -> dict[str, object]:
     scope_row = _get_scope_row(db, scope_kind, slug)
     try:
         db.execute(
@@ -546,7 +602,9 @@ def leave_scope(db: Session, current_user_id: UUID, scope_kind: str, slug: str) 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not leave scope") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not leave scope"
+        ) from exc
 
     return {"ok": True, "joined": False, "scope_kind": scope_kind, "slug": scope_row["slug"]}
 
@@ -560,25 +618,31 @@ def list_scope_members(
     scope_row = _get_scope_row(db, scope_kind, slug)
     assert_can_view_scope(db, current_user_id, scope_kind, scope_row["id"])
     member_users = users.alias(f"{scope_kind}_members")
-    rows = db.execute(
-        select(
-            member_users.c.id,
-            member_users.c.username,
-            member_users.c.bio,
-            member_users.c.profile_image_url,
-            member_users.c.is_active,
-            scope_memberships.c.role,
-            scope_memberships.c.created_at,
+    rows = (
+        db.execute(
+            select(
+                member_users.c.id,
+                member_users.c.username,
+                member_users.c.bio,
+                member_users.c.profile_image_url,
+                member_users.c.is_active,
+                scope_memberships.c.role,
+                scope_memberships.c.created_at,
+            )
+            .select_from(
+                scope_memberships.join(
+                    member_users, scope_memberships.c.user_id == member_users.c.id
+                )
+            )
+            .where(
+                scope_memberships.c.scope_kind == scope_kind,
+                scope_memberships.c.scope_id == scope_row["id"],
+            )
+            .order_by(member_users.c.username.asc())
         )
-        .select_from(
-            scope_memberships.join(member_users, scope_memberships.c.user_id == member_users.c.id)
-        )
-        .where(
-            scope_memberships.c.scope_kind == scope_kind,
-            scope_memberships.c.scope_id == scope_row["id"],
-        )
-        .order_by(member_users.c.username.asc())
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     items = [
         {
@@ -588,22 +652,31 @@ def list_scope_members(
         }
         for row in rows
     ]
-    return {"scope_kind": scope_kind, "slug": scope_row["slug"], "total": len(items), "items": items}
+    return {
+        "scope_kind": scope_kind,
+        "slug": scope_row["slug"],
+        "total": len(items),
+        "items": items,
+    }
 
 
 def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[str, object]:
     normalized_token = normalize_invite_token(token)
     if not normalized_token:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="token is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="token is required"
+        )
 
     token_hash = hashlib.sha256(normalized_token.encode("utf-8")).hexdigest()
-    invite = db.execute(
-        select(scope_invites).where(scope_invites.c.token_hash == token_hash)
-    ).mappings().first()
+    invite = (
+        db.execute(select(scope_invites).where(scope_invites.c.token_hash == token_hash))
+        .mappings()
+        .first()
+    )
     if invite is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if invite["expires_at"] is not None and invite["expires_at"] < now:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Invite has expired")
     if invite["max_uses"] is not None and int(invite["uses"] or 0) >= int(invite["max_uses"]):
@@ -611,11 +684,21 @@ def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[
 
     scope_kind = invite["scope_kind"]
     if scope_kind == CHANNEL_SCOPE_KIND:
-        scope_row = db.execute(select(channels).where(channels.c.id == invite["scope_id"])).mappings().first()
+        scope_row = (
+            db.execute(select(channels).where(channels.c.id == invite["scope_id"]))
+            .mappings()
+            .first()
+        )
     elif scope_kind == COMMUNITY_SCOPE_KIND:
-        scope_row = db.execute(select(communities).where(communities.c.id == invite["scope_id"])).mappings().first()
+        scope_row = (
+            db.execute(select(communities).where(communities.c.id == invite["scope_id"]))
+            .mappings()
+            .first()
+        )
     else:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invite scope kind unsupported")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invite scope kind unsupported"
+        )
 
     if scope_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite scope not found")
@@ -648,7 +731,9 @@ def redeem_scope_invite(db: Session, current_user_id: UUID, token: str) -> dict[
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not redeem invite") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not redeem invite"
+        ) from exc
 
     return {"ok": True, "joined": True, "scope_kind": scope_kind, "slug": scope_row["slug"]}
 
@@ -673,11 +758,17 @@ def invite_user_to_community(
 
     normalized_username = username.strip()
     if not normalized_username:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="username is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="username is required"
+        )
 
-    target_user = db.execute(
-        select(users.c.id, users.c.username).where(users.c.username == normalized_username)
-    ).mappings().first()
+    target_user = (
+        db.execute(
+            select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+        )
+        .mappings()
+        .first()
+    )
     if target_user is None or target_user["id"] == current_user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 

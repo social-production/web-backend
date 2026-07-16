@@ -1,41 +1,37 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from uuid import UUID
 
-from fastapi import HTTPException
-from sqlalchemy import Boolean, DateTime, Integer, String, and_, cast, func, literal, null, or_, select, union_all
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    cast,
+    func,
+    literal,
+    null,
+    or_,
+    select,
+)
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Session
 
 from app.models import (
-    channels,
     comments,
-    communities,
-    content_votes,
     event_tags,
-    event_updates,
     events,
     help_request_tags,
     help_requests,
     posts,
     project_tags,
-    project_updates,
     projects,
-    scope_memberships,
     thread_tags,
     threads,
-    user_follows,
     users,
-    user_settings,
 )
-
 from app.services.access_control import (
-    assert_can_view_scope,
     closed_community_only_tag_condition,
 )
-from app.services.projects_phases import display_stage_label as project_display_stage_label
-from app.services.content import _help_request_role_summaries, _load_help_request_roles
 
 VALID_SORTS = frozenset({"popular", "recent"})
 
@@ -48,7 +44,6 @@ EVENT_STAGE_LABEL_BY_PHASE_ID = {
 
 _ZERO_INT = literal(0, Integer)
 _EMPTY_ROLES = cast(literal("[]"), JSONB)
-
 
 
 def _projects_select(
@@ -100,9 +95,7 @@ def _projects_select(
             .distinct()
         )
     if public_only:
-        q = q.where(
-            ~closed_community_only_tag_condition(project_tags, projects.c.id, "project_id")
-        )
+        q = q.where(~closed_community_only_tag_condition(project_tags, projects.c.id, "project_id"))
     return q
 
 
@@ -155,9 +148,7 @@ def _threads_select(
             .distinct()
         )
     if public_only:
-        q = q.where(
-            ~closed_community_only_tag_condition(thread_tags, threads.c.id, "thread_id")
-        )
+        q = q.where(~closed_community_only_tag_condition(thread_tags, threads.c.id, "thread_id"))
     return q
 
 
@@ -210,9 +201,7 @@ def _events_select(
             .distinct()
         )
     if public_only:
-        q = q.where(
-            ~closed_community_only_tag_condition(event_tags, events.c.id, "event_id")
-        )
+        q = q.where(~closed_community_only_tag_condition(event_tags, events.c.id, "event_id"))
     return q
 
 
@@ -277,32 +266,32 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
         return None
     return (
         select(
-        posts.c.id,
-        literal("post").label("entity_type"),
-        literal(None).label("slug"),
-        literal("Post").label("title"),
-        posts.c.body,
-        posts.c.audience,
-        posts.c.author_id,
-        users.c.username.label("author_username"),
-        users.c.profile_image_url.label("author_profile_image_url"),
-        _ZERO_INT.label("signal_count"),
-        posts.c.vote_count,
-        posts.c.comment_count,
-        _ZERO_INT.label("member_count"),
-        _ZERO_INT.label("going_count"),
-        posts.c.updated_at.label("last_activity_at"),
-        posts.c.created_at,
-        literal(None).label("project_mode"),
-        literal(None).label("project_subtype"),
-        literal(None).label("stage_label"),
-        literal(None).label("current_phase_id"),
-        literal(None).label("location_label"),
-        literal(False, Boolean).label("is_private"),
-        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
-        literal(None).label("time_label"),
-        literal("following").label("feed_source"),
-    )
+            posts.c.id,
+            literal("post").label("entity_type"),
+            literal(None).label("slug"),
+            literal("Post").label("title"),
+            posts.c.body,
+            posts.c.audience,
+            posts.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            posts.c.vote_count,
+            posts.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            posts.c.updated_at.label("last_activity_at"),
+            posts.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            literal(None).label("location_label"),
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+            literal("following").label("feed_source"),
+        )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
         .where(posts.c.author_id.in_(followed_user_ids))
     )
@@ -313,32 +302,32 @@ def _posts_select_discovery(excluded_author_ids: list[UUID]):
         return None
     return (
         select(
-        posts.c.id,
-        literal("post").label("entity_type"),
-        literal(None).label("slug"),
-        literal("Post").label("title"),
-        posts.c.body,
-        posts.c.audience,
-        posts.c.author_id,
-        users.c.username.label("author_username"),
-        users.c.profile_image_url.label("author_profile_image_url"),
-        _ZERO_INT.label("signal_count"),
-        posts.c.vote_count,
-        posts.c.comment_count,
-        _ZERO_INT.label("member_count"),
-        _ZERO_INT.label("going_count"),
-        posts.c.updated_at.label("last_activity_at"),
-        posts.c.created_at,
-        literal(None).label("project_mode"),
-        literal(None).label("project_subtype"),
-        literal(None).label("stage_label"),
-        literal(None).label("current_phase_id"),
-        literal(None).label("location_label"),
-        literal(False, Boolean).label("is_private"),
-        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
-        literal(None).label("time_label"),
-        literal("discovery").label("feed_source"),
-    )
+            posts.c.id,
+            literal("post").label("entity_type"),
+            literal(None).label("slug"),
+            literal("Post").label("title"),
+            posts.c.body,
+            posts.c.audience,
+            posts.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            posts.c.vote_count,
+            posts.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            posts.c.updated_at.label("last_activity_at"),
+            posts.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            literal(None).label("location_label"),
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+            literal("discovery").label("feed_source"),
+        )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
         .where(
             posts.c.audience == "public",
@@ -352,32 +341,32 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
         return None
     return (
         select(
-        projects.c.id,
-        literal("project").label("entity_type"),
-        projects.c.slug,
-        projects.c.title,
-        projects.c.description.label("body"),
-        literal(None).label("audience"),
-        projects.c.author_id,
-        users.c.username.label("author_username"),
-        users.c.profile_image_url.label("author_profile_image_url"),
-        projects.c.signal_count,
-        projects.c.vote_count,
-        projects.c.comment_count,
-        projects.c.member_count,
-        _ZERO_INT.label("going_count"),
-        projects.c.last_activity_at,
-        projects.c.created_at,
-        projects.c.project_mode,
-        projects.c.project_subtype,
-        projects.c.stage_label,
-        projects.c.current_phase_id,
-        projects.c.location_label,
-        literal(False, Boolean).label("is_private"),
-        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
-        literal(None).label("time_label"),
-        literal("following").label("feed_source"),
-    )
+            projects.c.id,
+            literal("project").label("entity_type"),
+            projects.c.slug,
+            projects.c.title,
+            projects.c.description.label("body"),
+            literal(None).label("audience"),
+            projects.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            projects.c.signal_count,
+            projects.c.vote_count,
+            projects.c.comment_count,
+            projects.c.member_count,
+            _ZERO_INT.label("going_count"),
+            projects.c.last_activity_at,
+            projects.c.created_at,
+            projects.c.project_mode,
+            projects.c.project_subtype,
+            projects.c.stage_label,
+            projects.c.current_phase_id,
+            projects.c.location_label,
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+            literal("following").label("feed_source"),
+        )
         .select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
         .where(
             projects.c.author_id.in_(followed_user_ids),
@@ -391,32 +380,32 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
         return None
     return (
         select(
-        threads.c.id,
-        literal("thread").label("entity_type"),
-        threads.c.slug,
-        threads.c.title,
-        threads.c.body,
-        literal(None).label("audience"),
-        threads.c.author_id,
-        users.c.username.label("author_username"),
-        users.c.profile_image_url.label("author_profile_image_url"),
-        _ZERO_INT.label("signal_count"),
-        threads.c.vote_count,
-        threads.c.comment_count,
-        _ZERO_INT.label("member_count"),
-        _ZERO_INT.label("going_count"),
-        threads.c.last_activity_at,
-        threads.c.created_at,
-        literal(None).label("project_mode"),
-        literal(None).label("project_subtype"),
-        literal(None).label("stage_label"),
-        literal(None).label("current_phase_id"),
-        literal(None).label("location_label"),
-        literal(False, Boolean).label("is_private"),
-        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
-        literal(None).label("time_label"),
-        literal("following").label("feed_source"),
-    )
+            threads.c.id,
+            literal("thread").label("entity_type"),
+            threads.c.slug,
+            threads.c.title,
+            threads.c.body,
+            literal(None).label("audience"),
+            threads.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            threads.c.vote_count,
+            threads.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            threads.c.last_activity_at,
+            threads.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            literal(None).label("location_label"),
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+            literal("following").label("feed_source"),
+        )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
         .where(threads.c.author_id.in_(followed_user_ids))
     )
@@ -427,32 +416,32 @@ def _threads_select_discovery(excluded_author_ids: list[UUID]):
         return None
     return (
         select(
-        threads.c.id,
-        literal("thread").label("entity_type"),
-        threads.c.slug,
-        threads.c.title,
-        threads.c.body,
-        literal(None).label("audience"),
-        threads.c.author_id,
-        users.c.username.label("author_username"),
-        users.c.profile_image_url.label("author_profile_image_url"),
-        _ZERO_INT.label("signal_count"),
-        threads.c.vote_count,
-        threads.c.comment_count,
-        _ZERO_INT.label("member_count"),
-        _ZERO_INT.label("going_count"),
-        threads.c.last_activity_at,
-        threads.c.created_at,
-        literal(None).label("project_mode"),
-        literal(None).label("project_subtype"),
-        literal(None).label("stage_label"),
-        literal(None).label("current_phase_id"),
-        literal(None).label("location_label"),
-        literal(False, Boolean).label("is_private"),
-        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
-        literal(None).label("time_label"),
-        literal("discovery").label("feed_source"),
-    )
+            threads.c.id,
+            literal("thread").label("entity_type"),
+            threads.c.slug,
+            threads.c.title,
+            threads.c.body,
+            literal(None).label("audience"),
+            threads.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            threads.c.vote_count,
+            threads.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            threads.c.last_activity_at,
+            threads.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            literal(None).label("location_label"),
+            literal(False, Boolean).label("is_private"),
+            cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+            literal(None).label("time_label"),
+            literal("discovery").label("feed_source"),
+        )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
         .where(threads.c.author_id.not_in(excluded_author_ids))
     )
@@ -602,32 +591,32 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
         return None
     return (
         select(
-        events.c.id,
-        literal("event").label("entity_type"),
-        events.c.slug,
-        events.c.title,
-        events.c.description.label("body"),
-        literal(None).label("audience"),
-        events.c.created_by.label("author_id"),
-        users.c.username.label("author_username"),
-        users.c.profile_image_url.label("author_profile_image_url"),
-        _ZERO_INT.label("signal_count"),
-        events.c.vote_count,
-        events.c.comment_count,
-        events.c.member_count,
-        events.c.going_count,
-        events.c.last_activity_at,
-        events.c.created_at,
-        literal(None).label("project_mode"),
-        literal(None).label("project_subtype"),
-        literal(None).label("stage_label"),
-        events.c.current_phase_id,
-        events.c.location_label,
-        events.c.is_private,
-        events.c.scheduled_at,
-        events.c.time_label,
-        literal("following").label("feed_source"),
-    )
+            events.c.id,
+            literal("event").label("entity_type"),
+            events.c.slug,
+            events.c.title,
+            events.c.description.label("body"),
+            literal(None).label("audience"),
+            events.c.created_by.label("author_id"),
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            events.c.vote_count,
+            events.c.comment_count,
+            events.c.member_count,
+            events.c.going_count,
+            events.c.last_activity_at,
+            events.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            events.c.current_phase_id,
+            events.c.location_label,
+            events.c.is_private,
+            events.c.scheduled_at,
+            events.c.time_label,
+            literal("following").label("feed_source"),
+        )
         .select_from(events.outerjoin(users, users.c.id == events.c.created_by))
         .where(
             events.c.created_by.in_(followed_user_ids),

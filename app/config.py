@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-only-change-me"
     jwt_access_expire_minutes: int = 15
     jwt_refresh_expire_days: int = 7
-    jwt_expire_minutes: int = 60 * 24 * 7
     rate_limit_fail_closed: bool = False
     message_encryption_key: str = "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8="
     redis_url: str = "redis://localhost:6379/0"
@@ -54,7 +53,12 @@ class Settings(BaseSettings):
         self.rate_limit_fail_closed = True
 
         weak_jwt_secrets = {"change-me", "dev-only-change-me", ""}
-        weak_message_keys = {"change-me-too", "dev-only-change-me-too", "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=", ""}
+        weak_message_keys = {
+            "change-me-too",
+            "dev-only-change-me-too",
+            "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=",
+            "",
+        }
         if self.jwt_secret.strip() in weak_jwt_secrets:
             raise RuntimeError("JWT_SECRET must be set to a strong value in production")
         if self.message_encryption_key.strip() in weak_message_keys:

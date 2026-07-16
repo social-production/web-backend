@@ -1,24 +1,24 @@
-from app.models.base import Base, JSONB, TSVECTOR, UUID, metadata
+from app.models.base import JSONB, TSVECTOR, UUID, Base, metadata
 from app.models.content import (
     comments,
     content_votes,
     help_request_role_assignments,
     help_request_roles,
-    help_request_tags,
     help_requests,
     post_links,
     posts,
     report_votes,
     reports,
-    threads,
     thread_tags,
+    threads,
+)
+from app.models.content import (
+    help_request_tags as help_request_tags,
 )
 from app.models.events import (
+    event_activities,
     event_activity_assignments,
     event_activity_roles,
-    event_activities,
-    event_activity_history_completions,
-    event_activity_ratings,
     event_attendance,
     event_edit_request_votes,
     event_edit_requests,
@@ -39,32 +39,41 @@ from app.models.events import (
     event_values,
     events,
 )
-from app.models.governance import board_standing_votes, governance_decision_history, platform_board_memberships
+from app.models.events import (
+    event_activity_history_completions as event_activity_history_completions,
+)
+from app.models.events import (
+    event_activity_ratings as event_activity_ratings,
+)
+from app.models.governance import (
+    board_standing_votes,
+    governance_decision_history,
+    platform_board_memberships,
+)
 from app.models.messages import conversation_members, conversations, messages, subject_chat_reads
 from app.models.notifications import notifications
 from app.models.projects import (
+    project_activities,
     project_activity_assignments,
     project_activity_roles,
-    project_activities,
-    project_activity_ratings,
     project_conversions,
     project_edit_request_votes,
     project_edit_requests,
     project_link_request_votes,
     project_link_requests,
     project_links,
+    project_memberships,
     project_merge_capability_change_requests,
     project_merge_capability_change_votes,
     project_merge_capability_members,
-    project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
-    project_pull_request_votes,
-    project_pull_requests,
     project_plan_criterion_ratings,
     project_plan_value_votes,
     project_plan_votes,
     project_plans,
+    project_pull_request_votes,
+    project_pull_requests,
     project_repository_replacement_requests,
     project_repository_replacement_votes,
     project_revert_history,
@@ -82,7 +91,16 @@ from app.models.projects import (
     project_values,
     projects,
 )
-from app.models.scopes import channels, communities, scope_confidence_votes, scope_invites, scope_memberships
+from app.models.projects import (
+    project_activity_ratings as project_activity_ratings,
+)
+from app.models.scopes import (
+    channels,
+    communities,
+    scope_confidence_votes,
+    scope_invites,
+    scope_memberships,
+)
 from app.models.search import searchable_documents
 from app.models.users import meaningful_actions, user_follows, user_settings, users
 

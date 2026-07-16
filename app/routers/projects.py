@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
-from uuid import UUID
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import bearer_scheme, get_current_user_id, get_current_user_token_payload, get_optional_current_user_id
+from app.auth.dependencies import (
+    get_current_user_id,
+    get_optional_current_user_id,
+)
 from app.dependencies import get_cache, get_db
+from app.services.activity_history import (
+    delete_project_activity_rating,
+    upsert_project_activity_rating,
+)
 from app.services.projects import (
-    add_project_value,
     add_project_update,
+    add_project_value,
     commit_project_activity_role,
     create_project,
     create_project_activity,
@@ -28,7 +33,6 @@ from app.services.projects import (
     update_project_details,
     vote_project_value_importance,
 )
-from app.services.activity_history import delete_project_activity_rating, upsert_project_activity_rating
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 

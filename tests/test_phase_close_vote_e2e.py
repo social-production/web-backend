@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -18,7 +18,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 def _seed() -> dict[str, str]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     owner_id = uuid4()
     member_id = uuid4()

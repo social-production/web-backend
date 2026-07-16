@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
-from app.services.governance import add_comment, cast_vote, get_comments
-from app.services.governance import submit_report, vote_report
+from app.services.governance import add_comment, cast_vote, get_comments, submit_report, vote_report
 
 router = APIRouter(prefix="/governance", tags=["governance"])
 
@@ -43,7 +42,7 @@ class CommentOut(BaseModel):
     active_vote: int = 0
     created_at: object
     updated_at: object
-    replies: list["CommentOut"] = Field(default_factory=list)
+    replies: list[CommentOut] = Field(default_factory=list)
 
 
 class CommentCreateResponse(BaseModel):
@@ -135,7 +134,9 @@ def list_comments(
     db: Session = Depends(get_db),
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
-    return get_comments(db=db, subject_type=subject_type, subject_id=subject_id, current_user_id=current_user_id)
+    return get_comments(
+        db=db, subject_type=subject_type, subject_id=subject_id, current_user_id=current_user_id
+    )
 
 
 @router.post("/votes", response_model=VoteCastResponse)

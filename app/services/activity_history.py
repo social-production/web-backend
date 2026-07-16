@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -10,31 +10,29 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
+    event_activities,
     event_activity_assignments,
     event_activity_history_completions,
     event_activity_ratings,
     event_activity_roles,
-    event_activities,
-    event_memberships,
+    events,
+    project_activities,
     project_activity_assignments,
     project_activity_ratings,
     project_activity_roles,
-    project_activities,
-    project_memberships,
     project_service_history_completions,
     project_service_requests,
     projects,
-    events,
 )
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def ensure_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
     return value
 
 
@@ -62,7 +60,7 @@ def is_activity_ended(ends_at: datetime, now: datetime | None = None) -> bool:
 def _iso(value: object) -> str:
     if isinstance(value, datetime):
         return ensure_aware(value).isoformat()
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _rating_summary(ratings: list[dict[str, object]]) -> dict[str, object]:
@@ -182,18 +180,16 @@ def _completion_side_state(
     }
     total_eligible = len(eligible_user_ids)
     completed_count = len([user_id for user_id in eligible_user_ids if user_id in completed_ids])
-    uncompleted_count = len([user_id for user_id in eligible_user_ids if user_id in uncompleted_ids])
+    uncompleted_count = len(
+        [user_id for user_id in eligible_user_ids if user_id in uncompleted_ids]
+    )
     pending_count = max(0, total_eligible - completed_count - uncompleted_count)
     viewer_selection = None
     viewer_can_set = False
     if current_user_id is not None and current_user_id in eligible_user_ids:
         viewer_can_set = True
         viewer_row = next(
-            (
-                row
-                for row in completion_rows
-                if _completion_actor_id(row) == current_user_id
-            ),
+            (row for row in completion_rows if _completion_actor_id(row) == current_user_id),
             None,
         )
         if viewer_row is not None:
@@ -284,23 +280,37 @@ def build_project_history_items(
         return [], False
 
     activity_ids = [UUID(activity["id"]) for activity in ended_activities]
-    completion_rows = db.execute(
-        select(project_service_history_completions).where(
-            project_service_history_completions.c.project_id == project_id,
-            project_service_history_completions.c.history_item_key.in_([str(activity_id) for activity_id in activity_ids]),
+    completion_rows = (
+        db.execute(
+            select(project_service_history_completions).where(
+                project_service_history_completions.c.project_id == project_id,
+                project_service_history_completions.c.history_item_key.in_(
+                    [str(activity_id) for activity_id in activity_ids]
+                ),
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     completions_by_key: dict[str, list[Mapping[str, object]]] = {}
     for row in completion_rows:
         completions_by_key.setdefault(row["history_item_key"], []).append(row)
 
-    request_rows = db.execute(
-        select(project_service_requests).where(
-            project_service_requests.c.project_id == project_id,
-            project_service_requests.c.linked_activity_id.in_(activity_ids),
+    request_rows = (
+        db.execute(
+            select(project_service_requests).where(
+                project_service_requests.c.project_id == project_id,
+                project_service_requests.c.linked_activity_id.in_(activity_ids),
+            )
         )
-    ).mappings().all()
-    requests_by_activity = {row["linked_activity_id"]: row for row in request_rows if row["linked_activity_id"] is not None}
+        .mappings()
+        .all()
+    )
+    requests_by_activity = {
+        row["linked_activity_id"]: row
+        for row in request_rows
+        if row["linked_activity_id"] is not None
+    }
 
     history_items: list[dict[str, object]] = []
     needs_commit = False
@@ -312,7 +322,9 @@ def build_project_history_items(
         linked_request_id = activity_row.get("linked_request_id")
         requester_user_id = request_row["requester_id"] if request_row is not None else None
         requester_username = (
-            usernames.get(requester_user_id, {}).get("username", "unknown") if requester_user_id is not None else None
+            usernames.get(requester_user_id, {}).get("username", "unknown")
+            if requester_user_id is not None
+            else None
         )
 
         completion_rows_for_activity = completions_by_key.get(str(activity_id), [])
@@ -340,7 +352,9 @@ def build_project_history_items(
             participant_completion = _completion_side_state(
                 label="Participants",
                 eligible_user_ids=assigned_user_ids,
-                completion_rows=[row for row in completion_rows_for_activity if row["role"] == "participants"],
+                completion_rows=[
+                    row for row in completion_rows_for_activity if row["role"] == "participants"
+                ],
                 current_user_id=current_user_id,
             )
 
@@ -413,12 +427,18 @@ def build_event_history_items(
         return [], False
 
     activity_ids = [UUID(activity["id"]) for activity in ended_activities]
-    completion_rows = db.execute(
-        select(event_activity_history_completions).where(
-            event_activity_history_completions.c.event_id == event_id,
-            event_activity_history_completions.c.history_item_key.in_([str(activity_id) for activity_id in activity_ids]),
+    completion_rows = (
+        db.execute(
+            select(event_activity_history_completions).where(
+                event_activity_history_completions.c.event_id == event_id,
+                event_activity_history_completions.c.history_item_key.in_(
+                    [str(activity_id) for activity_id in activity_ids]
+                ),
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     completions_by_key: dict[str, list[Mapping[str, object]]] = {}
     for row in completion_rows:
         completions_by_key.setdefault(row["history_item_key"], []).append(row)
@@ -470,7 +490,9 @@ def build_event_history_items(
                 ],
                 current_user_id=current_user_id,
             )
-        aggregate_state, aggregate_label, aggregate_tone = _aggregate_completion(None, participant_completion)
+        aggregate_state, aggregate_label, aggregate_tone = _aggregate_completion(
+            None, participant_completion
+        )
 
         history_items.append(
             {
@@ -504,9 +526,15 @@ def load_project_ratings_by_activity(
 ) -> dict[UUID, list[dict[str, object]]]:
     if not activity_ids:
         return {}
-    rows = db.execute(
-        select(project_activity_ratings).where(project_activity_ratings.c.activity_id.in_(activity_ids))
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(project_activity_ratings).where(
+                project_activity_ratings.c.activity_id.in_(activity_ids)
+            )
+        )
+        .mappings()
+        .all()
+    )
     grouped: dict[UUID, list[dict[str, object]]] = {}
     for row in rows:
         grouped.setdefault(row["activity_id"], []).append(
@@ -528,9 +556,15 @@ def load_event_ratings_by_activity(
 ) -> dict[UUID, list[dict[str, object]]]:
     if not activity_ids:
         return {}
-    rows = db.execute(
-        select(event_activity_ratings).where(event_activity_ratings.c.activity_id.in_(activity_ids))
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(event_activity_ratings).where(
+                event_activity_ratings.c.activity_id.in_(activity_ids)
+            )
+        )
+        .mappings()
+        .all()
+    )
     grouped: dict[UUID, list[dict[str, object]]] = {}
     for row in rows:
         grouped.setdefault(row["activity_id"], []).append(
@@ -563,7 +597,9 @@ def _enrich_activity_ratings(
     return [
         {
             **item,
-            "roleLabel": _rating_role_label(UUID(str(item["userId"])), requester_user_id=requester_user_id),
+            "roleLabel": _rating_role_label(
+                UUID(str(item["userId"])), requester_user_id=requester_user_id
+            ),
         }
         for item in ratings
     ]
@@ -638,35 +674,50 @@ def upsert_project_activity_rating(
     rating: int,
     comment: str | None,
 ) -> dict[str, object]:
-    project_row = db.execute(select(projects).where(projects.c.slug == slug.lower())).mappings().first()
+    project_row = (
+        db.execute(select(projects).where(projects.c.slug == slug.lower())).mappings().first()
+    )
     if project_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    activity_row = db.execute(
-        select(project_activities).where(
-            project_activities.c.id == activity_id,
-            project_activities.c.project_id == project_row["id"],
+    activity_row = (
+        db.execute(
+            select(project_activities).where(
+                project_activities.c.id == activity_id,
+                project_activities.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
     if not is_activity_ended(activity_row["ends_at"]):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet"
+        )
     if not _viewer_can_review_project_activity(
         db,
         project_id=project_row["id"],
         activity_id=activity_id,
         user_id=current_user_id,
     ):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only participants or the requester can rate activities")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only participants or the requester can rate activities",
+        )
 
     normalized_comment = comment.strip() if comment else None
-    existing = db.execute(
-        select(project_activity_ratings).where(
-            project_activity_ratings.c.activity_id == activity_id,
-            project_activity_ratings.c.user_id == current_user_id,
+    existing = (
+        db.execute(
+            select(project_activity_ratings).where(
+                project_activity_ratings.c.activity_id == activity_id,
+                project_activity_ratings.c.user_id == current_user_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     try:
         if existing is None:
@@ -690,9 +741,16 @@ def upsert_project_activity_rating(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save rating") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save rating"
+        ) from exc
 
-    return {"ok": True, "activityId": str(activity_id), "rating": rating, "comment": normalized_comment}
+    return {
+        "ok": True,
+        "activityId": str(activity_id),
+        "rating": rating,
+        "comment": normalized_comment,
+    }
 
 
 def upsert_event_activity_rating(
@@ -707,26 +765,39 @@ def upsert_event_activity_rating(
     if event_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-    activity_row = db.execute(
-        select(event_activities).where(
-            event_activities.c.id == activity_id,
-            event_activities.c.event_id == event_row["id"],
+    activity_row = (
+        db.execute(
+            select(event_activities).where(
+                event_activities.c.id == activity_id,
+                event_activities.c.event_id == event_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
     if not is_activity_ended(activity_row["ends_at"]):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet"
+        )
     if not _viewer_is_assigned_on_event_activity(db, activity_id, current_user_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only assigned participants can rate activities")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only assigned participants can rate activities",
+        )
 
     normalized_comment = comment.strip() if comment else None
-    existing = db.execute(
-        select(event_activity_ratings).where(
-            event_activity_ratings.c.activity_id == activity_id,
-            event_activity_ratings.c.user_id == current_user_id,
+    existing = (
+        db.execute(
+            select(event_activity_ratings).where(
+                event_activity_ratings.c.activity_id == activity_id,
+                event_activity_ratings.c.user_id == current_user_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     try:
         if existing is None:
@@ -750,9 +821,16 @@ def upsert_event_activity_rating(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save rating") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save rating"
+        ) from exc
 
-    return {"ok": True, "activityId": str(activity_id), "rating": rating, "comment": normalized_comment}
+    return {
+        "ok": True,
+        "activityId": str(activity_id),
+        "rating": rating,
+        "comment": normalized_comment,
+    }
 
 
 def delete_project_activity_rating(
@@ -761,7 +839,9 @@ def delete_project_activity_rating(
     slug: str,
     activity_id: UUID,
 ) -> dict[str, object]:
-    project_row = db.execute(select(projects).where(projects.c.slug == slug.lower())).mappings().first()
+    project_row = (
+        db.execute(select(projects).where(projects.c.slug == slug.lower())).mappings().first()
+    )
     if project_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
@@ -803,25 +883,35 @@ def toggle_event_history_completion(
     role: str,
     selection: str | None,
 ) -> dict[str, object]:
-    event_row = db.execute(select(events).where(events.c.slug == event_slug.lower())).mappings().first()
+    event_row = (
+        db.execute(select(events).where(events.c.slug == event_slug.lower())).mappings().first()
+    )
     if event_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
     try:
         activity_id = UUID(history_item_key)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History item not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="History item not found"
+        ) from exc
 
-    activity_row = db.execute(
-        select(event_activities).where(
-            event_activities.c.id == activity_id,
-            event_activities.c.event_id == event_row["id"],
+    activity_row = (
+        db.execute(
+            select(event_activities).where(
+                event_activities.c.id == activity_id,
+                event_activities.c.event_id == event_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History item not found")
     if not is_activity_ended(activity_row["ends_at"]):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet"
+        )
 
     normalized_role = role.strip().lower()
     if normalized_role != "participants":
@@ -831,7 +921,10 @@ def toggle_event_history_completion(
         )
 
     normalized_selection = selection.strip().lower() if selection else None
-    if normalized_selection is not None and normalized_selection not in {"completed", "uncompleted"}:
+    if normalized_selection is not None and normalized_selection not in {
+        "completed",
+        "uncompleted",
+    }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="selection must be 'completed', 'uncompleted', or null",
@@ -851,7 +944,10 @@ def toggle_event_history_completion(
         )
     ).first()
     if assigned is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only assigned participants can set participant completion")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only assigned participants can set participant completion",
+        )
 
     committed_count, minimum_participants = event_activity_staffing_counts(db, activity_id)
     if _staffing_failed(committed_count, minimum_participants):
@@ -860,14 +956,18 @@ def toggle_event_history_completion(
             detail="Participant completion is unavailable when no participants signed up",
         )
 
-    existing = db.execute(
-        select(event_activity_history_completions).where(
-            event_activity_history_completions.c.event_id == event_row["id"],
-            event_activity_history_completions.c.history_item_key == history_item_key,
-            event_activity_history_completions.c.role == normalized_role,
-            event_activity_history_completions.c.participant_user_id == current_user_id,
+    existing = (
+        db.execute(
+            select(event_activity_history_completions).where(
+                event_activity_history_completions.c.event_id == event_row["id"],
+                event_activity_history_completions.c.history_item_key == history_item_key,
+                event_activity_history_completions.c.role == normalized_role,
+                event_activity_history_completions.c.participant_user_id == current_user_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     try:
         if normalized_selection is None:

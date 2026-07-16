@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -13,8 +13,7 @@ from app.models import project_updates, projects, users
 
 def test_public_feed_includes_latest_project_update_fields() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
-    earlier = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    now = datetime.now(UTC)
 
     user_id = uuid4()
     project_id = uuid4()

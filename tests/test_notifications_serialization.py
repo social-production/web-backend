@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -16,8 +16,8 @@ from app.services.notifications import _serialize_notification, list_notificatio
 
 
 def test_serialize_notification_emits_iso_datetimes() -> None:
-    now = datetime(2026, 7, 5, 5, 51, tzinfo=timezone.utc)
-    read_at = datetime(2026, 7, 5, 6, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 5, 5, 51, tzinfo=UTC)
+    read_at = datetime(2026, 7, 5, 6, 0, tzinfo=UTC)
     notification_id = uuid4()
     recipient_id = uuid4()
     actor_id = uuid4()
@@ -55,7 +55,7 @@ def test_list_notifications_serializes_new_kinds_with_iso_datetimes() -> None:
     except OperationalError:
         pytest.skip("Postgres not available")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recipient_id = uuid4()
     actor_id = uuid4()
     subject_id = uuid4()

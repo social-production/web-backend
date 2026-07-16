@@ -16,7 +16,6 @@ from app.models import (
     help_requests,
     platform_board_memberships,
     posts,
-    project_memberships,
     projects,
     report_votes,
     reports,
@@ -38,7 +37,9 @@ REPORT_VOTES = frozenset({"yes", "no"})
 VOTE_DIRECTIONS = {"up": 1, "down": -1, "neutral": 0}
 
 
-def _serialize_report(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
+def _serialize_report(
+    row: Mapping[str, object], vote_summary: dict[str, object]
+) -> dict[str, object]:
     return {
         "id": row["id"],
         "subject_type": row["subject_type"],
@@ -83,12 +84,18 @@ def _ensure_report_target_exists(db: Session, target_type: str, target_id: UUID)
         exists = None
 
     if exists is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{target_type.capitalize()} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"{target_type.capitalize()} not found"
+        )
 
 
-def _report_vote_summary(db: Session, report_id: UUID, current_user_id: UUID | None = None) -> dict[str, object]:
+def _report_vote_summary(
+    db: Session, report_id: UUID, current_user_id: UUID | None = None
+) -> dict[str, object]:
     rows = db.execute(
-        select(report_votes.c.vote, report_votes.c.voter_id).where(report_votes.c.report_id == report_id)
+        select(report_votes.c.vote, report_votes.c.voter_id).where(
+            report_votes.c.report_id == report_id
+        )
     ).all()
 
     yes_count = 0
@@ -103,7 +110,9 @@ def _report_vote_summary(db: Session, report_id: UUID, current_user_id: UUID | N
             active_vote = vote
 
     member_count = db.execute(
-        select(platform_board_memberships.c.user_id).where(platform_board_memberships.c.standing_state == "member")
+        select(platform_board_memberships.c.user_id).where(
+            platform_board_memberships.c.standing_state == "member"
+        )
     ).all()
     eligible = len(member_count) if len(member_count) > 0 else 1
 
@@ -116,7 +125,9 @@ def _report_vote_summary(db: Session, report_id: UUID, current_user_id: UUID | N
     }
 
 
-def _serialize_comment(row: Mapping[str, object], replies: list[dict[str, object]] | None = None, active_vote: int = 0) -> dict[str, object]:
+def _serialize_comment(
+    row: Mapping[str, object], replies: list[dict[str, object]] | None = None, active_vote: int = 0
+) -> dict[str, object]:
     return {
         "id": row["id"],
         "subject_type": row["subject_type"],
@@ -143,12 +154,18 @@ def _ensure_subject_exists(db: Session, subject_type: str, subject_id: UUID) -> 
     elif subject_type == "project":
         exists = db.execute(select(projects.c.id).where(projects.c.id == subject_id)).first()
     elif subject_type == "help_request":
-        exists = db.execute(select(help_requests.c.id).where(help_requests.c.id == subject_id)).first()
+        exists = db.execute(
+            select(help_requests.c.id).where(help_requests.c.id == subject_id)
+        ).first()
     else:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid subject_type")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid subject_type"
+        )
 
     if exists is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{subject_type.capitalize()} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"{subject_type.capitalize()} not found"
+        )
 
 
 def _ensure_vote_target_exists(db: Session, target_type: str, target_id: UUID) -> None:
@@ -163,12 +180,18 @@ def _ensure_vote_target_exists(db: Session, target_type: str, target_id: UUID) -
     elif target_type == "project":
         exists = db.execute(select(projects.c.id).where(projects.c.id == target_id)).first()
     elif target_type == "help_request":
-        exists = db.execute(select(help_requests.c.id).where(help_requests.c.id == target_id)).first()
+        exists = db.execute(
+            select(help_requests.c.id).where(help_requests.c.id == target_id)
+        ).first()
     else:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid target_type")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid target_type"
+        )
 
     if exists is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{target_type.capitalize()} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"{target_type.capitalize()} not found"
+        )
 
 
 def _comment_notification_context(
@@ -177,9 +200,15 @@ def _comment_notification_context(
     subject_id: UUID,
 ) -> tuple[str, str, UUID | None] | None:
     if subject_type == "thread":
-        row = db.execute(
-            select(threads.c.slug, threads.c.title, threads.c.author_id).where(threads.c.id == subject_id)
-        ).mappings().first()
+        row = (
+            db.execute(
+                select(threads.c.slug, threads.c.title, threads.c.author_id).where(
+                    threads.c.id == subject_id
+                )
+            )
+            .mappings()
+            .first()
+        )
         if row is None:
             return None
         return (
@@ -188,18 +217,26 @@ def _comment_notification_context(
             row["author_id"],
         )
     if subject_type == "post":
-        row = db.execute(
-            select(posts.c.body, posts.c.author_id).where(posts.c.id == subject_id)
-        ).mappings().first()
+        row = (
+            db.execute(select(posts.c.body, posts.c.author_id).where(posts.c.id == subject_id))
+            .mappings()
+            .first()
+        )
         if row is None:
             return None
         body = str(row["body"] or "").strip()
         title = body[:120] + ("…" if len(body) > 120 else "") if body else "Post"
         return (f"/posts/{subject_id}", title, row["author_id"])
     if subject_type == "project":
-        row = db.execute(
-            select(projects.c.slug, projects.c.title, projects.c.author_id).where(projects.c.id == subject_id)
-        ).mappings().first()
+        row = (
+            db.execute(
+                select(projects.c.slug, projects.c.title, projects.c.author_id).where(
+                    projects.c.id == subject_id
+                )
+            )
+            .mappings()
+            .first()
+        )
         if row is None:
             return None
         return (
@@ -208,9 +245,15 @@ def _comment_notification_context(
             row["author_id"],
         )
     if subject_type == "event":
-        row = db.execute(
-            select(events.c.slug, events.c.title, events.c.author_id).where(events.c.id == subject_id)
-        ).mappings().first()
+        row = (
+            db.execute(
+                select(events.c.slug, events.c.title, events.c.author_id).where(
+                    events.c.id == subject_id
+                )
+            )
+            .mappings()
+            .first()
+        )
         if row is None:
             return None
         return (
@@ -219,9 +262,15 @@ def _comment_notification_context(
             row["author_id"],
         )
     if subject_type == "help_request":
-        row = db.execute(
-            select(help_requests.c.title, help_requests.c.author_id).where(help_requests.c.id == subject_id)
-        ).mappings().first()
+        row = (
+            db.execute(
+                select(help_requests.c.title, help_requests.c.author_id).where(
+                    help_requests.c.id == subject_id
+                )
+            )
+            .mappings()
+            .first()
+        )
         if row is None:
             return None
         return (
@@ -302,7 +351,9 @@ def _notify_comment_recipients(
         )
 
 
-def _update_subject_comment_count(db: Session, subject_type: str, subject_id: UUID, delta: int) -> None:
+def _update_subject_comment_count(
+    db: Session, subject_type: str, subject_id: UUID, delta: int
+) -> None:
     try:
         if subject_type == "thread":
             db.execute(
@@ -336,7 +387,10 @@ def _update_subject_comment_count(db: Session, subject_type: str, subject_id: UU
             )
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update comment count") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not update comment count",
+        ) from exc
 
 
 def _apply_vote_count_delta(db: Session, target_type: str, target_id: UUID, delta: int) -> None:
@@ -382,7 +436,9 @@ def _apply_vote_count_delta(db: Session, target_type: str, target_id: UUID, delt
             )
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update vote count") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update vote count"
+        ) from exc
 
 
 def add_comment(
@@ -406,7 +462,9 @@ def add_comment(
     if parent_id is not None:
         parent = db.execute(select(comments).where(comments.c.id == parent_id)).mappings().first()
         if parent is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parent comment not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Parent comment not found"
+            )
         if parent["subject_type"] != normalized_subject_type or parent["subject_id"] != subject_id:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -414,27 +472,31 @@ def add_comment(
             )
 
     try:
-        created = db.execute(
-            insert(comments)
-            .values(
-                subject_type=normalized_subject_type,
-                subject_id=subject_id,
-                parent_id=parent_id,
-                author_id=current_user_id,
-                body=body.strip(),
+        created = (
+            db.execute(
+                insert(comments)
+                .values(
+                    subject_type=normalized_subject_type,
+                    subject_id=subject_id,
+                    parent_id=parent_id,
+                    author_id=current_user_id,
+                    body=body.strip(),
+                )
+                .returning(
+                    comments.c.id,
+                    comments.c.subject_type,
+                    comments.c.subject_id,
+                    comments.c.parent_id,
+                    comments.c.author_id,
+                    comments.c.body,
+                    comments.c.vote_count,
+                    comments.c.created_at,
+                    comments.c.updated_at,
+                )
             )
-            .returning(
-                comments.c.id,
-                comments.c.subject_type,
-                comments.c.subject_id,
-                comments.c.parent_id,
-                comments.c.author_id,
-                comments.c.body,
-                comments.c.vote_count,
-                comments.c.created_at,
-                comments.c.updated_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
         _update_subject_comment_count(db, normalized_subject_type, subject_id, 1)
         record_meaningful_action(
@@ -450,7 +512,9 @@ def add_comment(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add comment") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add comment"
+        ) from exc
 
     try:
         _notify_comment_recipients(
@@ -509,17 +573,21 @@ def get_comments(
         )
     ).scalar_one()
 
-    rows = db.execute(
-        select(comments, users.c.username.label("author_username"))
-        .select_from(comments.outerjoin(users, users.c.id == comments.c.author_id))
-        .where(
-            comments.c.subject_type == normalized_subject_type,
-            comments.c.subject_id == subject_id,
+    rows = (
+        db.execute(
+            select(comments, users.c.username.label("author_username"))
+            .select_from(comments.outerjoin(users, users.c.id == comments.c.author_id))
+            .where(
+                comments.c.subject_type == normalized_subject_type,
+                comments.c.subject_id == subject_id,
+            )
+            .order_by(comments.c.created_at.asc())
+            .limit(safe_limit)
+            .offset(safe_offset)
         )
-        .order_by(comments.c.created_at.asc())
-        .limit(safe_limit)
-        .offset(safe_offset)
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     # Bulk-query the viewer's votes on all comments
     active_votes: dict[UUID, int] = {}
@@ -594,15 +662,19 @@ def cast_vote(
 
     new_value = VOTE_DIRECTIONS[normalized_direction]
 
-    existing = db.execute(
-        select(content_votes.c.id, content_votes.c.direction)
-        .where(
-            content_votes.c.target_type == normalized_target_type,
-            content_votes.c.target_id == target_id,
-            content_votes.c.voter_id == current_user_id,
+    existing = (
+        db.execute(
+            select(content_votes.c.id, content_votes.c.direction)
+            .where(
+                content_votes.c.target_type == normalized_target_type,
+                content_votes.c.target_id == target_id,
+                content_votes.c.voter_id == current_user_id,
+            )
+            .limit(1)
         )
-        .limit(1)
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     old_value = int(existing["direction"]) if existing is not None else 0
     delta = new_value - old_value
@@ -642,7 +714,9 @@ def cast_vote(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast vote") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast vote"
+        ) from exc
 
     return {
         "target_type": normalized_target_type,
@@ -676,45 +750,59 @@ def submit_report(
     _ensure_report_target_exists(db, normalized_target, target_id)
     reported_author_id = _resolve_target_author_id(db, normalized_target, target_id)
 
-    existing = db.execute(
-        select(reports).where(reports.c.target_type == normalized_target, reports.c.target_id == target_id)
-    ).mappings().first()
+    existing = (
+        db.execute(
+            select(reports).where(
+                reports.c.target_type == normalized_target, reports.c.target_id == target_id
+            )
+        )
+        .mappings()
+        .first()
+    )
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Report already exists for target")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Report already exists for target"
+        )
 
     try:
-        created = db.execute(
-            insert(reports)
-            .values(
-                subject_type=normalized_target,
-                subject_id=target_id,
-                target_type=normalized_target,
-                target_id=target_id,
-                reason=normalized_reason,
-                description=description.strip(),
-                reporter_id=current_user_id,
-                reported_author_id=reported_author_id,
-                resolution="open",
+        created = (
+            db.execute(
+                insert(reports)
+                .values(
+                    subject_type=normalized_target,
+                    subject_id=target_id,
+                    target_type=normalized_target,
+                    target_id=target_id,
+                    reason=normalized_reason,
+                    description=description.strip(),
+                    reporter_id=current_user_id,
+                    reported_author_id=reported_author_id,
+                    resolution="open",
+                )
+                .returning(
+                    reports.c.id,
+                    reports.c.subject_type,
+                    reports.c.subject_id,
+                    reports.c.target_type,
+                    reports.c.target_id,
+                    reports.c.reason,
+                    reports.c.description,
+                    reports.c.reporter_id,
+                    reports.c.reported_author_id,
+                    reports.c.resolution,
+                    reports.c.created_at,
+                    reports.c.updated_at,
+                )
             )
-            .returning(
-                reports.c.id,
-                reports.c.subject_type,
-                reports.c.subject_id,
-                reports.c.target_type,
-                reports.c.target_id,
-                reports.c.reason,
-                reports.c.description,
-                reports.c.reporter_id,
-                reports.c.reported_author_id,
-                reports.c.resolution,
-                reports.c.created_at,
-                reports.c.updated_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit report") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit report"
+        ) from exc
 
     summary = _report_vote_summary(db, created["id"], current_user_id)
     return {"report": _serialize_report(created, summary)}
@@ -738,19 +826,25 @@ def vote_report(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
 
     existing = db.execute(
-        select(report_votes.c.vote)
-        .where(report_votes.c.report_id == report_id, report_votes.c.voter_id == current_user_id)
+        select(report_votes.c.vote).where(
+            report_votes.c.report_id == report_id, report_votes.c.voter_id == current_user_id
+        )
     ).first()
 
     try:
         if existing is None:
             db.execute(
-                insert(report_votes).values(report_id=report_id, voter_id=current_user_id, vote=normalized_vote)
+                insert(report_votes).values(
+                    report_id=report_id, voter_id=current_user_id, vote=normalized_vote
+                )
             )
         else:
             db.execute(
                 update(report_votes)
-                .where(report_votes.c.report_id == report_id, report_votes.c.voter_id == current_user_id)
+                .where(
+                    report_votes.c.report_id == report_id,
+                    report_votes.c.voter_id == current_user_id,
+                )
                 .values(vote=normalized_vote)
             )
 
@@ -765,9 +859,7 @@ def vote_report(
             new_resolution = "hidden"
 
         db.execute(
-            update(reports)
-            .where(reports.c.id == report_id)
-            .values(resolution=new_resolution)
+            update(reports).where(reports.c.id == report_id).values(resolution=new_resolution)
         )
         record_meaningful_action(
             db=db,
@@ -782,7 +874,9 @@ def vote_report(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on report") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on report"
+        ) from exc
 
     refreshed = db.execute(select(reports).where(reports.c.id == report_id)).mappings().one()
     final_summary = _report_vote_summary(db, report_id, current_user_id)

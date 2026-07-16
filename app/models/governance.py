@@ -15,7 +15,9 @@ platform_board_memberships = table(
 
 board_standing_votes = table(
     "board_standing_votes",
-    sa.Column("target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.SmallInteger, nullable=False),
     created_at(),
@@ -29,7 +31,9 @@ governance_decision_history = table(
     sa.Column("entity_id", UUID, nullable=False),
     sa.Column("decision_kind", sa.String(48), nullable=False),
     sa.Column("status", sa.String(16), nullable=False),
-    sa.Column("approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"),
+    sa.Column(
+        "approval_threshold_percent", sa.Numeric(5, 2), nullable=False, server_default="66.00"
+    ),
     sa.Column("payload", sa.dialects.postgresql.JSONB, nullable=False),
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     created_at(),

@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
-from app.services.feeds import get_home_feed, get_personal_feed, get_public_feed, get_scope_feed, get_user_feed
+from app.services.feeds import (
+    get_home_feed,
+    get_personal_feed,
+    get_public_feed,
+    get_scope_feed,
+    get_user_feed,
+)
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
 
@@ -80,7 +86,9 @@ def public_feed(
     db: Session = Depends(get_db),
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
-    return get_public_feed(db=db, sort=sort, limit=limit, offset=offset, current_user_id=current_user_id)
+    return get_public_feed(
+        db=db, sort=sort, limit=limit, offset=offset, current_user_id=current_user_id
+    )
 
 
 @router.get("/home", response_model=FeedResponse)
@@ -129,7 +137,15 @@ def scope_feed(
     db: Session = Depends(get_db),
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
-    return get_scope_feed(db=db, scope_kind=kind, slug=slug, sort=sort, limit=limit, offset=offset, current_user_id=current_user_id)
+    return get_scope_feed(
+        db=db,
+        scope_kind=kind,
+        slug=slug,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+        current_user_id=current_user_id,
+    )
 
 
 @router.get("/user/{username}", response_model=FeedResponse)

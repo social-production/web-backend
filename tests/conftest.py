@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import insert
 
-from app.auth.cookies import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE
+from app.auth.cookies import CSRF_COOKIE
 from app.db import SessionLocal
 from app.main import app
 from app.models import channels, events, projects, scope_memberships, users
@@ -173,8 +173,12 @@ def register_and_login_client(
     ip: str = "10.200.0.1",
 ) -> dict[str, str]:
     headers = {"X-Forwarded-For": ip, "X-Include-Tokens": "true"}
-    client.post("/auth/register", json={"username": username, "password": password}, headers=headers)
-    response = client.post("/auth/login", json={"username": username, "password": password}, headers=headers)
+    client.post(
+        "/auth/register", json={"username": username, "password": password}, headers=headers
+    )
+    response = client.post(
+        "/auth/login", json={"username": username, "password": password}, headers=headers
+    )
     assert response.status_code == 200, response.text
     return {
         "username": username,

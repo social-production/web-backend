@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from uuid import UUID, uuid4
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import insert
@@ -19,7 +19,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 def _seed() -> dict[str, object]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     owner_id = uuid4()
     member_id = uuid4()
@@ -29,7 +29,11 @@ def _seed() -> dict[str, object]:
     member_name = f"member-{str(member_id)[:8]}"
     target_name = f"target-{str(target_id)[:8]}"
 
-    for user_id, username in [(owner_id, owner_name), (member_id, member_name), (target_id, target_name)]:
+    for user_id, username in [
+        (owner_id, owner_name),
+        (member_id, member_name),
+        (target_id, target_name),
+    ]:
         db.execute(
             insert(users).values(
                 id=user_id,

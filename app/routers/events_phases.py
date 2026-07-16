@@ -170,7 +170,9 @@ def get_event_phase_requests(
     return list_phase_change_requests(db=db, event_slug=slug)
 
 
-@router.post("/{slug}/phase-requests/{request_id}/vote", response_model=EventPhaseChangeVoteResponse)
+@router.post(
+    "/{slug}/phase-requests/{request_id}/vote", response_model=EventPhaseChangeVoteResponse
+)
 def vote_event_phase_request(
     slug: str,
     request_id: UUID,

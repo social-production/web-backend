@@ -4,7 +4,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import insert, select
@@ -30,7 +30,9 @@ from app.models import (
 )
 
 
-def _request_json(url: str, method: str = "GET", body: dict[str, object] | None = None, token: str | None = None) -> dict[str, object]:
+def _request_json(
+    url: str, method: str = "GET", body: dict[str, object] | None = None, token: str | None = None
+) -> dict[str, object]:
     data = None
     headers = {"Content-Type": "application/json"}
     if body is not None:
@@ -45,7 +47,7 @@ def _request_json(url: str, method: str = "GET", body: dict[str, object] | None 
 
 def seed_test_data() -> dict[str, str]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     viewer = uuid4()
     followed = uuid4()
@@ -79,9 +81,9 @@ def seed_test_data() -> dict[str, str]:
             )
         )
 
-    existing_platform_channel = db.execute(
-        select(channels.c.id).where(channels.c.slug == "platform")
-    ).mappings().first()
+    existing_platform_channel = (
+        db.execute(select(channels.c.id).where(channels.c.slug == "platform")).mappings().first()
+    )
     if existing_platform_channel is None:
         db.execute(
             insert(channels).values(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import insert, select
@@ -20,7 +20,7 @@ def test_discussion_comment_out_preserves_replies() -> None:
         body="reply",
         vote_count=0,
         active_vote=0,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     root = DiscussionCommentOut(
         id=uuid4(),
@@ -28,7 +28,7 @@ def test_discussion_comment_out_preserves_replies() -> None:
         body="root",
         vote_count=0,
         active_vote=0,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         replies=[nested],
     )
 
@@ -39,7 +39,7 @@ def test_discussion_comment_out_preserves_replies() -> None:
 
 def test_thread_nested_reply_is_returned_and_notifies_parent_author() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     author_id = uuid4()
     replier_id = uuid4()
@@ -147,7 +147,7 @@ def test_thread_nested_reply_is_returned_and_notifies_parent_author() -> None:
 
 def test_post_comment_notifies_post_author() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     author_id = uuid4()
     commenter_id = uuid4()
@@ -211,7 +211,7 @@ def test_post_comment_notifies_post_author() -> None:
 
 def test_user_feed_includes_comment_activity() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     author_id = uuid4()
     commenter_id = uuid4()

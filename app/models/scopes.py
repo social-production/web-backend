@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from app.models.base import UUID, channel_fk, community_fk, created_at, table, updated_at, user_fk, uuid_pk
+from app.models.base import (
+    UUID,
+    created_at,
+    table,
+    updated_at,
+    user_fk,
+    uuid_pk,
+)
 
 channels = table(
     "channels",
@@ -35,7 +42,9 @@ scope_memberships = table(
     user_fk("user_id", nullable=False, ondelete="CASCADE"),
     sa.Column("role", sa.String(32), nullable=False, server_default="member"),
     created_at(),
-    sa.UniqueConstraint("scope_kind", "scope_id", "user_id", name="uq_scope_memberships_scope_user"),
+    sa.UniqueConstraint(
+        "scope_kind", "scope_id", "user_id", name="uq_scope_memberships_scope_user"
+    ),
 )
 
 scope_invites = table(
@@ -53,7 +62,9 @@ scope_invites = table(
 
 scope_confidence_votes = table(
     "scope_confidence_votes",
-    sa.Column("target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("scope_kind", sa.String(16), primary_key=True),
     sa.Column("scope_id", UUID, primary_key=True),

@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from app.models.base import JSONB, UUID, channel_fk, community_fk, created_at, table, updated_at, user_fk, uuid_pk
+from app.models.base import (
+    JSONB,
+    UUID,
+    channel_fk,
+    community_fk,
+    created_at,
+    table,
+    updated_at,
+    user_fk,
+    uuid_pk,
+)
 
 posts = table(
     "posts",
@@ -48,7 +58,9 @@ thread_tags = table(
     sa.Column("tag_kind", sa.String(16), nullable=False),
     channel_fk("channel_id", nullable=True),
     community_fk("community_id", nullable=True),
-    sa.UniqueConstraint("thread_id", "tag_kind", "channel_id", "community_id", name="uq_thread_tags_tag"),
+    sa.UniqueConstraint(
+        "thread_id", "tag_kind", "channel_id", "community_id", name="uq_thread_tags_tag"
+    ),
 )
 
 comments = table(
@@ -73,7 +85,9 @@ content_votes = table(
     sa.Column("direction", sa.SmallInteger, nullable=False),
     created_at(),
     updated_at(),
-    sa.UniqueConstraint("target_type", "target_id", "voter_id", name="uq_content_votes_target_voter"),
+    sa.UniqueConstraint(
+        "target_type", "target_id", "voter_id", name="uq_content_votes_target_voter"
+    ),
 )
 
 help_requests = table(

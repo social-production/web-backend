@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from redis.asyncio import Redis
-from sqlalchemy import delete, func, insert, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -15,9 +13,9 @@ from app.models import (
     comments,
     communities,
     content_votes,
+    event_activities,
     event_activity_assignments,
     event_activity_roles,
-    event_activities,
     event_edit_request_votes,
     event_edit_requests,
     event_editors,
@@ -25,7 +23,6 @@ from app.models import (
     event_phase_change_requests,
     event_phase_change_votes,
     event_plan_criterion_ratings,
-    event_plan_value_votes,
     event_plan_votes,
     event_plans,
     event_signals,
@@ -35,27 +32,33 @@ from app.models import (
     event_updates,
     event_value_importance_votes,
     event_values,
-    events,
     reports,
-    scope_memberships,
     user_follows,
     users,
 )
-from app.cache import cache_ttl_seconds
 from app.services.access_control import assert_can_view_entity
 from app.services.activity_history import (
     build_event_history_items,
-    ensure_activity_roles_unlocked,
-    ensure_future_scheduled_start,
     is_activity_ended,
     load_event_ratings_by_activity,
     utc_now,
 )
 from app.services.content import activity_status_tone
-from app.services.meaningful_actions import record_meaningful_action
-from app.services.notifications import create_notification
-from app.services.search import index_document
-from app.services.plan_criteria import assessment_criteria_for_plan, serialize_plan_criterion_assessments
+from app.services.events.helpers import (
+    _can_propose_event_activity,
+    _event_lifecycle_phases,
+    _get_event_by_slug_row,
+    _get_signal_counts,
+    _get_signal_counts_db,
+    _iso,
+    _plan_leader_status,
+    _username_lookup,
+    _vote_summary,
+)
+from app.services.plan_criteria import (
+    assessment_criteria_for_plan,
+    serialize_plan_criterion_assessments,
+)
 from app.utils.votes import is_platform_event, required_votes, resolve_event_vote_population
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
@@ -66,9 +69,7 @@ EVENT_PHASES = (
     ("activity", 3, "P3", "Activity", "Run event activities."),
     ("closed", 4, "P4", "Closed", "Event is closed."),
 )
-import importlib
-_mod = importlib.import_module('app.services.events.helpers')
-globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('__') or k == '__all__'})
+
 
 async def get_event_detail(
     db: Session,
@@ -81,7 +82,11 @@ async def get_event_detail(
     member_count = int(row["member_count"] or 0)
     uses_platform_vote_context = is_platform_event(db, event_id)
     vote_context_population = resolve_event_vote_population(db, event_id)
-    vote_context_label = "Weekly active platform users" if uses_platform_vote_context else "Weekly active event members"
+    vote_context_label = (
+        "Weekly active platform users"
+        if uses_platform_vote_context
+        else "Weekly active event members"
+    )
 
     if cache is not None:
         try:
@@ -92,10 +97,14 @@ async def get_event_detail(
         signal_counts = _get_signal_counts_db(db, event_id)
 
     membership_rows = db.execute(
-        select(event_memberships.c.user_id, event_memberships.c.role).where(event_memberships.c.event_id == event_id)
+        select(event_memberships.c.user_id, event_memberships.c.role).where(
+            event_memberships.c.event_id == event_id
+        )
     ).all()
     member_ids = {user_id for user_id, _ in membership_rows}
-    usernames = _username_lookup(db, member_ids | ({row["created_by"]} if row["created_by"] else set()))
+    usernames = _username_lookup(
+        db, member_ids | ({row["created_by"]} if row["created_by"] else set())
+    )
 
     viewer_is_member = current_user_id is not None and current_user_id in member_ids
     if row["is_private"] and not viewer_is_member:
@@ -115,14 +124,18 @@ async def get_event_detail(
         .select_from(event_tags.join(channels, channels.c.id == event_tags.c.channel_id))
         .where(event_tags.c.event_id == event_id, event_tags.c.tag_kind == "channel")
     ).all()
-    channel_tags = [{"slug": slug_v, "label": name, "kind": "channel"} for slug_v, name in channel_tag_rows]
+    channel_tags = [
+        {"slug": slug_v, "label": name, "kind": "channel"} for slug_v, name in channel_tag_rows
+    ]
 
     community_tag_rows = db.execute(
         select(communities.c.slug, communities.c.name)
         .select_from(event_tags.join(communities, communities.c.id == event_tags.c.community_id))
         .where(event_tags.c.event_id == event_id, event_tags.c.tag_kind == "community")
     ).all()
-    community_tags = [{"slug": slug_v, "label": name, "kind": "community"} for slug_v, name in community_tag_rows]
+    community_tags = [
+        {"slug": slug_v, "label": name, "kind": "community"} for slug_v, name in community_tag_rows
+    ]
 
     active_vote = 0
     if current_user_id is not None:
@@ -190,7 +203,9 @@ async def get_event_detail(
 
     required_demand = required_votes(vote_context_population)
     total_signals = signal_counts["total"]
-    signal_ratio_percent = (signal_counts["demand"] / total_signals * 100.0) if total_signals > 0 else 0.0
+    signal_ratio_percent = (
+        (signal_counts["demand"] / total_signals * 100.0) if total_signals > 0 else 0.0
+    )
     signal_summary = {
         "demandCount": signal_counts["demand"],
         "oppositionCount": signal_counts["opposition"],
@@ -212,13 +227,17 @@ async def get_event_detail(
         .order_by(event_values.c.created_at.asc())
     ).all()
     value_ids = [value_id for value_id, _, _ in value_rows]
-    importance_rows = db.execute(
-        select(
-            event_value_importance_votes.c.value_id,
-            event_value_importance_votes.c.voter_id,
-            event_value_importance_votes.c.importance,
-        ).where(event_value_importance_votes.c.value_id.in_(value_ids or [UUID(int=0)]))
-    ).all() if value_ids else []
+    importance_rows = (
+        db.execute(
+            select(
+                event_value_importance_votes.c.value_id,
+                event_value_importance_votes.c.voter_id,
+                event_value_importance_votes.c.importance,
+            ).where(event_value_importance_votes.c.value_id.in_(value_ids or [UUID(int=0)]))
+        ).all()
+        if value_ids
+        else []
+    )
 
     votes_by_value: dict[UUID, list[tuple[UUID, int]]] = {}
     for value_id, voter_id, importance in importance_rows:
@@ -255,16 +274,26 @@ async def get_event_detail(
             }
         )
 
-    plan_rows = db.execute(
-        select(event_plans).where(event_plans.c.event_id == event_id).order_by(event_plans.c.created_at.desc())
-    ).mappings().all()
+    plan_rows = (
+        db.execute(
+            select(event_plans)
+            .where(event_plans.c.event_id == event_id)
+            .order_by(event_plans.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
 
     passing_plans: list[tuple[str, float]] = []
     for plan in plan_rows:
         plan_vote_rows = db.execute(
-            select(event_plan_votes.c.vote, event_plan_votes.c.voter_id).where(event_plan_votes.c.plan_id == plan["id"])
+            select(event_plan_votes.c.vote, event_plan_votes.c.voter_id).where(
+                event_plan_votes.c.plan_id == plan["id"]
+            )
         ).all()
-        overall_summary, passes, _ = _vote_summary(plan_vote_rows, vote_context_population, current_user_id)
+        overall_summary, passes, _ = _vote_summary(
+            plan_vote_rows, vote_context_population, current_user_id
+        )
         if passes:
             passing_plans.append((str(plan["id"]), overall_summary["approvalPercent"]))
 
@@ -272,9 +301,13 @@ async def get_event_detail(
     leading_plan_ids: list[str] = []
     for plan in plan_rows:
         plan_vote_rows = db.execute(
-            select(event_plan_votes.c.vote, event_plan_votes.c.voter_id).where(event_plan_votes.c.plan_id == plan["id"])
+            select(event_plan_votes.c.vote, event_plan_votes.c.voter_id).where(
+                event_plan_votes.c.plan_id == plan["id"]
+            )
         ).all()
-        overall_summary, passes, _ = _vote_summary(plan_vote_rows, vote_context_population, current_user_id)
+        overall_summary, passes, _ = _vote_summary(
+            plan_vote_rows, vote_context_population, current_user_id
+        )
         leader_status = _plan_leader_status(
             is_leading=bool(plan["is_leading"]),
             passes=passes,
@@ -312,8 +345,12 @@ async def get_event_detail(
         schedule_mode = str(schedule_payload.get("mode") or "any-day")
         start_date = schedule_payload.get("startDate") or schedule_payload.get("start_date")
         end_date = schedule_payload.get("endDate") or schedule_payload.get("end_date")
-        start_time_label = schedule_payload.get("startTimeLabel") or schedule_payload.get("start_time_label")
-        finish_time_label = schedule_payload.get("finishTimeLabel") or schedule_payload.get("finish_time_label")
+        start_time_label = schedule_payload.get("startTimeLabel") or schedule_payload.get(
+            "start_time_label"
+        )
+        finish_time_label = schedule_payload.get("finishTimeLabel") or schedule_payload.get(
+            "finish_time_label"
+        )
         schedule = {
             "mode": schedule_mode,
             "startDate": start_date,
@@ -359,19 +396,38 @@ async def get_event_detail(
 
     winning_plan_id = leading_plan_ids[0] if len(leading_plan_ids) == 1 else None
 
-    activities_rows = db.execute(
-        select(event_activities).where(event_activities.c.event_id == event_id).order_by(event_activities.c.scheduled_at.desc())
-    ).mappings().all()
+    activities_rows = (
+        db.execute(
+            select(event_activities)
+            .where(event_activities.c.event_id == event_id)
+            .order_by(event_activities.c.scheduled_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     activity_ids = [row_v["id"] for row_v in activities_rows]
-    role_rows = db.execute(
-        select(event_activity_roles).where(event_activity_roles.c.activity_id.in_(activity_ids or [UUID(int=0)]))
-    ).mappings().all() if activity_ids else []
+    role_rows = (
+        db.execute(
+            select(event_activity_roles).where(
+                event_activity_roles.c.activity_id.in_(activity_ids or [UUID(int=0)])
+            )
+        )
+        .mappings()
+        .all()
+        if activity_ids
+        else []
+    )
 
     role_ids = [role["id"] for role in role_rows]
-    assignment_rows = db.execute(
-        select(event_activity_assignments.c.role_id, event_activity_assignments.c.user_id)
-        .where(event_activity_assignments.c.role_id.in_(role_ids or [UUID(int=0)]))
-    ).all() if role_ids else []
+    assignment_rows = (
+        db.execute(
+            select(
+                event_activity_assignments.c.role_id, event_activity_assignments.c.user_id
+            ).where(event_activity_assignments.c.role_id.in_(role_ids or [UUID(int=0)]))
+        ).all()
+        if role_ids
+        else []
+    )
 
     assignments_by_role: dict[UUID, list[UUID]] = {}
     for role_id, user_id in assignment_rows:
@@ -464,7 +520,9 @@ async def get_event_detail(
     selectable_plan_phases = []
     winning_plan = None
     if winning_plan_id is not None:
-        winning_plan = next((plan for plan in event_plans_payload if plan["id"] == winning_plan_id), None)
+        winning_plan = next(
+            (plan for plan in event_plans_payload if plan["id"] == winning_plan_id), None
+        )
         if winning_plan is not None:
             selectable_plan_phases = [
                 {"id": phase["id"], "label": phase["title"]} for phase in winning_plan["planPhases"]
@@ -474,9 +532,15 @@ async def get_event_detail(
         winning_plan.get("schedule") if winning_plan is not None else None
     )
 
-    updates_rows = db.execute(
-        select(event_updates).where(event_updates.c.event_id == event_id).order_by(event_updates.c.created_at.desc())
-    ).mappings().all()
+    updates_rows = (
+        db.execute(
+            select(event_updates)
+            .where(event_updates.c.event_id == event_id)
+            .order_by(event_updates.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     updates = [
         {
             "id": str(item["id"]),
@@ -488,17 +552,26 @@ async def get_event_detail(
         for item in updates_rows
     ]
 
-    update_request_rows = db.execute(
-        select(event_update_requests).where(event_update_requests.c.event_id == event_id).order_by(event_update_requests.c.created_at.desc())
-    ).mappings().all()
+    update_request_rows = (
+        db.execute(
+            select(event_update_requests)
+            .where(event_update_requests.c.event_id == event_id)
+            .order_by(event_update_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     update_requests = []
     history_entries: list[tuple[object, dict[str, object]]] = []
     for req in update_request_rows:
         vote_rows = db.execute(
-            select(event_update_request_votes.c.vote, event_update_request_votes.c.voter_id)
-            .where(event_update_request_votes.c.request_id == req["id"])
+            select(event_update_request_votes.c.vote, event_update_request_votes.c.voter_id).where(
+                event_update_request_votes.c.request_id == req["id"]
+            )
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
+        summary, passes, can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
         history_entries.append(
             (
                 req["created_at"],
@@ -508,7 +581,9 @@ async def get_event_detail(
                     "kind": "event-update",
                     "kindLabel": "Update decision",
                     "createdAt": _iso(req["created_at"]),
-                    "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                    "authorUsername": usernames.get(req["author_id"], {}).get(
+                        "username", "unknown"
+                    ),
                     "status": req["status"],
                     "approvalThresholdPercent": 66,
                     "voteSummary": summary,
@@ -538,16 +613,25 @@ async def get_event_detail(
             }
         )
 
-    edit_request_rows = db.execute(
-        select(event_edit_requests).where(event_edit_requests.c.event_id == event_id).order_by(event_edit_requests.c.created_at.desc())
-    ).mappings().all()
+    edit_request_rows = (
+        db.execute(
+            select(event_edit_requests)
+            .where(event_edit_requests.c.event_id == event_id)
+            .order_by(event_edit_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     edit_requests = []
     for req in edit_request_rows:
         vote_rows = db.execute(
-            select(event_edit_request_votes.c.vote, event_edit_request_votes.c.voter_id)
-            .where(event_edit_request_votes.c.request_id == req["id"])
+            select(event_edit_request_votes.c.vote, event_edit_request_votes.c.voter_id).where(
+                event_edit_request_votes.c.request_id == req["id"]
+            )
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
+        summary, passes, can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
         history_entries.append(
             (
                 req["created_at"],
@@ -557,7 +641,9 @@ async def get_event_detail(
                     "kind": "event-edit",
                     "kindLabel": "Edit decision",
                     "createdAt": _iso(req["created_at"]),
-                    "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                    "authorUsername": usernames.get(req["author_id"], {}).get(
+                        "username", "unknown"
+                    ),
                     "status": req["status"],
                     "approvalThresholdPercent": 66,
                     "voteSummary": summary,
@@ -567,8 +653,16 @@ async def get_event_detail(
                     "payload": {
                         "type": "edit",
                         "changes": [
-                            {"label": "Title", "before": str(row["title"]), "after": str(req["title"])},
-                            {"label": "Description", "before": str(row["description"]), "after": str(req["description"])},
+                            {
+                                "label": "Title",
+                                "before": str(row["title"]),
+                                "after": str(req["title"]),
+                            },
+                            {
+                                "label": "Description",
+                                "before": str(row["description"]),
+                                "after": str(req["description"]),
+                            },
                         ],
                     },
                 },
@@ -590,19 +684,26 @@ async def get_event_detail(
             }
         )
 
-    phase_change_rows = db.execute(
-        select(event_phase_change_requests)
-        .where(event_phase_change_requests.c.event_id == event_id)
-        .order_by(event_phase_change_requests.c.created_at.desc())
-    ).mappings().all()
+    phase_change_rows = (
+        db.execute(
+            select(event_phase_change_requests)
+            .where(event_phase_change_requests.c.event_id == event_id)
+            .order_by(event_phase_change_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     phase_title_map = {item[0]: item[3] for item in EVENT_PHASES}
     phase_change_requests = []
     for req in phase_change_rows:
         vote_rows = db.execute(
-            select(event_phase_change_votes.c.vote, event_phase_change_votes.c.voter_id)
-            .where(event_phase_change_votes.c.request_id == req["id"])
+            select(event_phase_change_votes.c.vote, event_phase_change_votes.c.voter_id).where(
+                event_phase_change_votes.c.request_id == req["id"]
+            )
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
+        summary, passes, can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
         history_entries.append(
             (
                 req["created_at"],
@@ -612,7 +713,9 @@ async def get_event_detail(
                     "kind": "event-phase-change",
                     "kindLabel": "Phase decision",
                     "createdAt": _iso(req["created_at"]),
-                    "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
+                    "authorUsername": usernames.get(req["author_id"], {}).get(
+                        "username", "unknown"
+                    ),
                     "status": req["status"],
                     "approvalThresholdPercent": 66,
                     "voteSummary": summary,
@@ -623,9 +726,13 @@ async def get_event_detail(
                         "type": "phase-change",
                         "changeKind": req["change_kind"],
                         "fromPhaseId": req["from_phase_id"],
-                        "fromPhaseLabel": phase_title_map.get(req["from_phase_id"], req["from_phase_id"]),
+                        "fromPhaseLabel": phase_title_map.get(
+                            req["from_phase_id"], req["from_phase_id"]
+                        ),
                         "toPhaseId": req["target_phase_id"],
-                        "toPhaseLabel": phase_title_map.get(req["target_phase_id"], req["target_phase_id"]),
+                        "toPhaseLabel": phase_title_map.get(
+                            req["target_phase_id"], req["target_phase_id"]
+                        ),
                         "reason": req["reason"],
                     },
                 },
@@ -637,7 +744,9 @@ async def get_event_detail(
             {
                 "id": str(req["id"]),
                 "targetPhaseId": req["target_phase_id"],
-                "targetPhaseLabel": phase_title_map.get(req["target_phase_id"], req["target_phase_id"]),
+                "targetPhaseLabel": phase_title_map.get(
+                    req["target_phase_id"], req["target_phase_id"]
+                ),
                 "reason": req["reason"],
                 "authorUsername": usernames.get(req["author_id"], {}).get("username", "unknown"),
                 "createdAt": _iso(req["created_at"]),
@@ -656,7 +765,11 @@ async def get_event_detail(
 
     lifecycle = {
         "currentPhaseId": row["current_phase_id"],
-        "quorumThresholdPercent": (required_votes(vote_context_population) / vote_context_population * 100.0) if vote_context_population > 0 else 0.0,
+        "quorumThresholdPercent": (
+            required_votes(vote_context_population) / vote_context_population * 100.0
+        )
+        if vote_context_population > 0
+        else 0.0,
         "quorumVotesRequired": required_votes(vote_context_population),
         "voteContextLabel": vote_context_label,
         "voteContextPopulation": vote_context_population,
@@ -686,18 +799,30 @@ async def get_event_detail(
         "viewerCanRequestPhaseChanges": viewer_is_member,
         "viewerCanVoteOnPhaseChanges": viewer_is_member,
         "phaseChangeRequests": phase_change_requests,
-        "revertablePhaseIds": [phase_id for phase_id, order, _, _, _ in EVENT_PHASES if order < current_order],
+        "revertablePhaseIds": [
+            phase_id for phase_id, order, _, _, _ in EVENT_PHASES if order < current_order
+        ],
         "previousPhaseId": previous_phase[0] if previous_phase else None,
         "previousPhaseLabel": previous_phase[3] if previous_phase else None,
         "nextPhaseId": next_phase[0] if next_phase else None,
         "nextPhaseLabel": next_phase[3] if next_phase else None,
     }
 
-    report_row = db.execute(
-        select(reports.c.id, reports.c.reason, reports.c.description, reports.c.created_at, reports.c.resolution)
-        .where(reports.c.target_type == "event", reports.c.target_id == event_id)
-        .limit(1)
-    ).mappings().first()
+    report_row = (
+        db.execute(
+            select(
+                reports.c.id,
+                reports.c.reason,
+                reports.c.description,
+                reports.c.created_at,
+                reports.c.resolution,
+            )
+            .where(reports.c.target_type == "event", reports.c.target_id == event_id)
+            .limit(1)
+        )
+        .mappings()
+        .first()
+    )
     report = None
     is_removed = False
     if report_row is not None:
@@ -721,8 +846,18 @@ async def get_event_detail(
         is_removed = report_row["resolution"] in {"hidden", "removed"}
 
     discussion_rows = db.execute(
-        select(comments.c.id, comments.c.author_id, comments.c.body, comments.c.created_at, comments.c.vote_count)
-        .where(comments.c.subject_type == "event", comments.c.subject_id == event_id, comments.c.parent_id.is_(None))
+        select(
+            comments.c.id,
+            comments.c.author_id,
+            comments.c.body,
+            comments.c.created_at,
+            comments.c.vote_count,
+        )
+        .where(
+            comments.c.subject_type == "event",
+            comments.c.subject_id == event_id,
+            comments.c.parent_id.is_(None),
+        )
         .order_by(comments.c.created_at.asc())
     ).all()
     discussion_author_ids = {author_id for _, author_id, _, _, _ in discussion_rows if author_id}
@@ -754,7 +889,10 @@ async def get_event_detail(
         for comment_id, author_id, body, created_at, vote_count in discussion_rows
     ]
 
-    viewer_has_edit_access = bool(current_user_id is not None and (current_user_id == row["created_by"] or current_user_id in editor_ids))
+    viewer_has_edit_access = bool(
+        current_user_id is not None
+        and (current_user_id == row["created_by"] or current_user_id in editor_ids)
+    )
 
     return {
         "id": str(event_id),
@@ -785,7 +923,9 @@ async def get_event_detail(
         "editRequests": edit_requests,
         "viewerCanRequestEdit": viewer_is_member,
         "viewerCanVoteOnEditRequests": viewer_is_member,
-        "history": [entry for _, entry in sorted(history_entries, key=lambda item: item[0], reverse=True)],
+        "history": [
+            entry for _, entry in sorted(history_entries, key=lambda item: item[0], reverse=True)
+        ],
         "attendees": attendees,
         "invitedUsernames": [],
         "eventEditors": event_editors_payload,
@@ -793,7 +933,8 @@ async def get_event_detail(
         "viewerIsMember": viewer_is_member,
         "viewerCanToggleMembership": current_user_id is not None,
         "viewerHasEventEditAccess": viewer_has_edit_access,
-        "viewerCanManageEditors": current_user_id is not None and current_user_id == row["created_by"],
+        "viewerCanManageEditors": current_user_id is not None
+        and current_user_id == row["created_by"],
         "viewerCanShare": viewer_is_member,
         "availableEditorInvitees": available_editor_invitees,
         "shareContacts": share_contacts,
@@ -802,4 +943,3 @@ async def get_event_detail(
         "discussionNote": "",
         "discussion": discussion,
     }
-

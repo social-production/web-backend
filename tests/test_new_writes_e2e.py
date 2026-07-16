@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -27,7 +27,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 def _seed() -> dict[str, object]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     owner_id = uuid4()
     member_id = uuid4()
@@ -234,7 +234,7 @@ def run() -> None:
         )
         assert value_vote.status_code == 200, value_vote.text
 
-        activity_now = datetime.now(timezone.utc)
+        activity_now = datetime.now(UTC)
         activity = client.post(
             f"/projects/{seeded['project_slug']}/activities",
             headers=_auth_header(seeded["owner_token"]),

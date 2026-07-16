@@ -10,15 +10,15 @@ from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
 from app.services.projects_phases import (
     advance_project_phase,
+    create_phase_change_request,
     create_project_edit_request,
     create_project_update_request,
     create_revert_phase_change_request,
-    create_phase_change_request,
     list_phase_change_requests,
+    vote_phase_change_request,
     vote_project_edit_request,
     vote_project_update_request,
     vote_revert_phase_change_request,
-    vote_phase_change_request,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects-phases"])

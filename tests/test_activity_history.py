@@ -1,7 +1,8 @@
 """Activity history rating, completion, and staffing gates."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -266,7 +267,7 @@ def _event_history_item(slug: str, token: str, activity_id: UUID) -> dict[str, o
 
 def test_assigned_user_can_rate_and_complete_staffed_activity() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     project_id, slug = _seed_project(db, now, owner_id)
     activity_id = _create_ended_project_activity(
@@ -298,7 +299,7 @@ def test_assigned_user_can_rate_and_complete_staffed_activity() -> None:
 
 def test_zero_committed_activity_is_auto_uncompleted() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     project_id, slug = _seed_project(db, now, owner_id)
     activity_id = _create_ended_project_activity(
@@ -321,7 +322,9 @@ def test_zero_committed_activity_is_auto_uncompleted() -> None:
 
     db = SessionLocal()
     row = db.execute(
-        select(project_activities.c.participant_auto_uncompleted_at).where(project_activities.c.id == activity_id)
+        select(project_activities.c.participant_auto_uncompleted_at).where(
+            project_activities.c.id == activity_id
+        )
     ).first()
     assert row is not None
     assert row[0] is not None
@@ -330,7 +333,7 @@ def test_zero_committed_activity_is_auto_uncompleted() -> None:
 
 def test_under_minimum_staffing_allows_completion() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     project_id, slug = _seed_project(db, now, owner_id)
     activity_id = _create_ended_project_activity(
@@ -361,7 +364,7 @@ def test_under_minimum_staffing_allows_completion() -> None:
 
 def test_completion_api_rejects_zero_committed() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     project_id, slug = _seed_project(db, now, owner_id)
     activity_id = _create_ended_project_activity(
@@ -387,7 +390,7 @@ def test_completion_api_rejects_zero_committed() -> None:
 
 def test_event_detail_loads_with_ended_history() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     event_id, slug = _seed_event(db, now, owner_id)
     _create_ended_event_activity(
@@ -411,7 +414,7 @@ def test_event_detail_loads_with_ended_history() -> None:
 
 def test_event_history_applies_staffing_rules() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     event_id, slug = _seed_event(db, now, owner_id)
     staffed_activity_id = _create_ended_event_activity(
@@ -463,7 +466,7 @@ def test_event_history_applies_staffing_rules() -> None:
 
 def test_project_activity_rating_persists_on_detail() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     project_id, slug = _seed_project(db, now, owner_id)
     activity_id = _create_ended_project_activity(
@@ -499,7 +502,7 @@ def test_project_activity_rating_persists_on_detail() -> None:
 
 def test_requester_can_rate_service_activity_with_role_label() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     provider_id, _ = _seed_user(db, now)
     requester_id, _ = _seed_user(db, now)
     project_id, slug = _seed_project(db, now, provider_id)
@@ -558,7 +561,7 @@ def test_requester_can_rate_service_activity_with_role_label() -> None:
 
 def test_non_participant_non_requester_cannot_rate() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     provider_id, _ = _seed_user(db, now)
     requester_id, _ = _seed_user(db, now)
     outsider_id, _ = _seed_user(db, now)
@@ -604,7 +607,7 @@ def test_non_participant_non_requester_cannot_rate() -> None:
 
 def test_completion_same_selection_is_idempotent() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     project_id, slug = _seed_project(db, now, owner_id)
     activity_id = _create_ended_project_activity(
@@ -641,7 +644,7 @@ def test_completion_same_selection_is_idempotent() -> None:
 
 def test_event_activity_rating_persists_on_detail() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
     event_id, slug = _seed_event(db, now, owner_id)
     activity_id = _create_ended_event_activity(

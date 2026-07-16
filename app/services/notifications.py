@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -55,39 +55,43 @@ def create_notification(
 ) -> dict[str, object]:
     """Internal helper for other services to emit notifications."""
     try:
-        created = db.execute(
-            insert(notifications)
-            .values(
-                recipient_id=recipient_id,
-                actor_id=actor_id,
-                kind=kind.strip(),
-                surface=surface.strip(),
-                subject_type=subject_type.strip(),
-                subject_id=subject_id,
-                target_id=target_id,
-                title=title.strip(),
-                body=body.strip(),
-                href=href.strip(),
-                is_unread=True,
-                read_at=None,
+        created = (
+            db.execute(
+                insert(notifications)
+                .values(
+                    recipient_id=recipient_id,
+                    actor_id=actor_id,
+                    kind=kind.strip(),
+                    surface=surface.strip(),
+                    subject_type=subject_type.strip(),
+                    subject_id=subject_id,
+                    target_id=target_id,
+                    title=title.strip(),
+                    body=body.strip(),
+                    href=href.strip(),
+                    is_unread=True,
+                    read_at=None,
+                )
+                .returning(
+                    notifications.c.id,
+                    notifications.c.recipient_id,
+                    notifications.c.actor_id,
+                    notifications.c.kind,
+                    notifications.c.surface,
+                    notifications.c.subject_type,
+                    notifications.c.subject_id,
+                    notifications.c.target_id,
+                    notifications.c.title,
+                    notifications.c.body,
+                    notifications.c.href,
+                    notifications.c.is_unread,
+                    notifications.c.created_at,
+                    notifications.c.read_at,
+                )
             )
-            .returning(
-                notifications.c.id,
-                notifications.c.recipient_id,
-                notifications.c.actor_id,
-                notifications.c.kind,
-                notifications.c.surface,
-                notifications.c.subject_type,
-                notifications.c.subject_id,
-                notifications.c.target_id,
-                notifications.c.title,
-                notifications.c.body,
-                notifications.c.href,
-                notifications.c.is_unread,
-                notifications.c.created_at,
-                notifications.c.read_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -112,15 +116,19 @@ def list_notifications(
             notifications,
             actor_users.c.username.label("actor_username"),
         )
-        .select_from(notifications.outerjoin(actor_users, actor_users.c.id == notifications.c.actor_id))
+        .select_from(
+            notifications.outerjoin(actor_users, actor_users.c.id == notifications.c.actor_id)
+        )
         .where(notifications.c.recipient_id == current_user_id)
     )
     if unread_only:
         query = query.where(notifications.c.is_unread.is_(True))
 
-    rows = db.execute(
-        query.order_by(notifications.c.created_at.desc()).limit(limit).offset(offset)
-    ).mappings().all()
+    rows = (
+        db.execute(query.order_by(notifications.c.created_at.desc()).limit(limit).offset(offset))
+        .mappings()
+        .all()
+    )
     items = [_serialize_notification(row) for row in rows]
 
     return {
@@ -129,15 +137,21 @@ def list_notifications(
     }
 
 
-def mark_notification_read(db: Session, current_user_id: UUID, notification_id: UUID) -> dict[str, object]:
-    row = db.execute(
-        select(notifications)
-        .where(
-            notifications.c.id == notification_id,
-            notifications.c.recipient_id == current_user_id,
+def mark_notification_read(
+    db: Session, current_user_id: UUID, notification_id: UUID
+) -> dict[str, object]:
+    row = (
+        db.execute(
+            select(notifications)
+            .where(
+                notifications.c.id == notification_id,
+                notifications.c.recipient_id == current_user_id,
+            )
+            .limit(1)
         )
-        .limit(1)
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
 
@@ -145,18 +159,20 @@ def mark_notification_read(db: Session, current_user_id: UUID, notification_id: 
         db.execute(
             update(notifications)
             .where(notifications.c.id == notification_id)
-            .values(is_unread=False, read_at=datetime.now(timezone.utc))
+            .values(is_unread=False, read_at=datetime.now(UTC))
         )
         db.commit()
 
-    refreshed = db.execute(
-        select(notifications).where(notifications.c.id == notification_id)
-    ).mappings().one()
+    refreshed = (
+        db.execute(select(notifications).where(notifications.c.id == notification_id))
+        .mappings()
+        .one()
+    )
     return {"notification": _serialize_notification(refreshed)}
 
 
 def mark_all_notifications_read(db: Session, current_user_id: UUID) -> dict[str, object]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     result = db.execute(
         update(notifications)
         .where(

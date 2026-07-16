@@ -1,41 +1,30 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from uuid import UUID
 
-from fastapi import HTTPException
-from sqlalchemy import Boolean, DateTime, Integer, String, and_, cast, func, literal, null, or_, select, union_all
+from sqlalchemy import (
+    Integer,
+    cast,
+    literal,
+    select,
+    union_all,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
-from app.models import (
-    channels,
-    comments,
-    communities,
-    content_votes,
-    event_tags,
-    event_updates,
-    events,
-    help_request_tags,
-    help_requests,
-    posts,
-    project_tags,
-    project_updates,
-    projects,
-    scope_memberships,
-    thread_tags,
-    threads,
-    user_follows,
-    users,
-    user_settings,
+from app.services.content import _load_help_request_roles
+from app.services.feeds.selects import (
+    _events_select,
+    _help_requests_select,
+    _projects_select,
+    _threads_select,
 )
-
-from app.services.access_control import (
-    assert_can_view_scope,
-    closed_community_only_tag_condition,
+from app.services.feeds.serializers import (
+    _fetch_active_votes_for_rows,
+    _fetch_latest_updates_for_items,
+    _fetch_tags_for_items,
+    _serialize_item,
 )
-from app.services.projects_phases import display_stage_label as project_display_stage_label
-from app.services.content import _help_request_role_summaries, _load_help_request_roles
 
 VALID_SORTS = frozenset({"popular", "recent"})
 
@@ -49,29 +38,6 @@ EVENT_STAGE_LABEL_BY_PHASE_ID = {
 _ZERO_INT = literal(0, Integer)
 _EMPTY_ROLES = cast(literal("[]"), JSONB)
 
-
-from app.services.feeds.selects import (
-    _comment_activity_select,
-    _comments_select_for_followed,
-    _events_select,
-    _events_select_for_followed,
-    _help_requests_select,
-    _help_requests_select_for_followed,
-    _posts_select_discovery,
-    _posts_select_for_followed,
-    _projects_select,
-    _projects_select_for_followed,
-    _threads_select,
-    _threads_select_discovery,
-    _threads_select_for_followed,
-)
-from app.services.feeds.serializers import (
-    _fetch_active_votes_for_rows,
-    _fetch_latest_updates_for_items,
-    _fetch_tags_for_items,
-    _serialize_item,
-)
-from app.services.content import _load_help_request_roles
 
 def _build_feed(
     db: Session,
@@ -130,7 +96,9 @@ def _build_feed(
             tags,
             active_votes,
             updates,
-            help_request_roles=help_roles_by_id.get(str(row["id"])) if row["entity_type"] == "help_request" else None,
+            help_request_roles=help_roles_by_id.get(str(row["id"]))
+            if row["entity_type"] == "help_request"
+            else None,
         )
         for row in rows
     ]

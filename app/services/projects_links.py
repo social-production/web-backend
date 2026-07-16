@@ -15,7 +15,8 @@ from app.models import (
     project_memberships,
     projects,
 )
-from app.utils.votes import required_votes, resolve_project_vote_population
+from app.services.governance_votes import compute_vote_summary
+from app.utils.votes import resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_VOTES = frozenset({"yes", "no"})
@@ -56,12 +57,7 @@ def _bilateral_vote_population(
     return source_pop + target_pop
 
 
-from app.services.governance_votes import compute_vote_summary
-
-
-def _compute_vote_summary(
-    db: Session, request_id: UUID, member_count: int
-) -> dict[str, object]:
+def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> dict[str, object]:
     return compute_vote_summary(db, project_link_request_votes, request_id, member_count)
 
 
@@ -100,27 +96,31 @@ def create_project_link_request(
         )
 
     try:
-        created = db.execute(
-            insert(project_link_requests)
-            .values(
-                source_project_id=source_row["id"],
-                target_project_id=target_row["id"],
-                relationship_label=relationship_label.strip(),
-                summary=summary.strip(),
-                proposed_by=current_user_id,
-                status="open",
+        created = (
+            db.execute(
+                insert(project_link_requests)
+                .values(
+                    source_project_id=source_row["id"],
+                    target_project_id=target_row["id"],
+                    relationship_label=relationship_label.strip(),
+                    summary=summary.strip(),
+                    proposed_by=current_user_id,
+                    status="open",
+                )
+                .returning(
+                    project_link_requests.c.id,
+                    project_link_requests.c.source_project_id,
+                    project_link_requests.c.target_project_id,
+                    project_link_requests.c.relationship_label,
+                    project_link_requests.c.summary,
+                    project_link_requests.c.proposed_by,
+                    project_link_requests.c.status,
+                    project_link_requests.c.created_at,
+                )
             )
-            .returning(
-                project_link_requests.c.id,
-                project_link_requests.c.source_project_id,
-                project_link_requests.c.target_project_id,
-                project_link_requests.c.relationship_label,
-                project_link_requests.c.summary,
-                project_link_requests.c.proposed_by,
-                project_link_requests.c.status,
-                project_link_requests.c.created_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -154,13 +154,17 @@ def vote_project_link_request(
             detail=f"vote must be one of: {sorted(VALID_VOTES)}",
         )
 
-    request_row = db.execute(
-        select(project_link_requests).where(project_link_requests.c.id == request_id)
-    ).mappings().first()
+    request_row = (
+        db.execute(select(project_link_requests).where(project_link_requests.c.id == request_id))
+        .mappings()
+        .first()
+    )
     if request_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link request not found")
     if request_row["status"] != "open":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Link request is already closed")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Link request is already closed"
+        )
 
     if project_row["id"] == request_row["source_project_id"]:
         vote_scope = "source"
@@ -180,12 +184,16 @@ def vote_project_link_request(
         )
     ).first()
 
-    source_row = db.execute(
-        select(projects).where(projects.c.id == request_row["source_project_id"])
-    ).mappings().first()
-    target_row = db.execute(
-        select(projects).where(projects.c.id == request_row["target_project_id"])
-    ).mappings().first()
+    source_row = (
+        db.execute(select(projects).where(projects.c.id == request_row["source_project_id"]))
+        .mappings()
+        .first()
+    )
+    target_row = (
+        db.execute(select(projects).where(projects.c.id == request_row["target_project_id"]))
+        .mappings()
+        .first()
+    )
 
     try:
         if existing_vote is None:
@@ -238,15 +246,21 @@ def vote_project_link_request(
             detail="Could not record vote",
         ) from exc
 
-    refreshed_request = db.execute(
-        select(project_link_requests).where(project_link_requests.c.id == request_id)
-    ).mappings().one()
-    refreshed_source = db.execute(
-        select(projects).where(projects.c.id == request_row["source_project_id"])
-    ).mappings().first()
-    refreshed_target = db.execute(
-        select(projects).where(projects.c.id == request_row["target_project_id"])
-    ).mappings().first()
+    refreshed_request = (
+        db.execute(select(project_link_requests).where(project_link_requests.c.id == request_id))
+        .mappings()
+        .one()
+    )
+    refreshed_source = (
+        db.execute(select(projects).where(projects.c.id == request_row["source_project_id"]))
+        .mappings()
+        .first()
+    )
+    refreshed_target = (
+        db.execute(select(projects).where(projects.c.id == request_row["target_project_id"]))
+        .mappings()
+        .first()
+    )
     final_population = _bilateral_vote_population(db, refreshed_source, refreshed_target)
     final_summary = _compute_vote_summary(db, request_id, final_population)
 

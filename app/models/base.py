@@ -24,11 +24,15 @@ def uuid_pk() -> sa.Column:
 
 
 def created_at() -> sa.Column:
-    return sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())
+    return sa.Column(
+        "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    )
 
 
 def updated_at() -> sa.Column:
-    return sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())
+    return sa.Column(
+        "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    )
 
 
 def timestamp_columns(include_updated: bool = True):
@@ -55,7 +59,9 @@ def channel_fk(name: str, *, nullable: bool = False, ondelete: str = "CASCADE") 
 
 
 def community_fk(name: str, *, nullable: bool = False, ondelete: str = "CASCADE") -> sa.Column:
-    return sa.Column(name, UUID, sa.ForeignKey("communities.id", ondelete=ondelete), nullable=nullable)
+    return sa.Column(
+        name, UUID, sa.ForeignKey("communities.id", ondelete=ondelete), nullable=nullable
+    )
 
 
 def table(name: str, *columns, **kwargs) -> sa.Table:

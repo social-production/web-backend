@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import insert
 
 from app.auth.jwt import create_access_token
-from app.main import app
 from app.db import SessionLocal
+from app.main import app
 from app.models import channels, users
 
 PROJECT_PAGE_DATA_KEYS = {
@@ -56,7 +56,7 @@ PROJECT_PAGE_DATA_KEYS = {
 
 def _seed_user_and_channel() -> tuple[str, str]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     user_id = uuid4()
     channel_id = uuid4()

@@ -43,4 +43,4 @@
 
 Cookie auth driver: [`web/src/lib/api/drivers/fastapi/client.ts`](https://github.com/social-production/web/blob/main/src/lib/api/drivers/fastapi/client.ts)
 
-Adapter audit: [`web/docs/ADAPTER_AUDIT.md`](https://github.com/social-production/web/blob/main/docs/ADAPTER_AUDIT.md)
+Adapter guide: [`web/docs/ADAPTERS.md`](https://github.com/social-production/web/blob/main/docs/ADAPTERS.md)

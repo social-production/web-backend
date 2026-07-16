@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
@@ -73,7 +73,7 @@ def _build_issue_body(
     if user_agent:
         lines.append(f"**User agent:** {user_agent}")
 
-    lines.append(f"**Submitted at:** {datetime.now(timezone.utc).isoformat()}")
+    lines.append(f"**Submitted at:** {datetime.now(UTC).isoformat()}")
     return "\n".join(lines)
 
 
@@ -90,14 +90,20 @@ async def create_github_feedback_issue(
 ) -> dict[str, object]:
     safe_category = category.strip().lower()
     if safe_category not in VALID_CATEGORIES:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_feedback_category")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid_feedback_category"
+        )
 
     safe_title = title.strip()
     safe_description = description.strip()
     if not safe_title:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="feedback_title_required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="feedback_title_required"
+        )
     if not safe_description:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="feedback_description_required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="feedback_description_required"
+        )
 
     runtime_settings = settings or get_settings()
     token = runtime_settings.github_token.strip()

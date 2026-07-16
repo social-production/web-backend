@@ -75,24 +75,30 @@ def viewer_follows_author(db: Session, viewer_id: UUID, author_id: UUID) -> bool
     return row is not None
 
 
-def _entity_tag_scope(db: Session, entity_type: str, entity_id: UUID) -> tuple[bool, bool, list[UUID]]:
+def _entity_tag_scope(
+    db: Session, entity_type: str, entity_id: UUID
+) -> tuple[bool, bool, list[UUID]]:
     """Return (has_channel_tag, has_open_community_tag, closed_community_ids)."""
     tag_table = _TAG_TABLE_BY_ENTITY.get(entity_type)
     entity_col = _ENTITY_ID_COLUMN.get(entity_type)
     if tag_table is None or entity_col is None:
         return False, False, []
 
-    rows = db.execute(
-        select(
-            tag_table.c.channel_id,
-            tag_table.c.community_id,
-            communities.c.join_policy,
+    rows = (
+        db.execute(
+            select(
+                tag_table.c.channel_id,
+                tag_table.c.community_id,
+                communities.c.join_policy,
+            )
+            .select_from(
+                tag_table.outerjoin(communities, communities.c.id == tag_table.c.community_id)
+            )
+            .where(entity_col == entity_id)
         )
-        .select_from(
-            tag_table.outerjoin(communities, communities.c.id == tag_table.c.community_id)
-        )
-        .where(entity_col == entity_id)
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     has_channel_tag = False
     has_open_community_tag = False
@@ -110,7 +116,9 @@ def _entity_tag_scope(db: Session, entity_type: str, entity_id: UUID) -> tuple[b
     return has_channel_tag, has_open_community_tag, closed_community_ids
 
 
-def _viewer_is_member_of_communities(db: Session, viewer_id: UUID, community_ids: Sequence[UUID]) -> bool:
+def _viewer_is_member_of_communities(
+    db: Session, viewer_id: UUID, community_ids: Sequence[UUID]
+) -> bool:
     if not community_ids:
         return True
     membership_rows = db.execute(
@@ -124,7 +132,9 @@ def _viewer_is_member_of_communities(db: Session, viewer_id: UUID, community_ids
     return all(community_id in member_ids for community_id in community_ids)
 
 
-def can_view_by_tags(db: Session, viewer_id: UUID | None, entity_type: str, entity_id: UUID) -> bool:
+def can_view_by_tags(
+    db: Session, viewer_id: UUID | None, entity_type: str, entity_id: UUID
+) -> bool:
     has_channel_tag, has_open_community_tag, closed_community_ids = _entity_tag_scope(
         db, entity_type, entity_id
     )
@@ -163,17 +173,25 @@ def can_view_post(db: Session, viewer_id: UUID | None, post_row: Mapping[str, ob
 def can_view_entity(db: Session, viewer_id: UUID | None, entity_type: str, entity_id: UUID) -> bool:
     normalized = entity_type.strip().lower()
     if normalized == "post":
-        row = db.execute(
-            select(posts.c.id, posts.c.author_id, posts.c.audience).where(posts.c.id == entity_id)
-        ).mappings().first()
+        row = (
+            db.execute(
+                select(posts.c.id, posts.c.author_id, posts.c.audience).where(
+                    posts.c.id == entity_id
+                )
+            )
+            .mappings()
+            .first()
+        )
         if row is None:
             return False
         return can_view_post(db, viewer_id, row)
 
     if normalized == "event":
-        row = db.execute(
-            select(events.c.id, events.c.is_private).where(events.c.id == entity_id)
-        ).mappings().first()
+        row = (
+            db.execute(select(events.c.id, events.c.is_private).where(events.c.id == entity_id))
+            .mappings()
+            .first()
+        )
         if row is None:
             return False
         if row["is_private"]:
@@ -232,9 +250,15 @@ def assert_can_view_vote_target(
             detail=f"target_type must be one of: {sorted(VOTE_TARGET_TYPES)}",
         )
     if normalized == "comment":
-        row = db.execute(
-            select(comments.c.subject_type, comments.c.subject_id).where(comments.c.id == target_id)
-        ).mappings().first()
+        row = (
+            db.execute(
+                select(comments.c.subject_type, comments.c.subject_id).where(
+                    comments.c.id == target_id
+                )
+            )
+            .mappings()
+            .first()
+        )
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found")
         assert_can_view_subject(db, viewer_id, str(row["subject_type"]), row["subject_id"])
@@ -253,11 +277,11 @@ def assert_can_view_scope(
         return
 
     if normalized_kind != COMMUNITY_SCOPE_KIND:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid scope kind")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid scope kind"
+        )
 
-    row = db.execute(
-        select(communities.c.join_policy).where(communities.c.id == scope_id)
-    ).first()
+    row = db.execute(select(communities.c.join_policy).where(communities.c.id == scope_id)).first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Community not found")
 
@@ -273,9 +297,7 @@ def closed_community_only_tag_condition(tag_table, entity_id_column, entity_fk_n
     entity_fk = getattr(tag_table.c, entity_fk_name)
     has_closed_community_tag = exists(
         select(tag_table.c.id)
-        .select_from(
-            tag_table.join(communities, communities.c.id == tag_table.c.community_id)
-        )
+        .select_from(tag_table.join(communities, communities.c.id == tag_table.c.community_id))
         .where(
             entity_fk == entity_id_column,
             tag_table.c.community_id.is_not(None),
@@ -284,9 +306,7 @@ def closed_community_only_tag_condition(tag_table, entity_id_column, entity_fk_n
     )
     has_public_scope_tag = exists(
         select(tag_table.c.id)
-        .select_from(
-            tag_table.outerjoin(communities, communities.c.id == tag_table.c.community_id)
-        )
+        .select_from(tag_table.outerjoin(communities, communities.c.id == tag_table.c.community_id))
         .where(
             entity_fk == entity_id_column,
             or_(
@@ -313,13 +333,21 @@ def filter_search_results(
         if not isinstance(entity_id, UUID):
             continue
         if entity_type == "community":
-            row = db.execute(
-                select(communities.c.id, communities.c.join_policy).where(communities.c.id == entity_id)
-            ).mappings().first()
+            row = (
+                db.execute(
+                    select(communities.c.id, communities.c.join_policy).where(
+                        communities.c.id == entity_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
             if row is None:
                 continue
             if row["join_policy"] == "closed":
-                if viewer_id is None or not is_scope_member(db, COMMUNITY_SCOPE_KIND, entity_id, viewer_id):
+                if viewer_id is None or not is_scope_member(
+                    db, COMMUNITY_SCOPE_KIND, entity_id, viewer_id
+                ):
                     continue
             filtered.append(item)
             continue

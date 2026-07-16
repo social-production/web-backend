@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -11,62 +10,29 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    channels,
-    comments,
-    communities,
-    content_votes,
     project_activities,
     project_activity_assignments,
     project_activity_roles,
-    project_edit_request_votes,
-    project_edit_requests,
-    project_link_request_votes,
-    project_link_requests,
-    project_links,
     project_memberships,
-    project_phase_change_requests,
-    project_phase_change_votes,
-    project_plan_criterion_ratings,
-    project_plan_value_votes,
-    project_plan_votes,
-    project_plans,
-    project_revert_history,
-    project_service_request_setting_change_votes,
-    project_service_request_setting_changes,
-    project_service_request_settings,
-    project_service_requests,
     project_signals,
-    project_tags,
-    project_update_request_votes,
-    project_update_requests,
     project_updates,
     project_value_importance_votes,
     project_values,
     projects,
-    reports,
-    scope_memberships,
-    user_follows,
     users,
 )
 from app.services.activity_history import (
-    build_event_history_items,
-    build_project_history_items,
     ensure_activity_roles_unlocked,
     ensure_future_scheduled_start,
-    is_activity_ended,
-    load_event_ratings_by_activity,
-    load_project_ratings_by_activity,
-    utc_now,
 )
-from app.cache import cache_ttl_seconds
-from app.services.content import activity_status_tone
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
-from app.services.search import index_document
-from app.services.projects_software import get_project_software_governance
-from app.services.projects_plans import _plan_subtype_from_payload, _subtype_label
-from app.services.plan_criteria import assessment_criteria_for_plan, serialize_plan_criterion_assessments
-from app.utils.votes import required_votes, resolve_project_vote_population
+from app.services.projects.helpers import (
+    _ensure_personal_service_author,
+    _get_project_by_slug_row,
+    _get_signal_counts_db,
+    _write_signal_counts_cache,
+)
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
@@ -80,9 +46,7 @@ PROJECT_PHASES = (
     ("phase-6", 6, "P6", "Pending Execution", "Await execution confirmation."),
     ("phase-7", 7, "P7", "Closed", "Project has closed."),
 )
-import importlib
-_mod = importlib.import_module('app.services.projects.helpers')
-globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('__') or k == '__all__'})
+
 
 def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
@@ -95,7 +59,7 @@ def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, obj
                 user_id=current_user_id,
                 is_manager=False,
                 is_manager_candidate=False,
-                joined_at=datetime.now(timezone.utc),
+                joined_at=datetime.now(UTC),
             )
         )
         inserted = True
@@ -111,7 +75,9 @@ def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, obj
             )
         except IntegrityError as exc:
             db.rollback()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join project") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join project"
+            ) from exc
 
         record_meaningful_action(
             db=db,
@@ -123,7 +89,9 @@ def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, obj
             db.commit()
         except IntegrityError as exc:
             db.rollback()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join project") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join project"
+            ) from exc
 
     return {"ok": True, "joined": True, "slug": project_row["slug"]}
 
@@ -149,11 +117,14 @@ def leave_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, ob
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not leave project") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not leave project"
+        ) from exc
 
     # Invalidate weekly-active caches so quorum drops immediately
     try:
         from app.cache import get_sync_redis_client
+
         redis = get_sync_redis_client()
         redis.delete(f"governance:weekly_active:project:{project_row['id']}")
         redis.delete("governance:weekly_active")
@@ -171,7 +142,10 @@ def _ensure_project_member(db: Session, project_id: UUID, user_id: UUID) -> None
         )
     ).first()
     if membership is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can perform this action")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only project members can perform this action",
+        )
 
 
 def add_project_value(
@@ -185,18 +159,32 @@ def add_project_value(
 
     normalized = label.strip()
     if not normalized:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required"
+        )
 
     try:
-        created = db.execute(
-            insert(project_values)
-            .values(project_id=project_row["id"], label=normalized, author_id=current_user_id)
-            .returning(project_values.c.id, project_values.c.project_id, project_values.c.label, project_values.c.author_id, project_values.c.created_at)
-        ).mappings().one()
+        created = (
+            db.execute(
+                insert(project_values)
+                .values(project_id=project_row["id"], label=normalized, author_id=current_user_id)
+                .returning(
+                    project_values.c.id,
+                    project_values.c.project_id,
+                    project_values.c.label,
+                    project_values.c.author_id,
+                    project_values.c.created_at,
+                )
+            )
+            .mappings()
+            .one()
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add project value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add project value"
+        ) from exc
 
     return {
         "value": {
@@ -220,14 +208,21 @@ def vote_project_value_importance(
     _ensure_project_member(db, project_row["id"], current_user_id)
 
     if importance < 1 or importance > 10:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="importance must be between 1 and 10")
-
-    value_row = db.execute(
-        select(project_values).where(
-            project_values.c.id == value_id,
-            project_values.c.project_id == project_row["id"],
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="importance must be between 1 and 10",
         )
-    ).mappings().first()
+
+    value_row = (
+        db.execute(
+            select(project_values).where(
+                project_values.c.id == value_id,
+                project_values.c.project_id == project_row["id"],
+            )
+        )
+        .mappings()
+        .first()
+    )
     if value_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project value not found")
 
@@ -258,7 +253,10 @@ def vote_project_value_importance(
             )
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on project value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not vote on project value",
+        ) from exc
 
     record_meaningful_action(
         db=db,
@@ -275,7 +273,10 @@ def vote_project_value_importance(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on project value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not vote on project value",
+        ) from exc
 
     return {
         "ok": True,
@@ -306,42 +307,49 @@ def create_project_activity(
         _ensure_project_member(db, project_row["id"], current_user_id)
 
     if ends_at <= scheduled_at:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ends_at must be after scheduled_at",
+        )
     ensure_future_scheduled_start(scheduled_at)
 
     try:
-        created = db.execute(
-            insert(project_activities)
-            .values(
-                project_id=project_row["id"],
-                linked_plan_id=linked_plan_id,
-                linked_plan_phase_id=linked_plan_phase_id,
-                linked_request_id=None,
-                title=title.strip(),
-                author_id=current_user_id,
-                scheduled_at=scheduled_at,
-                ends_at=ends_at,
-                is_online=is_online,
-                location_label=location_label.strip(),
-                note=note.strip(),
-                status="active",
+        created = (
+            db.execute(
+                insert(project_activities)
+                .values(
+                    project_id=project_row["id"],
+                    linked_plan_id=linked_plan_id,
+                    linked_plan_phase_id=linked_plan_phase_id,
+                    linked_request_id=None,
+                    title=title.strip(),
+                    author_id=current_user_id,
+                    scheduled_at=scheduled_at,
+                    ends_at=ends_at,
+                    is_online=is_online,
+                    location_label=location_label.strip(),
+                    note=note.strip(),
+                    status="active",
+                )
+                .returning(
+                    project_activities.c.id,
+                    project_activities.c.project_id,
+                    project_activities.c.title,
+                    project_activities.c.author_id,
+                    project_activities.c.scheduled_at,
+                    project_activities.c.ends_at,
+                    project_activities.c.is_online,
+                    project_activities.c.location_label,
+                    project_activities.c.note,
+                    project_activities.c.linked_plan_id,
+                    project_activities.c.linked_plan_phase_id,
+                    project_activities.c.status,
+                    project_activities.c.created_at,
+                )
             )
-            .returning(
-                project_activities.c.id,
-                project_activities.c.project_id,
-                project_activities.c.title,
-                project_activities.c.author_id,
-                project_activities.c.scheduled_at,
-                project_activities.c.ends_at,
-                project_activities.c.is_online,
-                project_activities.c.location_label,
-                project_activities.c.note,
-                project_activities.c.linked_plan_id,
-                project_activities.c.linked_plan_phase_id,
-                project_activities.c.status,
-                project_activities.c.created_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
         role_items = []
         for req in role_requirements:
@@ -350,31 +358,44 @@ def create_project_activity(
             maximum_count_raw = req.get("maximum_count")
             maximum_count = int(maximum_count_raw) if maximum_count_raw is not None else None
             if not label or required_count < 1:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid role requirement")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid role requirement",
+                )
             if maximum_count is not None and maximum_count < required_count:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="maximum_count must be >= required_count")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="maximum_count must be >= required_count",
+                )
 
-            role = db.execute(
-                insert(project_activity_roles)
-                .values(
-                    activity_id=created["id"],
-                    label=label,
-                    required_count=required_count,
-                    maximum_count=maximum_count,
+            role = (
+                db.execute(
+                    insert(project_activity_roles)
+                    .values(
+                        activity_id=created["id"],
+                        label=label,
+                        required_count=required_count,
+                        maximum_count=maximum_count,
+                    )
+                    .returning(
+                        project_activity_roles.c.id,
+                        project_activity_roles.c.label,
+                        project_activity_roles.c.required_count,
+                        project_activity_roles.c.maximum_count,
+                    )
                 )
-                .returning(
-                    project_activity_roles.c.id,
-                    project_activity_roles.c.label,
-                    project_activity_roles.c.required_count,
-                    project_activity_roles.c.maximum_count,
-                )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             role_items.append(dict(role))
 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create project activity") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create project activity",
+        ) from exc
     except HTTPException:
         db.rollback()
         raise
@@ -397,12 +418,16 @@ def commit_project_activity_role(
     project_row = _get_project_by_slug_row(db, slug)
     _ensure_project_member(db, project_row["id"], current_user_id)
 
-    activity_row = db.execute(
-        select(project_activities).where(
-            project_activities.c.id == activity_id,
-            project_activities.c.project_id == project_row["id"],
+    activity_row = (
+        db.execute(
+            select(project_activities).where(
+                project_activities.c.id == activity_id,
+                project_activities.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
     ensure_activity_roles_unlocked(activity_row["ends_at"])
@@ -418,44 +443,72 @@ def commit_project_activity_role(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
     if role_label is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="role_label is required")
-
-    role_row = db.execute(
-        select(project_activity_roles).where(
-            project_activity_roles.c.activity_id == activity_id,
-            project_activity_roles.c.label == role_label.strip(),
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="role_label is required"
         )
-    ).mappings().first()
+
+    role_row = (
+        db.execute(
+            select(project_activity_roles).where(
+                project_activity_roles.c.activity_id == activity_id,
+                project_activity_roles.c.label == role_label.strip(),
+            )
+        )
+        .mappings()
+        .first()
+    )
     if role_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
     existing_assignment = db.execute(
         select(project_activity_assignments.c.role_id)
-        .select_from(project_activity_assignments.join(project_activity_roles, project_activity_roles.c.id == project_activity_assignments.c.role_id))
+        .select_from(
+            project_activity_assignments.join(
+                project_activity_roles,
+                project_activity_roles.c.id == project_activity_assignments.c.role_id,
+            )
+        )
         .where(
             project_activity_roles.c.activity_id == activity_id,
             project_activity_assignments.c.user_id == current_user_id,
         )
     ).first()
     if existing_assignment is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity"
+        )
 
     filled_count = db.execute(
-        select(project_activity_assignments.c.user_id).where(project_activity_assignments.c.role_id == role_row["id"])
+        select(project_activity_assignments.c.user_id).where(
+            project_activity_assignments.c.role_id == role_row["id"]
+        )
     ).all()
-    if role_row["maximum_count"] is not None and len(filled_count) >= int(role_row["maximum_count"]):
+    if role_row["maximum_count"] is not None and len(filled_count) >= int(
+        role_row["maximum_count"]
+    ):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role is already full")
 
     try:
         db.execute(
-            insert(project_activity_assignments).values(role_id=role_row["id"], user_id=current_user_id)
+            insert(project_activity_assignments).values(
+                role_id=role_row["id"], user_id=current_user_id
+            )
         )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not commit activity role") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not commit activity role",
+        ) from exc
 
-    return {"ok": True, "project_slug": project_row["slug"], "activity_id": activity_id, "role_id": role_row["id"], "user_id": current_user_id}
+    return {
+        "ok": True,
+        "project_slug": project_row["slug"],
+        "activity_id": activity_id,
+        "role_id": role_row["id"],
+        "user_id": current_user_id,
+    }
 
 
 def uncommit_project_activity_role(
@@ -467,19 +520,29 @@ def uncommit_project_activity_role(
     project_row = _get_project_by_slug_row(db, slug)
     _ensure_project_member(db, project_row["id"], current_user_id)
 
-    activity_row = db.execute(
-        select(project_activities).where(
-            project_activities.c.id == activity_id,
-            project_activities.c.project_id == project_row["id"],
+    activity_row = (
+        db.execute(
+            select(project_activities).where(
+                project_activities.c.id == activity_id,
+                project_activities.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
     ensure_activity_roles_unlocked(activity_row["ends_at"])
 
-    role_ids = db.execute(
-        select(project_activity_roles.c.id).where(project_activity_roles.c.activity_id == activity_id)
-    ).scalars().all()
+    role_ids = (
+        db.execute(
+            select(project_activity_roles.c.id).where(
+                project_activity_roles.c.activity_id == activity_id
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     if role_ids:
         db.execute(
@@ -509,25 +572,31 @@ def add_project_update(
     normalized_title = title.strip() or "Update"
     normalized_body = body.strip()
     if not normalized_body:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="body is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="body is required"
+        )
 
-    created = db.execute(
-        insert(project_updates)
-        .values(
-            project_id=project_row["id"],
-            title=normalized_title,
-            body=normalized_body,
-            author_id=current_user_id,
+    created = (
+        db.execute(
+            insert(project_updates)
+            .values(
+                project_id=project_row["id"],
+                title=normalized_title,
+                body=normalized_body,
+                author_id=current_user_id,
+            )
+            .returning(
+                project_updates.c.id,
+                project_updates.c.project_id,
+                project_updates.c.title,
+                project_updates.c.body,
+                project_updates.c.author_id,
+                project_updates.c.created_at,
+            )
         )
-        .returning(
-            project_updates.c.id,
-            project_updates.c.project_id,
-            project_updates.c.title,
-            project_updates.c.body,
-            project_updates.c.author_id,
-            project_updates.c.created_at,
-        )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     db.commit()
 
     return {
@@ -560,9 +629,13 @@ def update_project_details(
     normalized_title = title.strip()
     normalized_description = description.strip()
     if not normalized_title:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required"
+        )
     if not normalized_description:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="description is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="description is required"
+        )
 
     try:
         db.execute(
@@ -573,9 +646,17 @@ def update_project_details(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update project details") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not update project details",
+        ) from exc
 
-    return {"ok": True, "slug": project_row["slug"], "title": normalized_title, "description": normalized_description}
+    return {
+        "ok": True,
+        "slug": project_row["slug"],
+        "title": normalized_title,
+        "description": normalized_description,
+    }
 
 
 def share_project_with_user(
@@ -591,9 +672,13 @@ def share_project_with_user(
     if not normalized_username:
         return {"ok": False, "error": "Choose another user."}
 
-    target_user = db.execute(
-        select(users.c.id, users.c.username).where(users.c.username == normalized_username)
-    ).mappings().first()
+    target_user = (
+        db.execute(
+            select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+        )
+        .mappings()
+        .first()
+    )
     if target_user is None or target_user["id"] == current_user_id:
         return {"ok": False, "error": "Choose another user."}
 
@@ -629,14 +714,18 @@ async def toggle_project_signal(
             detail=f"signal_type must be one of: {sorted(PROJECT_SIGNAL_TYPES)}",
         )
 
-    existing = db.execute(
-        select(project_signals.c.id, project_signals.c.signal_type)
-        .where(
-            project_signals.c.project_id == project_row["id"],
-            project_signals.c.user_id == current_user_id,
+    existing = (
+        db.execute(
+            select(project_signals.c.id, project_signals.c.signal_type)
+            .where(
+                project_signals.c.project_id == project_row["id"],
+                project_signals.c.user_id == current_user_id,
+            )
+            .limit(1)
         )
-        .limit(1)
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     action = "none"
     signal_count_delta = 0
@@ -675,14 +764,21 @@ async def toggle_project_signal(
             record_meaningful_action(
                 db=db,
                 user_id=current_user_id,
-                action_type="signal-demand" if normalized_signal == "demand" else "signal-opposition",
-                metadata={"project_id": str(project_row["id"]), "project_slug": project_row["slug"]},
+                action_type="signal-demand"
+                if normalized_signal == "demand"
+                else "signal-opposition",
+                metadata={
+                    "project_id": str(project_row["id"]),
+                    "project_slug": project_row["slug"],
+                },
             )
 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not toggle signal") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not toggle signal"
+        ) from exc
 
     counts = _get_signal_counts_db(db, project_row["id"])
     await _write_signal_counts_cache(cache, project_row["id"], counts)

@@ -1,4 +1,6 @@
 from app.services.content.api import (
+    _help_request_role_summaries,
+    _load_help_request_roles,
     activity_status_tone,
     commit_help_request_role,
     create_help_request,
@@ -8,9 +10,10 @@ from app.services.content.api import (
     get_help_request_by_id,
     get_post_by_id,
     get_thread_by_slug,
+    help_request_role_summaries,
+    load_help_request_roles,
     uncommit_help_request_role,
 )
-from app.services.content.api import _help_request_role_summaries, _load_help_request_roles
 
 __all__ = [
     "activity_status_tone",
@@ -22,6 +25,8 @@ __all__ = [
     "get_help_request_by_id",
     "get_post_by_id",
     "get_thread_by_slug",
+    "help_request_role_summaries",
+    "load_help_request_roles",
     "uncommit_help_request_role",
     "_help_request_role_summaries",
     "_load_help_request_roles",

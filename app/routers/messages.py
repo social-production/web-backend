@@ -204,7 +204,9 @@ def send_conversation_message(
     )
 
 
-@router.get("/conversations/{conversation_id}/messages", response_model=ConversationMessagesResponse)
+@router.get(
+    "/conversations/{conversation_id}/messages", response_model=ConversationMessagesResponse
+)
 def get_conversation_messages(
     conversation_id: UUID,
     limit: int = Query(default=100, ge=1, le=200),
@@ -264,7 +266,9 @@ def add_member_to_group(
     )
 
 
-@router.delete("/conversations/{conversation_id}/members/{username}", response_model=ConversationResponse)
+@router.delete(
+    "/conversations/{conversation_id}/members/{username}", response_model=ConversationResponse
+)
 def remove_member_from_group(
     conversation_id: UUID,
     username: str,

@@ -69,27 +69,37 @@ async def get_current_user_token_payload(
     try:
         payload = get_access_token_payload(token)
     except JWTError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        ) from exc
 
     jti = payload.get("jti")
     if not isinstance(jti, str) or not jti:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     if await _is_blacklisted_jti(jti):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
+        )
 
     return payload
 
 
-async def get_current_user_id(payload: dict[str, object] = Depends(get_current_user_token_payload)) -> UUID:
+async def get_current_user_id(
+    payload: dict[str, object] = Depends(get_current_user_token_payload),
+) -> UUID:
     subject = payload.get("sub")
     if not isinstance(subject, str) or not subject:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject"
+        )
 
     try:
         return UUID(subject)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject"
+        ) from exc
 
 
 async def get_optional_current_user_id(

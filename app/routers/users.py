@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -118,7 +117,9 @@ class FollowRequestActionResponse(BaseModel):
 
 
 @router.get("/me", response_model=OwnProfileResponse)
-def get_me(current_user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+def get_me(
+    current_user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)
+) -> dict[str, object]:
     return get_own_profile(db, current_user_id)
 
 
@@ -159,12 +160,20 @@ def reject_follow(
 
 
 @router.post("/{username}/follow", response_model=FollowResponse)
-def follow(username: str, current_user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+def follow(
+    username: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
     return follow_user(db, current_user_id, username)
 
 
 @router.delete("/{username}/follow", response_model=FollowResponse)
-def unfollow(username: str, current_user_id: UUID = Depends(get_current_user_id), db: Session = Depends(get_db)) -> dict[str, object]:
+def unfollow(
+    username: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
     return unfollow_user(db, current_user_id, username)
 
 

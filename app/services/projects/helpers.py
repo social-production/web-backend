@@ -1,72 +1,38 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from redis.asyncio import Redis
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.cache import cache_ttl_seconds
 from app.models import (
     channels,
-    comments,
     communities,
-    content_votes,
-    project_activities,
-    project_activity_assignments,
-    project_activity_roles,
     project_edit_request_votes,
     project_edit_requests,
-    project_link_request_votes,
-    project_link_requests,
-    project_links,
     project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
-    project_plan_criterion_ratings,
-    project_plan_value_votes,
-    project_plan_votes,
     project_plans,
-    project_revert_history,
-    project_service_request_setting_change_votes,
-    project_service_request_setting_changes,
     project_service_request_settings,
-    project_service_requests,
     project_signals,
     project_tags,
     project_update_request_votes,
     project_update_requests,
-    project_updates,
-    project_value_importance_votes,
-    project_values,
     projects,
-    reports,
     scope_memberships,
-    user_follows,
     users,
 )
-from app.services.activity_history import (
-    build_event_history_items,
-    build_project_history_items,
-    ensure_activity_roles_unlocked,
-    ensure_future_scheduled_start,
-    is_activity_ended,
-    load_event_ratings_by_activity,
-    load_project_ratings_by_activity,
-    utc_now,
-)
-from app.cache import cache_ttl_seconds
-from app.services.content import activity_status_tone
 from app.services.meaningful_actions import record_meaningful_action
-from app.services.notifications import create_notification
+from app.services.projects_plans import _plan_subtype_from_payload
 from app.services.search import index_document
-from app.services.projects_software import get_project_software_governance
-from app.services.projects_plans import _plan_subtype_from_payload, _subtype_label
-from app.services.plan_criteria import assessment_criteria_for_plan, serialize_plan_criterion_assessments
-from app.utils.votes import required_votes, resolve_project_vote_population
+from app.utils.votes import required_votes
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
@@ -82,7 +48,9 @@ PROJECT_PHASES = (
 )
 
 
-def _serialize_project(row: Mapping[str, object], tags: list[dict[str, object]], signal_counts: dict[str, int]) -> dict[str, object]:
+def _serialize_project(
+    row: Mapping[str, object], tags: list[dict[str, object]], signal_counts: dict[str, int]
+) -> dict[str, object]:
     return {
         "id": row["id"],
         "slug": row["slug"],
@@ -117,19 +85,25 @@ def _resolve_effective_project_subtype(
     if project_subtype:
         return str(project_subtype)
 
-    leading = db.execute(
-        select(project_plans.c.project_subtype, project_plans.c.plan_payload)
-        .where(
-            project_plans.c.project_id == project_id,
-            project_plans.c.is_leading.is_(True),
-            project_plans.c.phase_kind.in_(("production", "organisation")),
+    leading = (
+        db.execute(
+            select(project_plans.c.project_subtype, project_plans.c.plan_payload)
+            .where(
+                project_plans.c.project_id == project_id,
+                project_plans.c.is_leading.is_(True),
+                project_plans.c.phase_kind.in_(("production", "organisation")),
+            )
+            .limit(1)
         )
-        .limit(1)
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if leading is None:
         return None
 
-    return leading["project_subtype"] or _plan_subtype_from_payload(dict(leading["plan_payload"] or {}))
+    return leading["project_subtype"] or _plan_subtype_from_payload(
+        dict(leading["plan_payload"] or {})
+    )
 
 
 def _get_project_by_slug_row(db: Session, slug: str) -> Mapping[str, object]:
@@ -152,9 +126,11 @@ def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
     if not normalized:
         return []
 
-    rows = db.execute(
-        select(channels.c.id, channels.c.slug).where(channels.c.slug.in_(normalized))
-    ).mappings().all()
+    rows = (
+        db.execute(select(channels.c.id, channels.c.slug).where(channels.c.slug.in_(normalized)))
+        .mappings()
+        .all()
+    )
     found = {row["slug"] for row in rows}
     missing = sorted(set(normalized) - found)
     if missing:
@@ -166,14 +142,22 @@ def _resolve_channel_ids(db: Session, channel_slugs: list[str]) -> list[UUID]:
     return [row["id"] for row in rows]
 
 
-def _resolve_community_ids(db: Session, community_slugs: list[str], current_user_id: UUID) -> list[UUID]:
+def _resolve_community_ids(
+    db: Session, community_slugs: list[str], current_user_id: UUID
+) -> list[UUID]:
     normalized = [value.strip().lower() for value in community_slugs if value.strip()]
     if not normalized:
         return []
 
-    rows = db.execute(
-        select(communities.c.id, communities.c.slug, communities.c.join_policy).where(communities.c.slug.in_(normalized))
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(communities.c.id, communities.c.slug, communities.c.join_policy).where(
+                communities.c.slug.in_(normalized)
+            )
+        )
+        .mappings()
+        .all()
+    )
     found = {row["slug"] for row in rows}
     missing = sorted(set(normalized) - found)
     if missing:
@@ -192,7 +176,9 @@ def _resolve_community_ids(db: Session, community_slugs: list[str], current_user
             )
         ).all()
         member_ids = {row[0] for row in membership_rows}
-        forbidden = sorted(row["slug"] for row in rows if row["id"] in closed_ids and row["id"] not in member_ids)
+        forbidden = sorted(
+            row["slug"] for row in rows if row["id"] in closed_ids and row["id"] not in member_ids
+        )
         if forbidden:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -203,14 +189,18 @@ def _resolve_community_ids(db: Session, community_slugs: list[str], current_user
 
 
 def _get_project_tags(db: Session, project_id: UUID) -> list[dict[str, object]]:
-    rows = db.execute(
-        select(
-            project_tags.c.id,
-            project_tags.c.tag_kind,
-            project_tags.c.channel_id,
-            project_tags.c.community_id,
-        ).where(project_tags.c.project_id == project_id)
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(
+                project_tags.c.id,
+                project_tags.c.tag_kind,
+                project_tags.c.channel_id,
+                project_tags.c.community_id,
+            ).where(project_tags.c.project_id == project_id)
+        )
+        .mappings()
+        .all()
+    )
     return [dict(row) for row in rows]
 
 
@@ -236,7 +226,9 @@ def _get_signal_counts_db(db: Session, project_id: UUID) -> dict[str, int]:
     }
 
 
-async def _write_signal_counts_cache(cache: Redis, project_id: UUID, counts: dict[str, int]) -> None:
+async def _write_signal_counts_cache(
+    cache: Redis, project_id: UUID, counts: dict[str, int]
+) -> None:
     key = f"project:{project_id}:signals"
     await cache.hset(
         key,
@@ -290,7 +282,9 @@ def create_project(
     normalized_subtype = project_subtype.strip().lower() if project_subtype else None
 
     if not normalized_slug:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
+        )
     if normalized_mode not in PROJECT_MODES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -311,7 +305,9 @@ def create_project(
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
     community_ids = _resolve_community_ids(db, community_slugs or [], current_user_id)
-    is_platform_tagged = "platform" in [value.strip().lower() for value in channel_slugs if value.strip()]
+    is_platform_tagged = "platform" in [
+        value.strip().lower() for value in channel_slugs if value.strip()
+    ]
     normalized_request_mode = (request_mode or "both").strip().lower()
     if normalized_request_mode not in {"calendar", "direct", "both"}:
         raise HTTPException(
@@ -325,48 +321,52 @@ def create_project(
         )
 
     phase_id, stage_label = _phase_for_mode(normalized_mode)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     try:
-        created = db.execute(
-            insert(projects)
-            .values(
-                slug=normalized_slug,
-                title=title.strip(),
-                description=description.strip(),
-                author_id=current_user_id,
-                project_mode=normalized_mode,
-                project_subtype=normalized_subtype,
-                current_phase_id=phase_id,
-                stage_label=stage_label,
-                location_label=location_label.strip(),
-                member_count=1,
-                last_activity_at=now,
-                is_platform_tagged=is_platform_tagged,
+        created = (
+            db.execute(
+                insert(projects)
+                .values(
+                    slug=normalized_slug,
+                    title=title.strip(),
+                    description=description.strip(),
+                    author_id=current_user_id,
+                    project_mode=normalized_mode,
+                    project_subtype=normalized_subtype,
+                    current_phase_id=phase_id,
+                    stage_label=stage_label,
+                    location_label=location_label.strip(),
+                    member_count=1,
+                    last_activity_at=now,
+                    is_platform_tagged=is_platform_tagged,
+                )
+                .returning(
+                    projects.c.id,
+                    projects.c.slug,
+                    projects.c.title,
+                    projects.c.description,
+                    projects.c.author_id,
+                    projects.c.project_mode,
+                    projects.c.project_subtype,
+                    projects.c.current_phase_id,
+                    projects.c.stage_label,
+                    projects.c.location_label,
+                    projects.c.is_platform_tagged,
+                    projects.c.is_closed,
+                    projects.c.close_outcome,
+                    projects.c.signal_count,
+                    projects.c.vote_count,
+                    projects.c.comment_count,
+                    projects.c.member_count,
+                    projects.c.last_activity_at,
+                    projects.c.created_at,
+                    projects.c.updated_at,
+                )
             )
-            .returning(
-                projects.c.id,
-                projects.c.slug,
-                projects.c.title,
-                projects.c.description,
-                projects.c.author_id,
-                projects.c.project_mode,
-                projects.c.project_subtype,
-                projects.c.current_phase_id,
-                projects.c.stage_label,
-                projects.c.location_label,
-                projects.c.is_platform_tagged,
-                projects.c.is_closed,
-                projects.c.close_outcome,
-                projects.c.signal_count,
-                projects.c.vote_count,
-                projects.c.comment_count,
-                projects.c.member_count,
-                projects.c.last_activity_at,
-                projects.c.created_at,
-                projects.c.updated_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
         db.execute(
             insert(project_memberships).values(
@@ -417,7 +417,9 @@ def create_project(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project slug already exists") from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Project slug already exists"
+        ) from exc
 
     tags = _get_project_tags(db, created["id"])
     index_document(
@@ -429,7 +431,9 @@ def create_project(
         meta=created["project_mode"],
         href=f"/projects/{created['slug']}",
     )
-    return {"project": _serialize_project(created, tags, {"demand": 0, "opposition": 0, "total": 0})}
+    return {
+        "project": _serialize_project(created, tags, {"demand": 0, "opposition": 0, "total": 0})
+    }
 
 
 async def get_project_by_slug(db: Session, cache: Redis, slug: str) -> dict[str, object]:
@@ -442,7 +446,7 @@ async def get_project_by_slug(db: Session, cache: Redis, slug: str) -> dict[str,
 def _iso(value: object) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _username_lookup(db: Session, user_ids: set[UUID]) -> dict[UUID, dict[str, str]]:
@@ -570,7 +574,10 @@ def _visible_lifecycle_phases(
     )
 
     phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
-    phase_meta = {phase_id: (order, short_label, title, summary) for phase_id, order, short_label, title, summary in PROJECT_PHASES}
+    phase_meta = {
+        phase_id: (order, short_label, title, summary)
+        for phase_id, order, short_label, title, summary in PROJECT_PHASES
+    }
     current_order = phase_order.get(effective_phase_id_for_progress(current_phase_id), 1)
     visible_ids = visible_phase_ids_for_project(project_mode, project_subtype, current_phase_id)
 
@@ -608,7 +615,6 @@ def _build_project_history(
 ) -> list[dict[str, object]]:
     phase_title_map = {item[0]: item[3] for item in PROJECT_PHASES}
     history: list[tuple[object, dict[str, object]]] = []
-    from app.models import project_update_requests, project_update_request_votes, project_edit_requests, project_edit_request_votes, project_phase_change_requests, project_phase_change_votes
 
     def _author_username(author_id):
         if author_id is None:
@@ -616,109 +622,140 @@ def _build_project_history(
         row = db.execute(select(users.c.username).where(users.c.id == author_id)).first()
         return row[0] if row else "unknown"
 
-    update_rows = db.execute(
-        select(project_update_requests)
-        .where(project_update_requests.c.project_id == project_id)
-        .order_by(project_update_requests.c.created_at.desc())
-    ).mappings().all()
+    update_rows = (
+        db.execute(
+            select(project_update_requests)
+            .where(project_update_requests.c.project_id == project_id)
+            .order_by(project_update_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     for req in update_rows:
         vote_rows = db.execute(
-            select(project_update_request_votes.c.vote, project_update_request_votes.c.voter_id)
-            .where(project_update_request_votes.c.request_id == req["id"])
+            select(
+                project_update_request_votes.c.vote, project_update_request_votes.c.voter_id
+            ).where(project_update_request_votes.c.request_id == req["id"])
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
-        history.append((
-            req["created_at"],
-            {
-                "id": str(req["id"]),
-                "entityKind": "project",
-                "kind": "project-update",
-                "kindLabel": "Update decision",
-                "createdAt": _iso(req["created_at"]),
-                "authorUsername": _author_username(req["author_id"]),
-                "status": req["status"],
-                "approvalThresholdPercent": 66,
-                "voteSummary": summary,
-                "passesApprovalThreshold": passes,
-                "canStillPass": can_still,
-                "canVote": req["status"] == "open",
-                "payload": {"type": "update", "body": req["body"], "appliedUpdateId": None},
-            },
-        ))
+        summary, passes, can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
+        history.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "project",
+                    "kind": "project-update",
+                    "kindLabel": "Update decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": _author_username(req["author_id"]),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": req["status"] == "open",
+                    "payload": {"type": "update", "body": req["body"], "appliedUpdateId": None},
+                },
+            )
+        )
 
-    edit_rows = db.execute(
-        select(project_edit_requests)
-        .where(project_edit_requests.c.project_id == project_id)
-        .order_by(project_edit_requests.c.created_at.desc())
-    ).mappings().all()
+    edit_rows = (
+        db.execute(
+            select(project_edit_requests)
+            .where(project_edit_requests.c.project_id == project_id)
+            .order_by(project_edit_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     for req in edit_rows:
         vote_rows = db.execute(
-            select(project_edit_request_votes.c.vote, project_edit_request_votes.c.voter_id)
-            .where(project_edit_request_votes.c.request_id == req["id"])
+            select(project_edit_request_votes.c.vote, project_edit_request_votes.c.voter_id).where(
+                project_edit_request_votes.c.request_id == req["id"]
+            )
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
-        history.append((
-            req["created_at"],
-            {
-                "id": str(req["id"]),
-                "entityKind": "project",
-                "kind": "project-edit",
-                "kindLabel": "Edit decision",
-                "createdAt": _iso(req["created_at"]),
-                "authorUsername": _author_username(req["author_id"]),
-                "status": req["status"],
-                "approvalThresholdPercent": 66,
-                "voteSummary": summary,
-                "passesApprovalThreshold": passes,
-                "canStillPass": can_still,
-                "canVote": req["status"] == "open",
-                "payload": {
-                    "type": "edit",
-                    "changes": [
-                        {"label": "Title", "before": "", "after": req["title"]},
-                        {"label": "Description", "before": "", "after": req["description"]},
-                    ],
+        summary, passes, can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
+        history.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "project",
+                    "kind": "project-edit",
+                    "kindLabel": "Edit decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": _author_username(req["author_id"]),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": req["status"] == "open",
+                    "payload": {
+                        "type": "edit",
+                        "changes": [
+                            {"label": "Title", "before": "", "after": req["title"]},
+                            {"label": "Description", "before": "", "after": req["description"]},
+                        ],
+                    },
                 },
-            },
-        ))
+            )
+        )
 
-    phase_rows = db.execute(
-        select(project_phase_change_requests)
-        .where(project_phase_change_requests.c.project_id == project_id)
-        .order_by(project_phase_change_requests.c.created_at.desc())
-    ).mappings().all()
+    phase_rows = (
+        db.execute(
+            select(project_phase_change_requests)
+            .where(project_phase_change_requests.c.project_id == project_id)
+            .order_by(project_phase_change_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
     for req in phase_rows:
         vote_rows = db.execute(
-            select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id)
-            .where(project_phase_change_votes.c.request_id == req["id"])
+            select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id).where(
+                project_phase_change_votes.c.request_id == req["id"]
+            )
         ).all()
-        summary, passes, can_still = _vote_summary(vote_rows, vote_context_population, current_user_id)
-        history.append((
-            req["created_at"],
-            {
-                "id": str(req["id"]),
-                "entityKind": "project",
-                "kind": "project-phase-change",
-                "kindLabel": "Phase decision",
-                "createdAt": _iso(req["created_at"]),
-                "authorUsername": _author_username(req["author_id"]),
-                "status": req["status"],
-                "approvalThresholdPercent": 66,
-                "voteSummary": summary,
-                "passesApprovalThreshold": passes,
-                "canStillPass": can_still,
-                "canVote": req["status"] == "open",
-                "payload": {
-                    "type": "phase-change",
-                    "changeKind": req["change_kind"],
-                    "fromPhaseId": req["from_phase_id"],
-                    "fromPhaseLabel": phase_title_map.get(req["from_phase_id"], req["from_phase_id"]),
-                    "toPhaseId": req["target_phase_id"],
-                    "toPhaseLabel": phase_title_map.get(req["target_phase_id"], req["target_phase_id"]),
-                    "reason": req["reason"],
+        summary, passes, can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
+        history.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "project",
+                    "kind": "project-phase-change",
+                    "kindLabel": "Phase decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": _author_username(req["author_id"]),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": req["status"] == "open",
+                    "payload": {
+                        "type": "phase-change",
+                        "changeKind": req["change_kind"],
+                        "fromPhaseId": req["from_phase_id"],
+                        "fromPhaseLabel": phase_title_map.get(
+                            req["from_phase_id"], req["from_phase_id"]
+                        ),
+                        "toPhaseId": req["target_phase_id"],
+                        "toPhaseLabel": phase_title_map.get(
+                            req["target_phase_id"], req["target_phase_id"]
+                        ),
+                        "reason": req["reason"],
+                    },
                 },
-            },
-        ))
+            )
+        )
 
     project_subtype = db.execute(
         select(projects.c.project_subtype).where(projects.c.id == project_id)
@@ -732,5 +769,3 @@ def _build_project_history(
             history.append((created_at, entry))
 
     return [entry for _, entry in sorted(history, key=lambda item: item[0], reverse=True)]
-
-

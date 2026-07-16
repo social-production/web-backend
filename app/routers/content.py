@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -29,8 +29,12 @@ class ThreadCreateRequest(BaseModel):
     slug: str = Field(min_length=3, max_length=120)
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1)
-    channel_slugs: list[str] = Field(default_factory=list, description="Channel slugs to tag this thread with")
-    community_slugs: list[str] = Field(default_factory=list, description="Community slugs to tag this thread with")
+    channel_slugs: list[str] = Field(
+        default_factory=list, description="Channel slugs to tag this thread with"
+    )
+    community_slugs: list[str] = Field(
+        default_factory=list, description="Community slugs to tag this thread with"
+    )
 
 
 class PostCreateRequest(BaseModel):
@@ -47,7 +51,7 @@ class DiscussionCommentOut(BaseModel):
     vote_count: int
     active_vote: int = 0
     created_at: object
-    replies: list["DiscussionCommentOut"] = Field(default_factory=list)
+    replies: list[DiscussionCommentOut] = Field(default_factory=list)
 
 
 class TagRefOut(BaseModel):
@@ -168,7 +172,15 @@ def create_new_thread(
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return create_thread(db, current_user_id, payload.slug, payload.title, payload.body, payload.channel_slugs, payload.community_slugs)
+    return create_thread(
+        db,
+        current_user_id,
+        payload.slug,
+        payload.title,
+        payload.body,
+        payload.channel_slugs,
+        payload.community_slugs,
+    )
 
 
 @router.get("/threads/{slug}", response_model=ThreadResponse)
@@ -226,7 +238,10 @@ def get_help_request(
     return get_help_request_by_id(db, help_request_id, current_user_id=current_user_id)
 
 
-@router.post("/help-requests/{help_request_id}/roles/{role_id}/commit", response_model=HelpRequestActionResponse)
+@router.post(
+    "/help-requests/{help_request_id}/roles/{role_id}/commit",
+    response_model=HelpRequestActionResponse,
+)
 def commit_help_request_role_endpoint(
     help_request_id: UUID,
     role_id: UUID,
@@ -236,7 +251,10 @@ def commit_help_request_role_endpoint(
     return commit_help_request_role(db, current_user_id, help_request_id, role_id)
 
 
-@router.delete("/help-requests/{help_request_id}/roles/{role_id}/commit", response_model=HelpRequestActionResponse)
+@router.delete(
+    "/help-requests/{help_request_id}/roles/{role_id}/commit",
+    response_model=HelpRequestActionResponse,
+)
 def uncommit_help_request_role_endpoint(
     help_request_id: UUID,
     role_id: UUID,

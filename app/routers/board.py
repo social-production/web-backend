@@ -8,7 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db
-from app.services.board import cast_standing_vote, list_board_standing, remove_volunteer, volunteer_as_candidate
+from app.services.board import (
+    cast_standing_vote,
+    list_board_standing,
+    remove_volunteer,
+    volunteer_as_candidate,
+)
 
 router = APIRouter(prefix="/board", tags=["board"])
 

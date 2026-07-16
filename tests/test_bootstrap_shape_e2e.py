@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -25,7 +25,7 @@ BOOTSTRAP_PAYLOAD_KEYS = {
 
 def _seed_user_token() -> str:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     user_id = uuid4()
     username = f"bootstrapshape-{str(user_id)[:8]}"

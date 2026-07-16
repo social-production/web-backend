@@ -5,7 +5,7 @@ from app.services.feeds.api import (
     get_scope_feed,
     get_user_feed,
 )
-from app.services.feeds.helpers import _truncate_update_body
+from app.services.feeds.serializers import _truncate_update_body
 
 __all__ = [
     "get_home_feed",

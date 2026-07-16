@@ -4,7 +4,6 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
-
 FRONTEND_EXPECTED_PATHS = {
     "/auth/login",
     "/auth/logout",

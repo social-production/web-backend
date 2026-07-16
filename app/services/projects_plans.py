@@ -17,6 +17,7 @@ from app.models import (
     project_values,
     projects,
 )
+from app.services.governance_votes import compute_plan_vote_summary
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.plan_criteria import (
@@ -24,7 +25,7 @@ from app.services.plan_criteria import (
     assessment_criteria_for_plan,
     parse_value_criterion_id,
 )
-from app.utils.votes import required_votes, resolve_project_vote_population
+from app.utils.votes import resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 
@@ -61,7 +62,9 @@ def _subtype_label(subtype: str | None) -> str:
     return "Standard"
 
 
-def _serialize_plan(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
+def _serialize_plan(
+    row: Mapping[str, object], vote_summary: dict[str, object]
+) -> dict[str, object]:
     return {
         "id": row["id"],
         "project_id": row["project_id"],
@@ -83,9 +86,7 @@ def _serialize_plan(row: Mapping[str, object], vote_summary: dict[str, object]) 
 
 
 def _get_project_row_by_slug(db: Session, slug: str) -> Mapping[str, object]:
-    row = db.execute(
-        select(projects).where(projects.c.slug == slug.lower())
-    ).mappings().first()
+    row = db.execute(select(projects).where(projects.c.slug == slug.lower())).mappings().first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
     return row
@@ -99,7 +100,9 @@ def _ensure_member(db: Session, project_id: UUID, user_id: UUID) -> None:
         )
     ).first()
     if membership is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can vote on plans")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can vote on plans"
+        )
 
 
 def _assert_plan_type_allowed(project_mode: str, plan_type: str) -> None:
@@ -122,12 +125,16 @@ def sync_project_plan_leading_flags(
     phase_kind: str,
     member_count: int,
 ) -> UUID | None:
-    plan_ids = db.execute(
-        select(project_plans.c.id).where(
-            project_plans.c.project_id == project_id,
-            project_plans.c.phase_kind == phase_kind,
+    plan_ids = (
+        db.execute(
+            select(project_plans.c.id).where(
+                project_plans.c.project_id == project_id,
+                project_plans.c.phase_kind == phase_kind,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     candidates: list[tuple[UUID, float]] = []
     for plan_id in plan_ids:
@@ -157,11 +164,15 @@ def sync_project_plan_leading_flags(
             )
 
     if leader_id is not None:
-        leader_row = db.execute(
-            select(project_plans.c.project_subtype, project_plans.c.plan_payload).where(
-                project_plans.c.id == leader_id
+        leader_row = (
+            db.execute(
+                select(project_plans.c.project_subtype, project_plans.c.plan_payload).where(
+                    project_plans.c.id == leader_id
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if leader_row is not None and phase_kind in {"production", "organisation"}:
             resolved_subtype = leader_row["project_subtype"] or _plan_subtype_from_payload(
                 dict(leader_row["plan_payload"] or {})
@@ -178,9 +189,6 @@ def sync_project_plan_leading_flags(
         sync_merge_capability_for_leading_plan(db, project_id, leader_id)
 
     return leader_id
-
-
-from app.services.governance_votes import compute_plan_vote_summary
 
 
 def _compute_vote_summary(db: Session, plan_id: UUID, member_count: int) -> dict[str, object]:
@@ -207,40 +215,44 @@ def submit_project_plan(
     plan_subtype = _plan_subtype_from_payload(plan_payload, project_row["project_subtype"])
 
     try:
-        created = db.execute(
-            insert(project_plans)
-            .values(
-                project_id=project_row["id"],
-                phase_kind=normalized_type,
-                title=title.strip(),
-                description=description.strip(),
-                author_id=current_user_id,
-                project_subtype=plan_subtype,
-                repository_url=repository_url.strip() if repository_url else None,
-                demand_consideration_note=demand_consideration_note.strip(),
-                total_cost_label=total_cost_label.strip() if total_cost_label else None,
-                plan_payload=plan_payload,
-                is_leading=False,
-                status="open",
+        created = (
+            db.execute(
+                insert(project_plans)
+                .values(
+                    project_id=project_row["id"],
+                    phase_kind=normalized_type,
+                    title=title.strip(),
+                    description=description.strip(),
+                    author_id=current_user_id,
+                    project_subtype=plan_subtype,
+                    repository_url=repository_url.strip() if repository_url else None,
+                    demand_consideration_note=demand_consideration_note.strip(),
+                    total_cost_label=total_cost_label.strip() if total_cost_label else None,
+                    plan_payload=plan_payload,
+                    is_leading=False,
+                    status="open",
+                )
+                .returning(
+                    project_plans.c.id,
+                    project_plans.c.project_id,
+                    project_plans.c.phase_kind,
+                    project_plans.c.title,
+                    project_plans.c.description,
+                    project_plans.c.author_id,
+                    project_plans.c.project_subtype,
+                    project_plans.c.repository_url,
+                    project_plans.c.demand_consideration_note,
+                    project_plans.c.total_cost_label,
+                    project_plans.c.plan_payload,
+                    project_plans.c.is_leading,
+                    project_plans.c.status,
+                    project_plans.c.created_at,
+                    project_plans.c.updated_at,
+                )
             )
-            .returning(
-                project_plans.c.id,
-                project_plans.c.project_id,
-                project_plans.c.phase_kind,
-                project_plans.c.title,
-                project_plans.c.description,
-                project_plans.c.author_id,
-                project_plans.c.project_subtype,
-                project_plans.c.repository_url,
-                project_plans.c.demand_consideration_note,
-                project_plans.c.total_cost_label,
-                project_plans.c.plan_payload,
-                project_plans.c.is_leading,
-                project_plans.c.status,
-                project_plans.c.created_at,
-                project_plans.c.updated_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
@@ -250,7 +262,9 @@ def submit_project_plan(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit plan") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit plan"
+        ) from exc
 
     vote_context_population = resolve_project_vote_population(
         db,
@@ -261,7 +275,9 @@ def submit_project_plan(
     return {"plan": _serialize_plan(created, summary)}
 
 
-def list_project_plans(db: Session, project_slug: str, plan_type: str | None = None) -> dict[str, object]:
+def list_project_plans(
+    db: Session, project_slug: str, plan_type: str | None = None
+) -> dict[str, object]:
     project_row = _get_project_row_by_slug(db, project_slug)
     vote_context_population = resolve_project_vote_population(
         db,
@@ -307,12 +323,16 @@ def cast_project_plan_vote(
             detail=f"vote must be one of: {sorted(VALID_VOTES)}",
         )
 
-    plan_row = db.execute(
-        select(project_plans).where(
-            project_plans.c.id == plan_id,
-            project_plans.c.project_id == project_row["id"],
+    plan_row = (
+        db.execute(
+            select(project_plans).where(
+                project_plans.c.id == plan_id,
+                project_plans.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if plan_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
 
@@ -375,17 +395,23 @@ def cast_project_plan_vote(
             db=db,
             user_id=current_user_id,
             action_type="cast-vote",
-            metadata={"target_type": "project-plan", "target_id": str(plan_id), "vote": normalized_vote},
+            metadata={
+                "target_type": "project-plan",
+                "target_id": str(plan_id),
+                "vote": normalized_vote,
+            },
         )
 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast plan vote") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast plan vote"
+        ) from exc
 
-    refreshed_plan = db.execute(
-        select(project_plans).where(project_plans.c.id == plan_id)
-    ).mappings().one()
+    refreshed_plan = (
+        db.execute(select(project_plans).where(project_plans.c.id == plan_id)).mappings().one()
+    )
     final_summary = _compute_vote_summary(
         db,
         plan_id,
@@ -510,7 +536,10 @@ def cast_project_plan_value_vote(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast plan value vote") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not cast plan value vote",
+        ) from exc
 
     return {
         "ok": True,
@@ -532,12 +561,16 @@ def cast_project_plan_criterion_rating(
     project_row = _get_project_row_by_slug(db, project_slug)
     _ensure_member(db, project_row["id"], current_user_id)
 
-    plan_row = db.execute(
-        select(project_plans).where(
-            project_plans.c.id == plan_id,
-            project_plans.c.project_id == project_row["id"],
+    plan_row = (
+        db.execute(
+            select(project_plans).where(
+                project_plans.c.id == plan_id,
+                project_plans.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if plan_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
 
@@ -557,7 +590,9 @@ def cast_project_plan_criterion_rating(
     }
     normalized_criterion_id = criterion_id.strip()
     if normalized_criterion_id not in allowed_criteria:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown plan criterion")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown plan criterion"
+        )
 
     value_id = parse_value_criterion_id(normalized_criterion_id)
     if value_id is not None:
@@ -568,7 +603,9 @@ def cast_project_plan_criterion_rating(
             )
         ).first()
         if value_row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project value not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project value not found"
+            )
 
     existing_rating = db.execute(
         select(project_plan_criterion_ratings.c.rating).where(

@@ -1,7 +1,8 @@
 """Search must not leak closed-community-only entities."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -10,13 +11,13 @@ from sqlalchemy import insert
 from app.auth.jwt import create_access_token
 from app.db import SessionLocal
 from app.main import app
-from app.models import communities, projects, project_tags, scope_memberships, users
+from app.models import communities, project_tags, projects, scope_memberships, users
 from app.services.search import index_document
 
 
 def test_search_hides_closed_community_only_projects_from_non_members() -> None:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     author_id = uuid4()
     outsider_id = uuid4()
     community_id = uuid4()

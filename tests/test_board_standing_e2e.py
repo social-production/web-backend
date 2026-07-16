@@ -4,7 +4,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import insert
@@ -34,7 +34,7 @@ def _request_json(
 
 def _seed_board_users() -> dict[str, str]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     candidate_id = uuid4()
     voter_id = uuid4()
@@ -96,7 +96,9 @@ def run() -> None:
     base = os.environ.get("TEST_BASE_URL", "http://127.0.0.1:8010")
     seeded = _seed_board_users()
 
-    volunteer = _request_json(f"{base}/board/volunteer", method="POST", token=seeded["candidate_token"])
+    volunteer = _request_json(
+        f"{base}/board/volunteer", method="POST", token=seeded["candidate_token"]
+    )
     candidate = volunteer["candidate"]
     assert candidate["membership_state"] == "candidate"
 
@@ -115,11 +117,15 @@ def run() -> None:
     standing_after_vote = _request_json(f"{base}/board", token=seeded["voter_token"])
     member_ids = {item["user_id"] for item in standing_after_vote["members"]}
     assert seeded["candidate_id"] in member_ids
-    promoted = next(item for item in standing_after_vote["members"] if item["user_id"] == seeded["candidate_id"])
+    promoted = next(
+        item for item in standing_after_vote["members"] if item["user_id"] == seeded["candidate_id"]
+    )
     assert promoted["standing_state"] == "active"
     assert promoted["membership_state"] == "member"
 
-    step_down = _request_json(f"{base}/board/volunteer", method="DELETE", token=seeded["candidate_token"])
+    step_down = _request_json(
+        f"{base}/board/volunteer", method="DELETE", token=seeded["candidate_token"]
+    )
     assert step_down["removed"] is True
 
     standing_after_step_down = _request_json(f"{base}/board", token=seeded["voter_token"])

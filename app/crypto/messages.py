@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
 from app.config import get_settings
 

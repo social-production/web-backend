@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -11,52 +10,29 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    channels,
-    comments,
-    communities,
-    content_votes,
+    event_activities,
     event_activity_assignments,
     event_activity_roles,
-    event_activities,
-    event_edit_request_votes,
-    event_edit_requests,
     event_editors,
     event_memberships,
-    event_phase_change_requests,
-    event_phase_change_votes,
-    event_plan_criterion_ratings,
-    event_plan_value_votes,
-    event_plan_votes,
-    event_plans,
     event_signals,
-    event_tags,
-    event_update_request_votes,
-    event_update_requests,
-    event_updates,
     event_value_importance_votes,
     event_values,
     events,
-    reports,
-    scope_memberships,
-    user_follows,
     users,
 )
-from app.cache import cache_ttl_seconds
-from app.services.access_control import assert_can_view_entity
 from app.services.activity_history import (
-    build_event_history_items,
     ensure_activity_roles_unlocked,
     ensure_future_scheduled_start,
-    is_activity_ended,
-    load_event_ratings_by_activity,
-    utc_now,
 )
-from app.services.content import activity_status_tone
+from app.services.events.helpers import (
+    _ensure_event_member,
+    _get_event_by_slug_row,
+    _get_signal_counts_db,
+    _write_signal_counts_cache,
+)
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
-from app.services.search import index_document
-from app.services.plan_criteria import assessment_criteria_for_plan, serialize_plan_criterion_assessments
-from app.utils.votes import is_platform_event, required_votes, resolve_event_vote_population
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 _PLACEHOLDER_SCHEDULE_LABELS = frozenset({"tbd", "not specified", "to be determined"})
@@ -66,9 +42,7 @@ EVENT_PHASES = (
     ("activity", 3, "P3", "Activity", "Run event activities."),
     ("closed", 4, "P4", "Closed", "Event is closed."),
 )
-import importlib
-_mod = importlib.import_module('app.services.events.helpers')
-globals().update({k: v for k, v in vars(_mod).items() if not k.startswith('__') or k == '__all__'})
+
 
 def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
@@ -83,7 +57,9 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
         return {"ok": True, "joined": True, "slug": event_row["slug"]}
 
     if event_row["is_private"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Private events are invite-only")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Private events are invite-only"
+        )
 
     inserted = False
     try:
@@ -92,7 +68,7 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
                 event_id=event_row["id"],
                 user_id=current_user_id,
                 role="member",
-                joined_at=datetime.now(timezone.utc),
+                joined_at=datetime.now(UTC),
             )
         )
         inserted = True
@@ -108,7 +84,9 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
             )
         except IntegrityError as exc:
             db.rollback()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join event") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join event"
+            ) from exc
 
         record_meaningful_action(
             db=db,
@@ -120,7 +98,9 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
             db.commit()
         except IntegrityError as exc:
             db.rollback()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join event") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not join event"
+            ) from exc
 
     return {"ok": True, "joined": True, "slug": event_row["slug"]}
 
@@ -128,14 +108,18 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
 def leave_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
 
-    existing = db.execute(
-        select(event_memberships.c.event_id, event_memberships.c.user_id)
-        .where(
-            event_memberships.c.event_id == event_row["id"],
-            event_memberships.c.user_id == current_user_id,
+    existing = (
+        db.execute(
+            select(event_memberships.c.event_id, event_memberships.c.user_id)
+            .where(
+                event_memberships.c.event_id == event_row["id"],
+                event_memberships.c.user_id == current_user_id,
+            )
+            .limit(1)
         )
-        .limit(1)
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     if existing is None:
         return {"ok": True, "joined": False, "slug": event_row["slug"]}
@@ -164,6 +148,7 @@ def leave_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, obje
     # Invalidate weekly-active caches so quorum drops immediately
     try:
         from app.cache import get_sync_redis_client
+
         redis = get_sync_redis_client()
         redis.delete(f"governance:weekly_active:event:{event_row['id']}")
         redis.delete("governance:weekly_active")
@@ -189,14 +174,18 @@ async def toggle_event_signal(
             detail=f"signal_type must be one of: {sorted(EVENT_SIGNAL_TYPES)}",
         )
 
-    existing = db.execute(
-        select(event_signals.c.id, event_signals.c.signal_type)
-        .where(
-            event_signals.c.event_id == event_row["id"],
-            event_signals.c.user_id == current_user_id,
+    existing = (
+        db.execute(
+            select(event_signals.c.id, event_signals.c.signal_type)
+            .where(
+                event_signals.c.event_id == event_row["id"],
+                event_signals.c.user_id == current_user_id,
+            )
+            .limit(1)
         )
-        .limit(1)
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     action = "none"
 
@@ -225,14 +214,18 @@ async def toggle_event_signal(
             record_meaningful_action(
                 db=db,
                 user_id=current_user_id,
-                action_type="signal-demand" if normalized_signal == "demand" else "signal-opposition",
+                action_type="signal-demand"
+                if normalized_signal == "demand"
+                else "signal-opposition",
                 metadata={"event_id": str(event_row["id"]), "event_slug": event_row["slug"]},
             )
 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not toggle signal") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not toggle signal"
+        ) from exc
 
     counts = _get_signal_counts_db(db, event_row["id"])
     await _write_signal_counts_cache(cache, event_row["id"], counts)
@@ -254,7 +247,9 @@ def grant_event_editor(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     if event_row["created_by"] != current_user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors"
+        )
 
     _ensure_event_member(db, event_row["id"], target_user_id)
 
@@ -264,7 +259,7 @@ def grant_event_editor(
                 event_id=event_row["id"],
                 user_id=target_user_id,
                 granted_by=current_user_id,
-                granted_at=datetime.now(timezone.utc),
+                granted_at=datetime.now(UTC),
             )
         )
         db.commit()
@@ -287,7 +282,9 @@ def revoke_event_editor(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     if event_row["created_by"] != current_user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors"
+        )
 
     db.execute(
         delete(event_editors).where(
@@ -316,18 +313,32 @@ def add_event_value(
 
     normalized = label.strip()
     if not normalized:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required"
+        )
 
     try:
-        created = db.execute(
-            insert(event_values)
-            .values(event_id=event_row["id"], label=normalized, author_id=current_user_id)
-            .returning(event_values.c.id, event_values.c.event_id, event_values.c.label, event_values.c.author_id, event_values.c.created_at)
-        ).mappings().one()
+        created = (
+            db.execute(
+                insert(event_values)
+                .values(event_id=event_row["id"], label=normalized, author_id=current_user_id)
+                .returning(
+                    event_values.c.id,
+                    event_values.c.event_id,
+                    event_values.c.label,
+                    event_values.c.author_id,
+                    event_values.c.created_at,
+                )
+            )
+            .mappings()
+            .one()
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add event value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not add event value"
+        ) from exc
 
     return {
         "value": {
@@ -351,14 +362,21 @@ def vote_event_value_importance(
     _ensure_event_member(db, event_row["id"], current_user_id)
 
     if importance < 1 or importance > 10:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="importance must be between 1 and 10")
-
-    value_row = db.execute(
-        select(event_values).where(
-            event_values.c.id == value_id,
-            event_values.c.event_id == event_row["id"],
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="importance must be between 1 and 10",
         )
-    ).mappings().first()
+
+    value_row = (
+        db.execute(
+            select(event_values).where(
+                event_values.c.id == value_id,
+                event_values.c.event_id == event_row["id"],
+            )
+        )
+        .mappings()
+        .first()
+    )
     if value_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event value not found")
 
@@ -389,7 +407,10 @@ def vote_event_value_importance(
             )
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on event value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not vote on event value",
+        ) from exc
 
     record_meaningful_action(
         db=db,
@@ -406,7 +427,10 @@ def vote_event_value_importance(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on event value") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not vote on event value",
+        ) from exc
 
     return {
         "ok": True,
@@ -434,39 +458,46 @@ def create_event_activity(
     _ensure_event_member(db, event_row["id"], current_user_id)
 
     if ends_at <= scheduled_at:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ends_at must be after scheduled_at")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ends_at must be after scheduled_at",
+        )
     ensure_future_scheduled_start(scheduled_at)
 
     try:
-        created = db.execute(
-            insert(event_activities)
-            .values(
-                event_id=event_row["id"],
-                linked_plan_id=linked_plan_id,
-                linked_plan_phase_id=linked_plan_phase_id,
-                title=title.strip(),
-                author_id=current_user_id,
-                scheduled_at=scheduled_at,
-                ends_at=ends_at,
-                is_online=is_online,
-                location_label=location_label.strip(),
-                note=note.strip(),
+        created = (
+            db.execute(
+                insert(event_activities)
+                .values(
+                    event_id=event_row["id"],
+                    linked_plan_id=linked_plan_id,
+                    linked_plan_phase_id=linked_plan_phase_id,
+                    title=title.strip(),
+                    author_id=current_user_id,
+                    scheduled_at=scheduled_at,
+                    ends_at=ends_at,
+                    is_online=is_online,
+                    location_label=location_label.strip(),
+                    note=note.strip(),
+                )
+                .returning(
+                    event_activities.c.id,
+                    event_activities.c.event_id,
+                    event_activities.c.title,
+                    event_activities.c.author_id,
+                    event_activities.c.scheduled_at,
+                    event_activities.c.ends_at,
+                    event_activities.c.is_online,
+                    event_activities.c.location_label,
+                    event_activities.c.note,
+                    event_activities.c.linked_plan_id,
+                    event_activities.c.linked_plan_phase_id,
+                    event_activities.c.created_at,
+                )
             )
-            .returning(
-                event_activities.c.id,
-                event_activities.c.event_id,
-                event_activities.c.title,
-                event_activities.c.author_id,
-                event_activities.c.scheduled_at,
-                event_activities.c.ends_at,
-                event_activities.c.is_online,
-                event_activities.c.location_label,
-                event_activities.c.note,
-                event_activities.c.linked_plan_id,
-                event_activities.c.linked_plan_phase_id,
-                event_activities.c.created_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
         role_items = []
         for req in role_requirements:
@@ -475,31 +506,44 @@ def create_event_activity(
             maximum_count_raw = req.get("maximum_count")
             maximum_count = int(maximum_count_raw) if maximum_count_raw is not None else None
             if not label or required_count < 1:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid role requirement")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid role requirement",
+                )
             if maximum_count is not None and maximum_count < required_count:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="maximum_count must be >= required_count")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="maximum_count must be >= required_count",
+                )
 
-            role = db.execute(
-                insert(event_activity_roles)
-                .values(
-                    activity_id=created["id"],
-                    label=label,
-                    required_count=required_count,
-                    maximum_count=maximum_count,
+            role = (
+                db.execute(
+                    insert(event_activity_roles)
+                    .values(
+                        activity_id=created["id"],
+                        label=label,
+                        required_count=required_count,
+                        maximum_count=maximum_count,
+                    )
+                    .returning(
+                        event_activity_roles.c.id,
+                        event_activity_roles.c.label,
+                        event_activity_roles.c.required_count,
+                        event_activity_roles.c.maximum_count,
+                    )
                 )
-                .returning(
-                    event_activity_roles.c.id,
-                    event_activity_roles.c.label,
-                    event_activity_roles.c.required_count,
-                    event_activity_roles.c.maximum_count,
-                )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             role_items.append(dict(role))
 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create event activity") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create event activity",
+        ) from exc
     except HTTPException:
         db.rollback()
         raise
@@ -522,12 +566,16 @@ def commit_event_activity_role(
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
 
-    activity_row = db.execute(
-        select(event_activities).where(
-            event_activities.c.id == activity_id,
-            event_activities.c.event_id == event_row["id"],
+    activity_row = (
+        db.execute(
+            select(event_activities).where(
+                event_activities.c.id == activity_id,
+                event_activities.c.event_id == event_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
     ensure_activity_roles_unlocked(activity_row["ends_at"])
@@ -543,44 +591,72 @@ def commit_event_activity_role(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
     if role_label is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="role_label is required")
-
-    role_row = db.execute(
-        select(event_activity_roles).where(
-            event_activity_roles.c.activity_id == activity_id,
-            event_activity_roles.c.label == role_label.strip(),
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="role_label is required"
         )
-    ).mappings().first()
+
+    role_row = (
+        db.execute(
+            select(event_activity_roles).where(
+                event_activity_roles.c.activity_id == activity_id,
+                event_activity_roles.c.label == role_label.strip(),
+            )
+        )
+        .mappings()
+        .first()
+    )
     if role_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
     existing_assignment = db.execute(
         select(event_activity_assignments.c.role_id)
-        .select_from(event_activity_assignments.join(event_activity_roles, event_activity_roles.c.id == event_activity_assignments.c.role_id))
+        .select_from(
+            event_activity_assignments.join(
+                event_activity_roles,
+                event_activity_roles.c.id == event_activity_assignments.c.role_id,
+            )
+        )
         .where(
             event_activity_roles.c.activity_id == activity_id,
             event_activity_assignments.c.user_id == current_user_id,
         )
     ).first()
     if existing_assignment is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="User already assigned in this activity"
+        )
 
     filled_count = db.execute(
-        select(event_activity_assignments.c.user_id).where(event_activity_assignments.c.role_id == role_row["id"])
+        select(event_activity_assignments.c.user_id).where(
+            event_activity_assignments.c.role_id == role_row["id"]
+        )
     ).all()
-    if role_row["maximum_count"] is not None and len(filled_count) >= int(role_row["maximum_count"]):
+    if role_row["maximum_count"] is not None and len(filled_count) >= int(
+        role_row["maximum_count"]
+    ):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role is already full")
 
     try:
         db.execute(
-            insert(event_activity_assignments).values(role_id=role_row["id"], user_id=current_user_id)
+            insert(event_activity_assignments).values(
+                role_id=role_row["id"], user_id=current_user_id
+            )
         )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not commit event activity role") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not commit event activity role",
+        ) from exc
 
-    return {"ok": True, "event_slug": event_row["slug"], "activity_id": activity_id, "role_id": role_row["id"], "user_id": current_user_id}
+    return {
+        "ok": True,
+        "event_slug": event_row["slug"],
+        "activity_id": activity_id,
+        "role_id": role_row["id"],
+        "user_id": current_user_id,
+    }
 
 
 def uncommit_event_activity_role(
@@ -592,19 +668,29 @@ def uncommit_event_activity_role(
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
 
-    activity_row = db.execute(
-        select(event_activities).where(
-            event_activities.c.id == activity_id,
-            event_activities.c.event_id == event_row["id"],
+    activity_row = (
+        db.execute(
+            select(event_activities).where(
+                event_activities.c.id == activity_id,
+                event_activities.c.event_id == event_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
     ensure_activity_roles_unlocked(activity_row["ends_at"])
 
-    role_ids = db.execute(
-        select(event_activity_roles.c.id).where(event_activity_roles.c.activity_id == activity_id)
-    ).scalars().all()
+    role_ids = (
+        db.execute(
+            select(event_activity_roles.c.id).where(
+                event_activity_roles.c.activity_id == activity_id
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     if role_ids:
         db.execute(
@@ -631,9 +717,13 @@ def share_event_with_user(
     if not normalized_username:
         return {"ok": False, "error": "Choose another user."}
 
-    target_user = db.execute(
-        select(users.c.id, users.c.username).where(users.c.username == normalized_username)
-    ).mappings().first()
+    target_user = (
+        db.execute(
+            select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+        )
+        .mappings()
+        .first()
+    )
     if target_user is None or target_user["id"] == current_user_id:
         return {"ok": False, "error": "Choose another user."}
 
@@ -650,7 +740,7 @@ def share_event_with_user(
                     event_id=event_row["id"],
                     user_id=target_user["id"],
                     role="member",
-                    joined_at=datetime.now(timezone.utc),
+                    joined_at=datetime.now(UTC),
                 )
             )
             db.execute(

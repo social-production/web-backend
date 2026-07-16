@@ -16,7 +16,8 @@ from app.models import (
     project_service_request_settings,
     projects,
 )
-from app.utils.votes import required_votes, resolve_project_vote_population
+from app.services.governance_votes import compute_vote_summary
+from app.utils.votes import resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_VOTES = frozenset({"yes", "no"})
@@ -50,12 +51,7 @@ def _project_vote_population(db: Session, project_row: Mapping[str, object]) -> 
     )
 
 
-from app.services.governance_votes import compute_vote_summary
-
-
-def _compute_vote_summary(
-    db: Session, request_id: UUID, member_count: int
-) -> dict[str, object]:
+def _compute_vote_summary(db: Session, request_id: UUID, member_count: int) -> dict[str, object]:
     return compute_vote_summary(
         db, project_service_request_setting_change_votes, request_id, member_count
     )
@@ -146,29 +142,33 @@ def create_settings_change_request(
         )
 
     try:
-        created = db.execute(
-            insert(project_service_request_setting_changes)
-            .values(
-                project_id=project_row["id"],
-                author_id=current_user_id,
-                reason=reason.strip(),
-                enabled=enabled,
-                request_mode=normalized_mode,
-                allow_off_schedule_requests=allow_off_schedule_requests,
-                status="open",
+        created = (
+            db.execute(
+                insert(project_service_request_setting_changes)
+                .values(
+                    project_id=project_row["id"],
+                    author_id=current_user_id,
+                    reason=reason.strip(),
+                    enabled=enabled,
+                    request_mode=normalized_mode,
+                    allow_off_schedule_requests=allow_off_schedule_requests,
+                    status="open",
+                )
+                .returning(
+                    project_service_request_setting_changes.c.id,
+                    project_service_request_setting_changes.c.project_id,
+                    project_service_request_setting_changes.c.author_id,
+                    project_service_request_setting_changes.c.reason,
+                    project_service_request_setting_changes.c.enabled,
+                    project_service_request_setting_changes.c.request_mode,
+                    project_service_request_setting_changes.c.allow_off_schedule_requests,
+                    project_service_request_setting_changes.c.status,
+                    project_service_request_setting_changes.c.created_at,
+                )
             )
-            .returning(
-                project_service_request_setting_changes.c.id,
-                project_service_request_setting_changes.c.project_id,
-                project_service_request_setting_changes.c.author_id,
-                project_service_request_setting_changes.c.reason,
-                project_service_request_setting_changes.c.enabled,
-                project_service_request_setting_changes.c.request_mode,
-                project_service_request_setting_changes.c.allow_off_schedule_requests,
-                project_service_request_setting_changes.c.status,
-                project_service_request_setting_changes.c.created_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -177,9 +177,7 @@ def create_settings_change_request(
             detail="Could not create settings change request",
         ) from exc
 
-    summary = _compute_vote_summary(
-        db, created["id"], _project_vote_population(db, project_row)
-    )
+    summary = _compute_vote_summary(db, created["id"], _project_vote_population(db, project_row))
     return {"request": _serialize_change_request(created, summary)}
 
 
@@ -200,12 +198,16 @@ def vote_settings_change_request(
             detail=f"vote must be one of: {sorted(VALID_VOTES)}",
         )
 
-    request_row = db.execute(
-        select(project_service_request_setting_changes).where(
-            project_service_request_setting_changes.c.id == request_id,
-            project_service_request_setting_changes.c.project_id == project_row["id"],
+    request_row = (
+        db.execute(
+            select(project_service_request_setting_changes).where(
+                project_service_request_setting_changes.c.id == request_id,
+                project_service_request_setting_changes.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if request_row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -243,9 +245,7 @@ def vote_settings_change_request(
                 .values(vote=normalized_vote)
             )
 
-        summary = _compute_vote_summary(
-            db, request_id, _project_vote_population(db, project_row)
-        )
+        summary = _compute_vote_summary(db, request_id, _project_vote_population(db, project_row))
         executed = False
 
         if summary["is_passing"]:
@@ -267,9 +267,7 @@ def vote_settings_change_request(
                     set_={
                         "enabled": request_row["enabled"],
                         "request_mode": request_row["request_mode"],
-                        "allow_off_schedule_requests": request_row[
-                            "allow_off_schedule_requests"
-                        ],
+                        "allow_off_schedule_requests": request_row["allow_off_schedule_requests"],
                     },
                 )
             )
@@ -283,14 +281,18 @@ def vote_settings_change_request(
             detail="Could not record vote",
         ) from exc
 
-    refreshed_request = db.execute(
-        select(project_service_request_setting_changes).where(
-            project_service_request_setting_changes.c.id == request_id
+    refreshed_request = (
+        db.execute(
+            select(project_service_request_setting_changes).where(
+                project_service_request_setting_changes.c.id == request_id
+            )
         )
-    ).mappings().one()
-    refreshed_project = db.execute(
-        select(projects).where(projects.c.id == project_row["id"])
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
+    refreshed_project = (
+        db.execute(select(projects).where(projects.c.id == project_row["id"])).mappings().one()
+    )
     final_summary = _compute_vote_summary(
         db, request_id, _project_vote_population(db, refreshed_project)
     )

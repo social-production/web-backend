@@ -5,7 +5,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from app.models import (
     projects,
     users,
 )
+from app.services.access_control import assert_can_view_entity
 from app.services.activity_history import (
     _staffing_failed,
     is_activity_ended,
@@ -61,33 +62,53 @@ def _ensure_service_project(project_mode: str) -> None:
         )
 
 
-def _get_project_membership(db: Session, project_id: UUID, user_id: UUID) -> Mapping[str, object] | None:
-    return db.execute(
-        select(project_memberships).where(
-            project_memberships.c.project_id == project_id,
-            project_memberships.c.user_id == user_id,
+def _get_project_membership(
+    db: Session, project_id: UUID, user_id: UUID
+) -> Mapping[str, object] | None:
+    return (
+        db.execute(
+            select(project_memberships).where(
+                project_memberships.c.project_id == project_id,
+                project_memberships.c.user_id == user_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
 
 def _ensure_project_member(db: Session, project_id: UUID, user_id: UUID) -> Mapping[str, object]:
     membership = _get_project_membership(db, project_id, user_id)
     if membership is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can update request status")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only project members can update request status",
+        )
     return membership
 
 
 def _ensure_request_reviewer(db: Session, project_row: Mapping[str, object], user_id: UUID) -> None:
     membership = _ensure_project_member(db, project_row["id"], user_id)
-    if bool(membership["is_manager"]) or (project_row["project_mode"] == "personal-service" and project_row["author_id"] == user_id):
+    if bool(membership["is_manager"]) or (
+        project_row["project_mode"] == "personal-service" and project_row["author_id"] == user_id
+    ):
         return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only request reviewers can update service requests")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only request reviewers can update service requests",
+    )
 
 
 def _get_request_settings(db: Session, project_id: UUID) -> Mapping[str, object] | None:
-    return db.execute(
-        select(project_service_request_settings).where(project_service_request_settings.c.project_id == project_id)
-    ).mappings().first()
+    return (
+        db.execute(
+            select(project_service_request_settings).where(
+                project_service_request_settings.c.project_id == project_id
+            )
+        )
+        .mappings()
+        .first()
+    )
 
 
 def _ensure_can_submit_service_request(
@@ -133,9 +154,7 @@ def _open_personal_service_request_conversation(
     creator_id: UUID,
     message_body: str,
 ) -> UUID | None:
-    creator_row = db.execute(
-        select(users.c.username).where(users.c.id == creator_id)
-    ).first()
+    creator_row = db.execute(select(users.c.username).where(users.c.id == creator_id)).first()
     if creator_row is None:
         return None
 
@@ -145,20 +164,46 @@ def _open_personal_service_request_conversation(
     return conversation_id
 
 
-def _ensure_requests_enabled(db: Session, project_row: Mapping[str, object], scheduled_at: datetime | None, ends_at: datetime | None) -> None:
+def _ensure_requests_enabled(
+    db: Session,
+    project_row: Mapping[str, object],
+    scheduled_at: datetime | None,
+    ends_at: datetime | None,
+) -> None:
     settings = _get_request_settings(db, project_row["id"])
-    enabled = bool(settings["enabled"]) if settings is not None else project_row["project_mode"] == "personal-service"
+    enabled = (
+        bool(settings["enabled"])
+        if settings is not None
+        else project_row["project_mode"] == "personal-service"
+    )
     request_mode = str(settings["request_mode"]) if settings is not None else "both"
-    allow_off_schedule = bool(settings["allow_off_schedule_requests"]) if settings is not None else project_row["project_mode"] == "personal-service"
+    allow_off_schedule = (
+        bool(settings["allow_off_schedule_requests"])
+        if settings is not None
+        else project_row["project_mode"] == "personal-service"
+    )
 
     if not enabled:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Requests are currently turned off for this project")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Requests are currently turned off for this project",
+        )
 
     if request_mode == "calendar" and (scheduled_at is None or ends_at is None):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Calendar requests require a start and finish time")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Calendar requests require a start and finish time",
+        )
 
-    if request_mode == "direct" and (scheduled_at is not None or ends_at is not None) and not allow_off_schedule:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="This service only accepts direct unscheduled requests")
+    if (
+        request_mode == "direct"
+        and (scheduled_at is not None or ends_at is not None)
+        and not allow_off_schedule
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This service only accepts direct unscheduled requests",
+        )
 
 
 def create_service_request(
@@ -176,36 +221,43 @@ def create_service_request(
     _ensure_requests_enabled(db, project_row, scheduled_at, ends_at)
 
     try:
-        created = db.execute(
-            insert(project_service_requests)
-            .values(
-                project_id=project_row["id"],
-                requester_id=current_user_id,
-                title=title.strip(),
-                body=body.strip(),
-                status="open",
-                scheduled_at=scheduled_at,
-                ends_at=ends_at,
-                linked_activity_id=None,
+        created = (
+            db.execute(
+                insert(project_service_requests)
+                .values(
+                    project_id=project_row["id"],
+                    requester_id=current_user_id,
+                    title=title.strip(),
+                    body=body.strip(),
+                    status="open",
+                    scheduled_at=scheduled_at,
+                    ends_at=ends_at,
+                    linked_activity_id=None,
+                )
+                .returning(
+                    project_service_requests.c.id,
+                    project_service_requests.c.project_id,
+                    project_service_requests.c.requester_id,
+                    project_service_requests.c.title,
+                    project_service_requests.c.body,
+                    project_service_requests.c.status,
+                    project_service_requests.c.scheduled_at,
+                    project_service_requests.c.ends_at,
+                    project_service_requests.c.linked_activity_id,
+                    project_service_requests.c.created_at,
+                    project_service_requests.c.updated_at,
+                )
             )
-            .returning(
-                project_service_requests.c.id,
-                project_service_requests.c.project_id,
-                project_service_requests.c.requester_id,
-                project_service_requests.c.title,
-                project_service_requests.c.body,
-                project_service_requests.c.status,
-                project_service_requests.c.scheduled_at,
-                project_service_requests.c.ends_at,
-                project_service_requests.c.linked_activity_id,
-                project_service_requests.c.created_at,
-                project_service_requests.c.updated_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create service request") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not create service request",
+        ) from exc
 
     conversation_id: UUID | None = None
     if project_row["project_mode"] == "personal-service":
@@ -240,7 +292,9 @@ def list_service_requests(
     _ensure_service_project(project_row["project_mode"])
     assert_can_view_entity(db, viewer_id, "project", project_row["id"])
 
-    query = select(project_service_requests).where(project_service_requests.c.project_id == project_row["id"])
+    query = select(project_service_requests).where(
+        project_service_requests.c.project_id == project_row["id"]
+    )
 
     if status_filter:
         normalized = status_filter.strip().lower()
@@ -280,14 +334,20 @@ def update_service_request_status(
             detail=f"status must be one of: {sorted(VALID_SERVICE_REQUEST_STATUS)}",
         )
 
-    request_row = db.execute(
-        select(project_service_requests).where(
-            project_service_requests.c.id == request_id,
-            project_service_requests.c.project_id == project_row["id"],
+    request_row = (
+        db.execute(
+            select(project_service_requests).where(
+                project_service_requests.c.id == request_id,
+                project_service_requests.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if request_row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service request not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Service request not found"
+        )
 
     try:
         db.execute(
@@ -298,11 +358,18 @@ def update_service_request_status(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not update request status") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not update request status",
+        ) from exc
 
-    refreshed = db.execute(
-        select(project_service_requests).where(project_service_requests.c.id == request_id)
-    ).mappings().one()
+    refreshed = (
+        db.execute(
+            select(project_service_requests).where(project_service_requests.c.id == request_id)
+        )
+        .mappings()
+        .one()
+    )
 
     return {"request": _serialize_service_request(refreshed)}
 
@@ -322,14 +389,20 @@ def plan_service_request(
     _ensure_service_project(project_row["project_mode"])
     _ensure_request_reviewer(db, project_row, current_user_id)
 
-    request_row = db.execute(
-        select(project_service_requests).where(
-            project_service_requests.c.id == request_id,
-            project_service_requests.c.project_id == project_row["id"],
+    request_row = (
+        db.execute(
+            select(project_service_requests).where(
+                project_service_requests.c.id == request_id,
+                project_service_requests.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if request_row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service request not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Service request not found"
+        )
     if request_row["status"] != "open":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -350,36 +423,40 @@ def plan_service_request(
         )
 
     try:
-        created_activity = db.execute(
-            insert(project_activities)
-            .values(
-                project_id=project_row["id"],
-                linked_plan_id=None,
-                linked_plan_phase_id=linked_plan_phase_id,
-                linked_request_id=request_id,
-                title=title.strip(),
-                author_id=current_user_id,
-                scheduled_at=scheduled_at,
-                ends_at=ends_at,
-                location_label=location_label.strip(),
-                note=note.strip(),
-                status="active",
+        created_activity = (
+            db.execute(
+                insert(project_activities)
+                .values(
+                    project_id=project_row["id"],
+                    linked_plan_id=None,
+                    linked_plan_phase_id=linked_plan_phase_id,
+                    linked_request_id=request_id,
+                    title=title.strip(),
+                    author_id=current_user_id,
+                    scheduled_at=scheduled_at,
+                    ends_at=ends_at,
+                    location_label=location_label.strip(),
+                    note=note.strip(),
+                    status="active",
+                )
+                .returning(
+                    project_activities.c.id,
+                    project_activities.c.project_id,
+                    project_activities.c.title,
+                    project_activities.c.author_id,
+                    project_activities.c.scheduled_at,
+                    project_activities.c.ends_at,
+                    project_activities.c.location_label,
+                    project_activities.c.note,
+                    project_activities.c.linked_plan_phase_id,
+                    project_activities.c.linked_request_id,
+                    project_activities.c.status,
+                    project_activities.c.created_at,
+                )
             )
-            .returning(
-                project_activities.c.id,
-                project_activities.c.project_id,
-                project_activities.c.title,
-                project_activities.c.author_id,
-                project_activities.c.scheduled_at,
-                project_activities.c.ends_at,
-                project_activities.c.location_label,
-                project_activities.c.note,
-                project_activities.c.linked_plan_phase_id,
-                project_activities.c.linked_request_id,
-                project_activities.c.status,
-                project_activities.c.created_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
 
         role_items = []
         for req in role_requirements:
@@ -397,21 +474,25 @@ def plan_service_request(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="maximum_count must be >= required_count",
                 )
-            role = db.execute(
-                insert(project_activity_roles)
-                .values(
-                    activity_id=created_activity["id"],
-                    label=label,
-                    required_count=required_count,
-                    maximum_count=maximum_count,
+            role = (
+                db.execute(
+                    insert(project_activity_roles)
+                    .values(
+                        activity_id=created_activity["id"],
+                        label=label,
+                        required_count=required_count,
+                        maximum_count=maximum_count,
+                    )
+                    .returning(
+                        project_activity_roles.c.id,
+                        project_activity_roles.c.label,
+                        project_activity_roles.c.required_count,
+                        project_activity_roles.c.maximum_count,
+                    )
                 )
-                .returning(
-                    project_activity_roles.c.id,
-                    project_activity_roles.c.label,
-                    project_activity_roles.c.required_count,
-                    project_activity_roles.c.maximum_count,
-                )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             role_items.append(dict(role))
 
         db.execute(
@@ -431,9 +512,13 @@ def plan_service_request(
         db.rollback()
         raise
 
-    refreshed_request = db.execute(
-        select(project_service_requests).where(project_service_requests.c.id == request_id)
-    ).mappings().one()
+    refreshed_request = (
+        db.execute(
+            select(project_service_requests).where(project_service_requests.c.id == request_id)
+        )
+        .mappings()
+        .one()
+    )
 
     return {
         "request": _serialize_service_request(refreshed_request),
@@ -454,18 +539,26 @@ def toggle_service_history_completion(
     try:
         activity_id = UUID(history_item_key)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History item not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="History item not found"
+        ) from exc
 
-    activity_row = db.execute(
-        select(project_activities).where(
-            project_activities.c.id == activity_id,
-            project_activities.c.project_id == project_row["id"],
+    activity_row = (
+        db.execute(
+            select(project_activities).where(
+                project_activities.c.id == activity_id,
+                project_activities.c.project_id == project_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if activity_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History item not found")
     if not is_activity_ended(activity_row["ends_at"]):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Activity has not ended yet"
+        )
 
     normalized_role = role.strip().lower()
     if normalized_role not in {"requester", "participants"}:
@@ -475,7 +568,10 @@ def toggle_service_history_completion(
         )
 
     normalized_selection = selection.strip().lower() if selection else None
-    if normalized_selection is not None and normalized_selection not in {"completed", "uncompleted"}:
+    if normalized_selection is not None and normalized_selection not in {
+        "completed",
+        "uncompleted",
+    }:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="selection must be 'completed', 'uncompleted', or null",
@@ -492,7 +588,10 @@ def toggle_service_history_completion(
             )
         ).first()
         if request_row is None or request_row[0] != current_user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the requester can set requester completion")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the requester can set requester completion",
+            )
     else:
         assigned = db.execute(
             select(project_activity_assignments.c.user_id)
@@ -508,7 +607,10 @@ def toggle_service_history_completion(
             )
         ).first()
         if assigned is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only assigned participants can set participant completion")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only assigned participants can set participant completion",
+            )
         committed_count, minimum_participants = project_activity_staffing_counts(db, activity_id)
         if _staffing_failed(committed_count, minimum_participants):
             raise HTTPException(
@@ -516,15 +618,19 @@ def toggle_service_history_completion(
                 detail="Participant completion is unavailable when no participants signed up",
             )
 
-    existing = db.execute(
-        select(project_service_history_completions).where(
-            project_service_history_completions.c.project_id == project_row["id"],
-            project_service_history_completions.c.history_item_key == history_item_key,
-            project_service_history_completions.c.role == normalized_role,
-            project_service_history_completions.c.requester_user_id == requester_user_id,
-            project_service_history_completions.c.participant_user_id == participant_user_id,
+    existing = (
+        db.execute(
+            select(project_service_history_completions).where(
+                project_service_history_completions.c.project_id == project_row["id"],
+                project_service_history_completions.c.history_item_key == history_item_key,
+                project_service_history_completions.c.role == normalized_role,
+                project_service_history_completions.c.requester_user_id == requester_user_id,
+                project_service_history_completions.c.participant_user_id == participant_user_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     try:
         if normalized_selection is None:
@@ -562,7 +668,8 @@ def toggle_service_history_completion(
                     project_service_history_completions.c.history_item_key == history_item_key,
                     project_service_history_completions.c.role == normalized_role,
                     project_service_history_completions.c.requester_user_id == requester_user_id,
-                    project_service_history_completions.c.participant_user_id == participant_user_id,
+                    project_service_history_completions.c.participant_user_id
+                    == participant_user_id,
                 )
                 .values(completion_state=normalized_selection)
             )

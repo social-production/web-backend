@@ -1,7 +1,8 @@
 """Closed-community member list access control."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -15,7 +16,7 @@ from app.models import communities, scope_memberships, users
 
 def _seed_closed_community_with_member() -> tuple[str, str, str]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     member_id = uuid4()
     outsider_id = uuid4()
     community_id = uuid4()

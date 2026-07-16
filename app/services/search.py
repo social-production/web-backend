@@ -12,9 +12,7 @@ from sqlalchemy.orm import Session
 from app.models import searchable_documents
 from app.services.access_control import filter_search_results
 
-SEARCHABLE_ENTITY_TYPES = frozenset(
-    {"project", "thread", "event", "channel", "community", "user"}
-)
+SEARCHABLE_ENTITY_TYPES = frozenset({"project", "thread", "event", "channel", "community", "user"})
 
 
 def _serialize_search_document(row: Mapping[str, object]) -> dict[str, object]:
@@ -75,13 +73,21 @@ def index_document(
     cleaned_href = href.strip()
 
     if not cleaned_title:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required"
+        )
     if not cleaned_summary:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="summary is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="summary is required"
+        )
     if not cleaned_meta:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="meta is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="meta is required"
+        )
     if not cleaned_href:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="href is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="href is required"
+        )
 
     search_text = " ".join([cleaned_title, cleaned_summary, cleaned_meta])
 
@@ -141,7 +147,9 @@ def search_documents(
 ) -> dict[str, object]:
     cleaned_query = query.strip()
     if not cleaned_query:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="query is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="query is required"
+        )
 
     normalized_types = _normalize_entity_types(entity_types)
     safe_limit = max(1, min(limit, 100))

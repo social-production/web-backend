@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import insert
 
@@ -27,7 +28,7 @@ def _assert_vote_or_closed(response: httpx.Response, expected_closed_detail: str
 
 def _seed() -> dict[str, object]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     owner_id = uuid4()
     member_id = uuid4()
@@ -170,7 +171,7 @@ def run() -> None:
         )
         assert event_value_vote.status_code == 200, event_value_vote.text
 
-        activity_now = datetime.now(timezone.utc)
+        activity_now = datetime.now(UTC)
         activity = client.post(
             f"/events/{seeded['event_slug']}/activities",
             headers=_auth_header(seeded["owner_token"]),
@@ -278,9 +279,7 @@ def run() -> None:
             headers=_auth_header(seeded["owner_token"]),
         )
         assert listed.status_code == 200, listed.text
-        listed_item = next(
-            item for item in listed.json()["items"] if item["id"] == conversation_id
-        )
+        listed_item = next(item for item in listed.json()["items"] if item["id"] == conversation_id)
         assert listed_item["preview"] == "ping"
         assert listed_item["unread_count"] >= 1
 
@@ -300,11 +299,22 @@ def run() -> None:
         )
         assert mark_read.status_code == 200, mark_read.text
 
-        update_executed = bool(update_vote_owner.json().get("executed") or (update_vote_member.status_code == 200 and update_vote_member.json().get("executed")))
-        edit_executed = bool(edit_vote_owner.json().get("executed") or (edit_vote_member.status_code == 200 and edit_vote_member.json().get("executed")))
-        revert_executed = bool(revert_vote_owner.json().get("executed") or (revert_vote_member.status_code == 200 and revert_vote_member.json().get("executed")))
+        update_executed = bool(
+            update_vote_owner.json().get("executed")
+            or (update_vote_member.status_code == 200 and update_vote_member.json().get("executed"))
+        )
+        edit_executed = bool(
+            edit_vote_owner.json().get("executed")
+            or (edit_vote_member.status_code == 200 and edit_vote_member.json().get("executed"))
+        )
+        revert_executed = bool(
+            revert_vote_owner.json().get("executed")
+            or (revert_vote_member.status_code == 200 and revert_vote_member.json().get("executed"))
+        )
         phase_after_revert = revert_vote_owner.json().get("current_phase_id") or (
-            revert_vote_member.json().get("current_phase_id") if revert_vote_member.status_code == 200 else None
+            revert_vote_member.json().get("current_phase_id")
+            if revert_vote_member.status_code == 200
+            else None
         )
 
         print(

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import secrets
 import time
-from datetime import datetime, timezone
 from collections.abc import Mapping
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request, status
 from redis.asyncio import Redis
@@ -11,7 +11,12 @@ from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth.jwt import create_access_token, create_refresh_token, get_access_token_payload, verify_refresh_token
+from app.auth.jwt import (
+    create_access_token,
+    create_refresh_token,
+    get_access_token_payload,
+    verify_refresh_token,
+)
 from app.auth.passwords import hash_password, verify_password
 from app.cache import get_redis_client
 from app.config import get_settings
@@ -105,41 +110,57 @@ async def enforce_auth_rate_limit(request: Request) -> None:
         return
 
     if current_count > AUTH_RATE_LIMIT:
-        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Auth rate limit exceeded")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Auth rate limit exceeded"
+        )
 
 
-def register_user(db: Session, username: str, password: str, profile_bio: str | None = None) -> dict[str, object]:
+def register_user(
+    db: Session, username: str, password: str, profile_bio: str | None = None
+) -> dict[str, object]:
     normalized_username = _normalize_username(username)
     if not normalized_username:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Username is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Username is required"
+        )
     if not password:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password is required"
+        )
 
-    existing_user = db.execute(select(users.c.id).where(users.c.username == normalized_username)).first()
+    existing_user = db.execute(
+        select(users.c.id).where(users.c.username == normalized_username)
+    ).first()
     if existing_user is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
 
     try:
-        created_user = db.execute(
-            insert(users)
-            .values(
-                username=normalized_username,
-                password_hash=hash_password(password),
-                bio=profile_bio,
+        created_user = (
+            db.execute(
+                insert(users)
+                .values(
+                    username=normalized_username,
+                    password_hash=hash_password(password),
+                    bio=profile_bio,
+                )
+                .returning(
+                    users.c.id,
+                    users.c.username,
+                    users.c.bio,
+                    users.c.profile_image_url,
+                    users.c.is_active,
+                )
             )
-            .returning(
-                users.c.id,
-                users.c.username,
-                users.c.bio,
-                users.c.profile_image_url,
-                users.c.is_active,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         db.execute(insert(user_settings).values(user_id=created_user["id"]))
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists") from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Username already exists"
+        ) from exc
 
     index_document(
         db=db,
@@ -156,21 +177,29 @@ def register_user(db: Session, username: str, password: str, profile_bio: str | 
 def authenticate_user(db: Session, username: str, password: str) -> dict[str, object]:
     normalized_username = _normalize_username(username)
     if not normalized_username or not password:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
+        )
 
-    user_row = db.execute(
-        select(
-            users.c.id,
-            users.c.username,
-            users.c.bio,
-            users.c.profile_image_url,
-            users.c.is_active,
-            users.c.password_hash,
-        ).where(users.c.username == normalized_username)
-    ).mappings().first()
+    user_row = (
+        db.execute(
+            select(
+                users.c.id,
+                users.c.username,
+                users.c.bio,
+                users.c.profile_image_url,
+                users.c.is_active,
+                users.c.password_hash,
+            ).where(users.c.username == normalized_username)
+        )
+        .mappings()
+        .first()
+    )
 
     if user_row is None or not user_row["is_active"]:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
+        )
 
     try:
         password_matches = verify_password(password, user_row["password_hash"])
@@ -178,7 +207,9 @@ def authenticate_user(db: Session, username: str, password: str) -> dict[str, ob
         password_matches = False
 
     if not password_matches:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
+        )
 
     return _issue_auth_bundle(user_row)
 
@@ -187,16 +218,27 @@ async def refresh_auth_session(refresh_token: str) -> dict[str, object]:
     try:
         payload = verify_refresh_token(refresh_token)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        ) from exc
 
     jti = payload.get("jti")
     exp = payload.get("exp")
     subject = payload.get("sub")
-    if not isinstance(jti, str) or not jti or not isinstance(exp, int) or not isinstance(subject, str):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    if (
+        not isinstance(jti, str)
+        or not jti
+        or not isinstance(exp, int)
+        or not isinstance(subject, str)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
 
     if await _is_token_blacklisted(jti):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been revoked")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been revoked"
+        )
 
     await _blacklist_token(jti, exp)
 
@@ -212,7 +254,7 @@ async def refresh_auth_session(refresh_token: str) -> dict[str, object]:
 
 
 async def _blacklist_token(jti: str, exp: int) -> None:
-    ttl_seconds = exp - int(datetime.now(timezone.utc).timestamp())
+    ttl_seconds = exp - int(datetime.now(UTC).timestamp())
     if ttl_seconds <= 0:
         return
     redis_client: Redis = get_redis_client()
@@ -238,7 +280,9 @@ async def logout_user(token: str) -> dict[str, bool]:
     try:
         payload = get_access_token_payload(token)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        ) from exc
 
     jti = payload.get("jti")
     exp = payload.get("exp")
@@ -247,7 +291,7 @@ async def logout_user(token: str) -> dict[str, bool]:
     if not isinstance(exp, int):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    ttl_seconds = exp - int(datetime.now(timezone.utc).timestamp())
+    ttl_seconds = exp - int(datetime.now(UTC).timestamp())
     if ttl_seconds > 0:
         await _blacklist_token(jti, exp)
 
@@ -258,12 +302,16 @@ async def logout_refresh_token(refresh_token: str) -> dict[str, bool]:
     try:
         payload = verify_refresh_token(refresh_token)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        ) from exc
 
     jti = payload.get("jti")
     exp = payload.get("exp")
     if not isinstance(jti, str) or not jti or not isinstance(exp, int):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
 
     await _blacklist_token(jti, exp)
     return {"ok": True}

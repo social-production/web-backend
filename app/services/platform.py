@@ -22,12 +22,16 @@ _ZERO_INT = literal(0, Integer)
 def _get_platform_channel(db: Session) -> Mapping[str, object] | None:
     from app.models import channels
 
-    return db.execute(
-        select(channels.c.id, channels.c.slug, channels.c.name, channels.c.description)
-        .where(channels.c.slug.in_(["platform", "stewardship"]))
-        .order_by(channels.c.slug.asc())
-        .limit(1)
-    ).mappings().first()
+    return (
+        db.execute(
+            select(channels.c.id, channels.c.slug, channels.c.name, channels.c.description)
+            .where(channels.c.slug.in_(["platform", "stewardship"]))
+            .order_by(channels.c.slug.asc())
+            .limit(1)
+        )
+        .mappings()
+        .first()
+    )
 
 
 def _projects_select_for_platform(channel_id: UUID | None):
@@ -132,12 +136,16 @@ def _build_platform_feed(
     else:
         sort_col = combined.c.last_activity_at.desc()
 
-    rows = db.execute(
-        select(combined)
-        .order_by(sort_col, combined.c.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(combined)
+            .order_by(sort_col, combined.c.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        .mappings()
+        .all()
+    )
 
     items = [_serialize_feed_item(row) for row in rows]
     return {"total": len(items), "sort": sort, "limit": limit, "offset": offset, "items": items}
@@ -160,11 +168,15 @@ def get_platform_page(
 
     candidacy_options: dict[str, object] | None = None
     if viewer_user_id is not None:
-        membership_row = db.execute(
-            select(platform_board_memberships.c.standing_state).where(
-                platform_board_memberships.c.user_id == viewer_user_id
+        membership_row = (
+            db.execute(
+                select(platform_board_memberships.c.standing_state).where(
+                    platform_board_memberships.c.user_id == viewer_user_id
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         viewer_state = membership_row["standing_state"] if membership_row is not None else None
         candidacy_options = {
             "viewer_state": viewer_state,
@@ -177,7 +189,9 @@ def get_platform_page(
             "slug": channel["slug"],
             "name": channel["name"],
             "description": channel["description"],
-        } if channel is not None else None,
+        }
+        if channel is not None
+        else None,
         "moderators": board["members"],
         "moderator_candidates": board["candidates"],
         "moderator_candidacy_options": candidacy_options,

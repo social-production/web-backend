@@ -90,7 +90,9 @@ def _apply_auth_cookies(response: Response, payload: dict[str, object]) -> None:
     )
 
 
-@router.post("/register", response_model=AuthResponse, dependencies=[Depends(enforce_auth_rate_limit)])
+@router.post(
+    "/register", response_model=AuthResponse, dependencies=[Depends(enforce_auth_rate_limit)]
+)
 def register(
     payload: RegisterRequest,
     request: Request,
@@ -114,7 +116,9 @@ def login(
     return public_auth_payload(request, auth_payload)
 
 
-@router.post("/refresh", response_model=RefreshResponse, dependencies=[Depends(enforce_auth_rate_limit)])
+@router.post(
+    "/refresh", response_model=RefreshResponse, dependencies=[Depends(enforce_auth_rate_limit)]
+)
 async def refresh(request: Request, response: Response) -> dict[str, object]:
     refresh_token = resolve_refresh_token(request)
     auth_payload = await refresh_auth_session(refresh_token)
@@ -122,7 +126,9 @@ async def refresh(request: Request, response: Response) -> dict[str, object]:
     return public_auth_payload(request, auth_payload)
 
 
-@router.post("/logout", response_model=LogoutResponse, dependencies=[Depends(enforce_auth_rate_limit)])
+@router.post(
+    "/logout", response_model=LogoutResponse, dependencies=[Depends(enforce_auth_rate_limit)]
+)
 async def logout(
     request: Request,
     response: Response,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -20,7 +20,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 def _seed() -> dict[str, object]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     creator_id = uuid4()
     channel_id = uuid4()
@@ -75,7 +75,10 @@ def run() -> None:
 
     assert display_stage_label("personal-service", None, "phase-1") == "Activity"
     assert display_stage_label("productive", None, "phase-1") == "Proposal"
-    assert visible_phase_ids_for_project("personal-service", None, "phase-1") == ["phase-1", "phase-2"]
+    assert visible_phase_ids_for_project("personal-service", None, "phase-1") == [
+        "phase-1",
+        "phase-2",
+    ]
     assert visible_phase_ids_for_project("collective-service", None, "phase-3") == [
         "phase-1",
         "phase-2",
@@ -106,11 +109,16 @@ def run() -> None:
         )
         assert personal.status_code == 200, personal.text
 
-        personal_detail = client.get(f"/projects/{personal_slug}", headers=_auth_header(seeded["creator_token"]))
+        personal_detail = client.get(
+            f"/projects/{personal_slug}", headers=_auth_header(seeded["creator_token"])
+        )
         assert personal_detail.status_code == 200, personal_detail.text
         personal_payload = personal_detail.json()
         assert len(personal_payload["lifecycle"]["phases"]) == 2
-        assert [phase["title"] for phase in personal_payload["lifecycle"]["phases"]] == ["Activity", "Closed"]
+        assert [phase["title"] for phase in personal_payload["lifecycle"]["phases"]] == [
+            "Activity",
+            "Closed",
+        ]
         assert personal_payload["stage"] == "Activity"
 
         software = client.post(
@@ -131,12 +139,18 @@ def run() -> None:
         db.execute(
             update(projects)
             .where(projects.c.slug == software_slug)
-            .values(project_subtype="software", current_phase_id="phase-3", stage_label="Distribution Plan")
+            .values(
+                project_subtype="software",
+                current_phase_id="phase-3",
+                stage_label="Distribution Plan",
+            )
         )
         db.commit()
         db.close()
 
-        software_detail = client.get(f"/projects/{software_slug}", headers=_auth_header(seeded["creator_token"]))
+        software_detail = client.get(
+            f"/projects/{software_slug}", headers=_auth_header(seeded["creator_token"])
+        )
         assert software_detail.status_code == 200, software_detail.text
         software_payload = software_detail.json()
         software_phase_ids = [phase["id"] for phase in software_payload["lifecycle"]["phases"]]
@@ -153,7 +167,9 @@ def run() -> None:
         print(
             json.dumps(
                 {
-                    "personal_phases": [phase["title"] for phase in personal_payload["lifecycle"]["phases"]],
+                    "personal_phases": [
+                        phase["title"] for phase in personal_payload["lifecycle"]["phases"]
+                    ],
                     "software_phase_ids": software_phase_ids,
                     "personal_feed_stage": personal_feed_item["stage_label"],
                 }

@@ -54,9 +54,8 @@ jobs:
 
       - name: Ruff
         run: |
-          ruff check app/services app/routers app/auth app/middleware app/config.py app/main.py app/utils tests
-          ruff format --check app/services app/routers app/auth app/middleware app/config.py app/main.py app/utils tests
-          ruff check app tests --select F
+          ruff check app tests
+          ruff format --check app tests
 
       - name: Dependency audit
         run: pip audit

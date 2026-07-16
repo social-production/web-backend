@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -196,7 +196,10 @@ def create_pull_request(
     )
 
 
-@router.post("/{slug}/software/pull-requests/{request_id}/vote", response_model=ProjectSoftwareGovernanceDataOut)
+@router.post(
+    "/{slug}/software/pull-requests/{request_id}/vote",
+    response_model=ProjectSoftwareGovernanceDataOut,
+)
 def vote_on_pull_request(
     slug: str,
     request_id: UUID,
@@ -213,7 +216,10 @@ def vote_on_pull_request(
     )
 
 
-@router.post("/{slug}/software/pull-requests/{request_id}/merge", response_model=ProjectSoftwareGovernanceDataOut)
+@router.post(
+    "/{slug}/software/pull-requests/{request_id}/merge",
+    response_model=ProjectSoftwareGovernanceDataOut,
+)
 def merge_pull_request(
     slug: str,
     request_id: UUID,
@@ -230,7 +236,9 @@ def merge_pull_request(
     )
 
 
-@router.post("/{slug}/software/merge-capability-requests", response_model=ProjectSoftwareGovernanceDataOut)
+@router.post(
+    "/{slug}/software/merge-capability-requests", response_model=ProjectSoftwareGovernanceDataOut
+)
 def create_merge_capability_request(
     slug: str,
     payload: MergeCapabilityRequestIn,
@@ -246,7 +254,10 @@ def create_merge_capability_request(
     )
 
 
-@router.post("/{slug}/software/merge-capability-requests/{request_id}/vote", response_model=ProjectSoftwareGovernanceDataOut)
+@router.post(
+    "/{slug}/software/merge-capability-requests/{request_id}/vote",
+    response_model=ProjectSoftwareGovernanceDataOut,
+)
 def vote_on_merge_capability_request(
     slug: str,
     request_id: UUID,
@@ -263,7 +274,10 @@ def vote_on_merge_capability_request(
     )
 
 
-@router.post("/{slug}/software/repository-replacement-requests", response_model=ProjectSoftwareGovernanceDataOut)
+@router.post(
+    "/{slug}/software/repository-replacement-requests",
+    response_model=ProjectSoftwareGovernanceDataOut,
+)
 def create_repository_replacement_request(
     slug: str,
     payload: RepositoryReplacementRequestIn,
@@ -280,7 +294,10 @@ def create_repository_replacement_request(
     )
 
 
-@router.post("/{slug}/software/repository-replacement-requests/{request_id}/vote", response_model=ProjectSoftwareGovernanceDataOut)
+@router.post(
+    "/{slug}/software/repository-replacement-requests/{request_id}/vote",
+    response_model=ProjectSoftwareGovernanceDataOut,
+)
 def vote_on_repository_replacement_request(
     slug: str,
     request_id: UUID,

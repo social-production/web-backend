@@ -1,41 +1,55 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import Boolean, DateTime, Integer, String, and_, cast, func, literal, null, or_, select, union_all
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Integer,
+    cast,
+    literal,
+    null,
+    select,
+    union_all,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.models import (
     channels,
-    comments,
     communities,
-    content_votes,
-    event_tags,
-    event_updates,
     events,
-    help_request_tags,
     help_requests,
     posts,
-    project_tags,
-    project_updates,
     projects,
-    scope_memberships,
-    thread_tags,
     threads,
     user_follows,
-    users,
     user_settings,
+    users,
 )
-
 from app.services.access_control import (
     assert_can_view_scope,
-    closed_community_only_tag_condition,
 )
-from app.services.projects_phases import display_stage_label as project_display_stage_label
 from app.services.content import _help_request_role_summaries, _load_help_request_roles
+from app.services.feeds.builder import _build_feed
+from app.services.feeds.scope import _get_followed_user_ids, _get_user_scope_ids
+from app.services.feeds.selects import (
+    _comments_select_for_followed,
+    _events_select_for_followed,
+    _help_requests_select_for_followed,
+    _posts_select_discovery,
+    _posts_select_for_followed,
+    _projects_select_for_followed,
+    _threads_select_discovery,
+    _threads_select_for_followed,
+)
+from app.services.feeds.serializers import (
+    _fetch_active_votes_for_rows,
+    _fetch_latest_updates_for_items,
+    _fetch_tags_for_items,
+    _serialize_personal_item,
+)
 
 VALID_SORTS = frozenset({"popular", "recent"})
 
@@ -49,30 +63,6 @@ EVENT_STAGE_LABEL_BY_PHASE_ID = {
 _ZERO_INT = literal(0, Integer)
 _EMPTY_ROLES = cast(literal("[]"), JSONB)
 
-from app.services.feeds.builder import _build_feed
-from app.services.feeds.scope import _get_followed_user_ids, _get_user_scope_ids
-from app.services.feeds.selects import (
-    _comment_activity_select,
-    _comments_select_for_followed,
-    _events_select,
-    _events_select_for_followed,
-    _help_requests_select,
-    _help_requests_select_for_followed,
-    _posts_select_discovery,
-    _posts_select_for_followed,
-    _projects_select,
-    _projects_select_for_followed,
-    _threads_select,
-    _threads_select_discovery,
-    _threads_select_for_followed,
-)
-from app.services.feeds.serializers import (
-    _fetch_active_votes_for_rows,
-    _fetch_latest_updates_for_items,
-    _fetch_tags_for_items,
-    _serialize_personal_item,
-)
-from app.services.content import _help_request_role_summaries, _load_help_request_roles
 
 def get_public_feed(
     db: Session,
@@ -102,7 +92,10 @@ def get_home_feed(
     safe_sort = sort.strip().lower() if sort.strip().lower() in VALID_SORTS else "recent"
     channel_ids, community_ids = _get_user_scope_ids(db, current_user_id)
     return _build_feed(
-        db, safe_sort, max(1, min(limit, 100)), max(0, offset),
+        db,
+        safe_sort,
+        max(1, min(limit, 100)),
+        max(0, offset),
         channel_ids=channel_ids,
         community_ids=community_ids,
         current_user_id=current_user_id,
@@ -145,7 +138,13 @@ def get_personal_feed(
     parts = [part for part in parts if part is not None]
 
     if not parts:
-        return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+        return {
+            "total": 0,
+            "sort": safe_sort,
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "items": [],
+        }
 
     combined = union_all(*parts).subquery("personal_feed")
 
@@ -160,12 +159,16 @@ def get_personal_feed(
     else:
         sort_col = combined.c.last_activity_at.desc()
 
-    rows = db.execute(
-        select(combined)
-        .order_by(sort_col, combined.c.created_at.desc())
-        .limit(bounded_limit)
-        .offset(bounded_offset)
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(combined)
+            .order_by(sort_col, combined.c.created_at.desc())
+            .limit(bounded_limit)
+            .offset(bounded_offset)
+        )
+        .mappings()
+        .all()
+    )
 
     project_ids = [row["id"] for row in rows if row["entity_type"] == "project"]
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
@@ -210,7 +213,13 @@ def get_user_feed(
         select(users.c.id).where(users.c.username == username.strip().lower())
     ).first()
     if user_row is None:
-        return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+        return {
+            "total": 0,
+            "sort": safe_sort,
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "items": [],
+        }
 
     user_id: UUID = user_row[0]
     viewer_is_owner = viewer_user_id is not None and viewer_user_id == user_id
@@ -438,12 +447,16 @@ def get_user_feed(
     else:
         sort_col = combined.c.last_activity_at.desc()
 
-    rows = db.execute(
-        select(combined)
-        .order_by(sort_col, combined.c.created_at.desc())
-        .limit(bounded_limit)
-        .offset(bounded_offset)
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(combined)
+            .order_by(sort_col, combined.c.created_at.desc())
+            .limit(bounded_limit)
+            .offset(bounded_offset)
+        )
+        .mappings()
+        .all()
+    )
 
     project_ids = [row["id"] for row in rows if row["entity_type"] == "project"]
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
@@ -487,23 +500,61 @@ def get_scope_feed(
     normalized_slug = slug.strip().lower()
 
     if scope_kind == "channel":
-        row = db.execute(
-            select(channels.c.id).where(channels.c.slug == normalized_slug)
-        ).first()
+        row = db.execute(select(channels.c.id).where(channels.c.slug == normalized_slug)).first()
         if row is None:
-            return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
-        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[row[0]], community_ids=[], current_user_id=current_user_id)
+            return {
+                "total": 0,
+                "sort": safe_sort,
+                "limit": bounded_limit,
+                "offset": bounded_offset,
+                "items": [],
+            }
+        return _build_feed(
+            db,
+            safe_sort,
+            bounded_limit,
+            bounded_offset,
+            channel_ids=[row[0]],
+            community_ids=[],
+            current_user_id=current_user_id,
+        )
 
     if scope_kind == "community":
         row = db.execute(
             select(communities.c.id).where(communities.c.slug == normalized_slug)
         ).first()
         if row is None:
-            return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+            return {
+                "total": 0,
+                "sort": safe_sort,
+                "limit": bounded_limit,
+                "offset": bounded_offset,
+                "items": [],
+            }
         try:
             assert_can_view_scope(db, current_user_id, "community", row[0])
         except HTTPException:
-            return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
-        return _build_feed(db, safe_sort, bounded_limit, bounded_offset, channel_ids=[], community_ids=[row[0]], current_user_id=current_user_id)
+            return {
+                "total": 0,
+                "sort": safe_sort,
+                "limit": bounded_limit,
+                "offset": bounded_offset,
+                "items": [],
+            }
+        return _build_feed(
+            db,
+            safe_sort,
+            bounded_limit,
+            bounded_offset,
+            channel_ids=[],
+            community_ids=[row[0]],
+            current_user_id=current_user_id,
+        )
 
-    return {"total": 0, "sort": safe_sort, "limit": bounded_limit, "offset": bounded_offset, "items": []}
+    return {
+        "total": 0,
+        "sort": safe_sort,
+        "limit": bounded_limit,
+        "offset": bounded_offset,
+        "items": [],
+    }

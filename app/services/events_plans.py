@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from uuid import UUID
-
-from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete, insert, select, update
@@ -19,6 +18,7 @@ from app.models import (
     event_values,
     events,
 )
+from app.services.governance_votes import compute_plan_vote_summary
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.plan_criteria import (
@@ -26,7 +26,7 @@ from app.services.plan_criteria import (
     assessment_criteria_for_plan,
     parse_value_criterion_id,
 )
-from app.utils.votes import required_votes, resolve_event_vote_population
+from app.utils.votes import resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_VOTES = {"yes", "no", "neutral"}
@@ -44,9 +44,9 @@ def _schedule_start_utc_from_payload(schedule_payload: dict[str, object]) -> dat
         return None
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
 
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _sync_event_schedule_from_leading_plan(
@@ -54,12 +54,16 @@ def _sync_event_schedule_from_leading_plan(
     event_id: UUID,
     plan_id: UUID,
 ) -> None:
-    plan_row = db.execute(
-        select(
-            event_plans.c.schedule_payload,
-            event_plans.c.location_label,
-        ).where(event_plans.c.id == plan_id)
-    ).mappings().one()
+    plan_row = (
+        db.execute(
+            select(
+                event_plans.c.schedule_payload,
+                event_plans.c.location_label,
+            ).where(event_plans.c.id == plan_id)
+        )
+        .mappings()
+        .one()
+    )
 
     schedule_payload = dict(plan_row["schedule_payload"] or {})
     scheduled_at = _schedule_start_utc_from_payload(schedule_payload)
@@ -73,14 +77,12 @@ def _sync_event_schedule_from_leading_plan(
         update_values["location_label"] = location_label
 
     if update_values:
-        db.execute(
-            update(events)
-            .where(events.c.id == event_id)
-            .values(**update_values)
-        )
+        db.execute(update(events).where(events.c.id == event_id).values(**update_values))
 
 
-def _serialize_plan(row: Mapping[str, object], vote_summary: dict[str, object]) -> dict[str, object]:
+def _serialize_plan(
+    row: Mapping[str, object], vote_summary: dict[str, object]
+) -> dict[str, object]:
     return {
         "id": row["id"],
         "event_id": row["event_id"],
@@ -99,9 +101,7 @@ def _serialize_plan(row: Mapping[str, object], vote_summary: dict[str, object]) 
 
 
 def _get_event_row_by_slug(db: Session, slug: str) -> Mapping[str, object]:
-    row = db.execute(
-        select(events).where(events.c.slug == slug.lower())
-    ).mappings().first()
+    row = db.execute(select(events).where(events.c.slug == slug.lower())).mappings().first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
     return row
@@ -115,10 +115,10 @@ def _ensure_member(db: Session, event_id: UUID, user_id: UUID) -> None:
         )
     ).first()
     if membership is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only event members can submit or vote on plans")
-
-
-from app.services.governance_votes import compute_plan_vote_summary
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only event members can submit or vote on plans",
+        )
 
 
 def _compute_vote_summary(db: Session, plan_id: UUID, member_count: int) -> dict[str, object]:
@@ -130,9 +130,11 @@ def sync_event_plan_leading_flags(
     event_id: UUID,
     member_count: int,
 ) -> UUID | None:
-    plan_ids = db.execute(
-        select(event_plans.c.id).where(event_plans.c.event_id == event_id)
-    ).scalars().all()
+    plan_ids = (
+        db.execute(select(event_plans.c.id).where(event_plans.c.event_id == event_id))
+        .scalars()
+        .all()
+    )
 
     candidates: list[tuple[UUID, float]] = []
     for plan_id in plan_ids:
@@ -141,9 +143,7 @@ def sync_event_plan_leading_flags(
             candidates.append((plan_id, float(summary["approval_ratio"])))
 
     db.execute(
-        update(event_plans)
-        .where(event_plans.c.event_id == event_id)
-        .values(is_leading=False)
+        update(event_plans).where(event_plans.c.event_id == event_id).values(is_leading=False)
     )
 
     leader_id: UUID | None = None
@@ -177,35 +177,39 @@ def submit_event_plan(
     _ensure_member(db, event_row["id"], current_user_id)
 
     try:
-        created = db.execute(
-            insert(event_plans)
-            .values(
-                event_id=event_row["id"],
-                title=title.strip(),
-                description=description.strip(),
-                author_id=current_user_id,
-                demand_consideration_note=demand_consideration_note.strip(),
-                location_label=location_label.strip(),
-                schedule_payload=schedule_payload,
-                plan_payload=plan_payload,
-                is_leading=False,
-                status="open",
+        created = (
+            db.execute(
+                insert(event_plans)
+                .values(
+                    event_id=event_row["id"],
+                    title=title.strip(),
+                    description=description.strip(),
+                    author_id=current_user_id,
+                    demand_consideration_note=demand_consideration_note.strip(),
+                    location_label=location_label.strip(),
+                    schedule_payload=schedule_payload,
+                    plan_payload=plan_payload,
+                    is_leading=False,
+                    status="open",
+                )
+                .returning(
+                    event_plans.c.id,
+                    event_plans.c.event_id,
+                    event_plans.c.title,
+                    event_plans.c.description,
+                    event_plans.c.author_id,
+                    event_plans.c.demand_consideration_note,
+                    event_plans.c.location_label,
+                    event_plans.c.schedule_payload,
+                    event_plans.c.plan_payload,
+                    event_plans.c.is_leading,
+                    event_plans.c.status,
+                    event_plans.c.created_at,
+                )
             )
-            .returning(
-                event_plans.c.id,
-                event_plans.c.event_id,
-                event_plans.c.title,
-                event_plans.c.description,
-                event_plans.c.author_id,
-                event_plans.c.demand_consideration_note,
-                event_plans.c.location_label,
-                event_plans.c.schedule_payload,
-                event_plans.c.plan_payload,
-                event_plans.c.is_leading,
-                event_plans.c.status,
-                event_plans.c.created_at,
-            )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
@@ -215,7 +219,9 @@ def submit_event_plan(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit event plan") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit event plan"
+        ) from exc
 
     vote_context_population = resolve_event_vote_population(db, event_row["id"])
     summary = _compute_vote_summary(db, created["id"], vote_context_population)
@@ -226,11 +232,15 @@ def list_event_plans(db: Session, event_slug: str) -> dict[str, object]:
     event_row = _get_event_row_by_slug(db, event_slug)
     member_count = resolve_event_vote_population(db, event_row["id"])
 
-    rows = db.execute(
-        select(event_plans)
-        .where(event_plans.c.event_id == event_row["id"])
-        .order_by(event_plans.c.created_at.desc())
-    ).mappings().all()
+    rows = (
+        db.execute(
+            select(event_plans)
+            .where(event_plans.c.event_id == event_row["id"])
+            .order_by(event_plans.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
 
     items: list[dict[str, object]] = []
     for row in rows:
@@ -261,12 +271,16 @@ def cast_event_plan_vote(
             detail=f"vote must be one of: {sorted(VALID_VOTES)}",
         )
 
-    plan_row = db.execute(
-        select(event_plans).where(
-            event_plans.c.id == plan_id,
-            event_plans.c.event_id == event_row["id"],
+    plan_row = (
+        db.execute(
+            select(event_plans).where(
+                event_plans.c.id == plan_id,
+                event_plans.c.event_id == event_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if plan_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
 
@@ -319,18 +333,27 @@ def cast_event_plan_vote(
             db=db,
             user_id=current_user_id,
             action_type="cast-vote",
-            metadata={"target_type": "event-plan", "target_id": str(plan_id), "vote": normalized_vote},
+            metadata={
+                "target_type": "event-plan",
+                "target_id": str(plan_id),
+                "vote": normalized_vote,
+            },
         )
 
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast event plan vote") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not cast event plan vote",
+        ) from exc
 
-    refreshed_plan = db.execute(
-        select(event_plans).where(event_plans.c.id == plan_id)
-    ).mappings().one()
-    final_summary = _compute_vote_summary(db, plan_id, resolve_event_vote_population(db, event_row["id"]))
+    refreshed_plan = (
+        db.execute(select(event_plans).where(event_plans.c.id == plan_id)).mappings().one()
+    )
+    final_summary = _compute_vote_summary(
+        db, plan_id, resolve_event_vote_population(db, event_row["id"])
+    )
 
     if leader_changed and new_leader is not None:
         leader_author_id = db.execute(
@@ -446,7 +469,10 @@ def cast_event_plan_value_vote(
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast event plan value vote") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not cast event plan value vote",
+        ) from exc
 
     return {
         "ok": True,
@@ -468,17 +494,23 @@ def cast_event_plan_criterion_rating(
     event_row = _get_event_row_by_slug(db, event_slug)
     _ensure_member(db, event_row["id"], current_user_id)
 
-    plan_row = db.execute(
-        select(event_plans).where(
-            event_plans.c.id == plan_id,
-            event_plans.c.event_id == event_row["id"],
+    plan_row = (
+        db.execute(
+            select(event_plans).where(
+                event_plans.c.id == plan_id,
+                event_plans.c.event_id == event_row["id"],
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if plan_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Plan not found")
 
     value_rows = db.execute(
-        select(event_values.c.id, event_values.c.label).where(event_values.c.event_id == event_row["id"])
+        select(event_values.c.id, event_values.c.label).where(
+            event_values.c.event_id == event_row["id"]
+        )
     ).all()
     prominent_values = [(row[0], row[1]) for row in value_rows]
     allowed_criteria = {
@@ -490,7 +522,9 @@ def cast_event_plan_criterion_rating(
     }
     normalized_criterion_id = criterion_id.strip()
     if normalized_criterion_id not in allowed_criteria:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown plan criterion")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown plan criterion"
+        )
 
     value_id = parse_value_criterion_id(normalized_criterion_id)
     if value_id is not None:
@@ -501,7 +535,9 @@ def cast_event_plan_criterion_rating(
             )
         ).first()
         if value_row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event value not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Event value not found"
+            )
 
     existing_rating = db.execute(
         select(event_plan_criterion_ratings.c.rating).where(

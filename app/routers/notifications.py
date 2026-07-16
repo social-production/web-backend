@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from uuid import UUID
-
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -74,7 +73,9 @@ def mark_one_read(
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return mark_notification_read(db=db, current_user_id=current_user_id, notification_id=notification_id)
+    return mark_notification_read(
+        db=db, current_user_id=current_user_id, notification_id=notification_id
+    )
 
 
 @router.patch("/read-all", response_model=MarkAllReadResponse)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from math import ceil, log10
 from uuid import UUID
@@ -10,7 +10,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.cache import get_sync_redis_client
-from app.models import channels, event_memberships, event_tags, meaningful_actions, project_memberships
+from app.models import (
+    channels,
+    event_memberships,
+    event_tags,
+    meaningful_actions,
+    project_memberships,
+)
 
 WEEKLY_ACTIVE_CACHE_KEY = "governance:weekly_active"
 WEEKLY_ACTIVE_CACHE_TTL_SECONDS = 300
@@ -28,7 +34,7 @@ def required_votes(n: int) -> int:
     else:
         error_margin = max(0.02, 0.05 - 0.03 * log10(n / 500) / log10(2000))
 
-    base_sample_size = 0.9604 / (error_margin ** 2)
+    base_sample_size = 0.9604 / (error_margin**2)
     cochran = ceil(base_sample_size / (1 + (base_sample_size - 1) / n))
     return min(ceil(0.75 * n), cochran)
 
@@ -39,7 +45,7 @@ def _redis_client() -> SyncRedis:
 
 
 def _week_ago() -> datetime:
-    return datetime.now(timezone.utc) - timedelta(days=7)
+    return datetime.now(UTC) - timedelta(days=7)
 
 
 def weekly_active_users_global(db: Session) -> int:

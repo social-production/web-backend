@@ -17,7 +17,12 @@ conversations = table(
 
 conversation_members = table(
     "conversation_members",
-    sa.Column("conversation_id", UUID, sa.ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "conversation_id",
+        UUID,
+        sa.ForeignKey("conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("joined_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_read_at", sa.DateTime(timezone=True), nullable=True),
@@ -26,7 +31,12 @@ conversation_members = table(
 messages = table(
     "messages",
     uuid_pk(),
-    sa.Column("conversation_id", UUID, sa.ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "conversation_id",
+        UUID,
+        sa.ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     user_fk("sender_id", nullable=True, ondelete="SET NULL"),
     sa.Column("encrypted_body", sa.Text, nullable=False),
     sa.Column("encryption_version", sa.SmallInteger, nullable=False, server_default="1"),

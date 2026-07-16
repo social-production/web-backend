@@ -30,8 +30,18 @@ user_settings = table(
     sa.Column("personal_feed_filter", sa.String(16), nullable=False, server_default="all"),
     sa.Column("personal_feed_sort", sa.String(16), nullable=False, server_default="popular"),
     sa.Column("personal_feed_window", sa.String(8), nullable=False, server_default="all"),
-    sa.Column("hide_public_activity_from_personal_feeds", sa.Boolean, nullable=False, server_default=sa.false()),
-    sa.Column("hide_personal_feed_from_non_followers", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column(
+        "hide_public_activity_from_personal_feeds",
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.false(),
+    ),
+    sa.Column(
+        "hide_personal_feed_from_non_followers",
+        sa.Boolean,
+        nullable=False,
+        server_default=sa.false(),
+    ),
     sa.Column(
         "hide_public_profile_activity_from_non_followers",
         sa.Boolean,

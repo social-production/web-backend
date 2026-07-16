@@ -55,8 +55,12 @@ event_tags = table(
     event_fk("event_id", nullable=False),
     sa.Column("tag_kind", sa.String(16), nullable=False),
     sa.Column("channel_id", UUID, sa.ForeignKey("channels.id", ondelete="CASCADE"), nullable=True),
-    sa.Column("community_id", UUID, sa.ForeignKey("communities.id", ondelete="CASCADE"), nullable=True),
-    sa.UniqueConstraint("event_id", "tag_kind", "channel_id", "community_id", name="uq_event_tags_tag"),
+    sa.Column(
+        "community_id", UUID, sa.ForeignKey("communities.id", ondelete="CASCADE"), nullable=True
+    ),
+    sa.UniqueConstraint(
+        "event_id", "tag_kind", "channel_id", "community_id", name="uq_event_tags_tag"
+    ),
 )
 
 event_signals = table(
@@ -80,7 +84,9 @@ event_values = table(
 
 event_value_importance_votes = table(
     "event_value_importance_votes",
-    sa.Column("value_id", UUID, sa.ForeignKey("event_values.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "value_id", UUID, sa.ForeignKey("event_values.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("importance", sa.SmallInteger, nullable=False),
     created_at(),
@@ -95,8 +101,18 @@ event_plans = table(
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     sa.Column("demand_consideration_note", sa.Text, nullable=False, server_default=""),
     sa.Column("location_label", sa.String(160), nullable=False),
-    sa.Column("schedule_payload", sa.dialects.postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
-    sa.Column("plan_payload", sa.dialects.postgresql.JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+    sa.Column(
+        "schedule_payload",
+        sa.dialects.postgresql.JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
+    ),
+    sa.Column(
+        "plan_payload",
+        sa.dialects.postgresql.JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
+    ),
     sa.Column("is_leading", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("status", sa.String(24), nullable=False, server_default="open"),
     created_at(),
@@ -104,7 +120,9 @@ event_plans = table(
 
 event_plan_votes = table(
     "event_plan_votes",
-    sa.Column("plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -112,8 +130,12 @@ event_plan_votes = table(
 
 event_plan_value_votes = table(
     "event_plan_value_votes",
-    sa.Column("plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="CASCADE"), primary_key=True),
-    sa.Column("value_id", UUID, sa.ForeignKey("event_values.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column(
+        "value_id", UUID, sa.ForeignKey("event_values.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -121,7 +143,9 @@ event_plan_value_votes = table(
 
 event_plan_criterion_ratings = table(
     "event_plan_criterion_ratings",
-    sa.Column("plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="CASCADE"), primary_key=True
+    ),
     sa.Column("criterion_id", sa.String(120), primary_key=True),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("rating", sa.Integer, nullable=False),
@@ -132,7 +156,9 @@ event_activities = table(
     "event_activities",
     uuid_pk(),
     event_fk("event_id", nullable=False),
-    sa.Column("linked_plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="SET NULL"), nullable=True),
+    sa.Column(
+        "linked_plan_id", UUID, sa.ForeignKey("event_plans.id", ondelete="SET NULL"), nullable=True
+    ),
     sa.Column("linked_plan_phase_id", sa.String(64), nullable=True),
     sa.Column("title", sa.String(200), nullable=False),
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
@@ -148,7 +174,12 @@ event_activities = table(
 event_activity_roles = table(
     "event_activity_roles",
     uuid_pk(),
-    sa.Column("activity_id", UUID, sa.ForeignKey("event_activities.id", ondelete="CASCADE"), nullable=False),
+    sa.Column(
+        "activity_id",
+        UUID,
+        sa.ForeignKey("event_activities.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     sa.Column("label", sa.String(100), nullable=False),
     sa.Column("required_count", sa.Integer, nullable=False),
     sa.Column("maximum_count", sa.Integer, nullable=True),
@@ -157,14 +188,24 @@ event_activity_roles = table(
 
 event_activity_assignments = table(
     "event_activity_assignments",
-    sa.Column("role_id", UUID, sa.ForeignKey("event_activity_roles.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "role_id",
+        UUID,
+        sa.ForeignKey("event_activity_roles.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     created_at(),
 )
 
 event_activity_ratings = table(
     "event_activity_ratings",
-    sa.Column("activity_id", UUID, sa.ForeignKey("event_activities.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "activity_id",
+        UUID,
+        sa.ForeignKey("event_activities.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("rating", sa.Integer, nullable=False),
     sa.Column("comment", sa.Text, nullable=True),
@@ -178,7 +219,9 @@ event_activity_history_completions = table(
     uuid_pk(),
     event_fk("event_id", nullable=False),
     sa.Column("history_item_key", sa.String(120), nullable=False),
-    sa.Column("participant_user_id", UUID, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    sa.Column(
+        "participant_user_id", UUID, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    ),
     sa.Column("role", sa.String(16), nullable=False),
     sa.Column("completion_state", sa.String(16), nullable=False),
     created_at(),
@@ -214,7 +257,12 @@ event_update_requests = table(
 
 event_update_request_votes = table(
     "event_update_request_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("event_update_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("event_update_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -233,7 +281,12 @@ event_edit_requests = table(
 
 event_edit_request_votes = table(
     "event_edit_request_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("event_edit_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("event_edit_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),
@@ -254,7 +307,12 @@ event_phase_change_requests = table(
 
 event_phase_change_votes = table(
     "event_phase_change_votes",
-    sa.Column("request_id", UUID, sa.ForeignKey("event_phase_change_requests.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("event_phase_change_requests.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
     sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("vote", sa.String(8), nullable=False),
     created_at(),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -19,7 +19,7 @@ def _auth_header(token: str) -> dict[str, str]:
 
 def _seed() -> dict[str, object]:
     db = SessionLocal()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     creator_id = uuid4()
     requester_id = uuid4()
@@ -115,7 +115,9 @@ def run() -> None:
         assert matching[0]["href"] == f"/projects/{project_slug}?request={request_id}"
         assert matching[0]["conversationId"] == conversation_id
 
-        messages = client.get("/messages/conversations", headers=_auth_header(seeded["creator_token"]))
+        messages = client.get(
+            "/messages/conversations", headers=_auth_header(seeded["creator_token"])
+        )
         assert messages.status_code == 200, messages.text
         conversation_ids = [item["id"] for item in messages.json()["items"]]
         assert conversation_id in conversation_ids
@@ -125,7 +127,9 @@ def run() -> None:
             headers=_auth_header(seeded["creator_token"]),
         )
         assert thread.status_code == 200, thread.text
-        assert any("Need help with algebra" in message["body"] for message in thread.json()["items"])
+        assert any(
+            "Need help with algebra" in message["body"] for message in thread.json()["items"]
+        )
 
         print(
             json.dumps(

@@ -19,11 +19,13 @@ API: `http://localhost:8000` — docs at `/docs` in development.
 ## Architecture
 
 - `app/routers/` — HTTP routes (thin)
-- `app/services/` — business logic and authorization
+- `app/services/` — business logic and authorization (domain packages)
 - `app/models/` — SQLAlchemy table definitions
 - `app/services/access_control.py` — visibility rules for private communities, events, feeds
 
 Authorization must be enforced in the service layer. Never rely on the frontend to hide data.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for package layout, layering rules, and the add-a-feature recipe.
 
 ## Tests
 

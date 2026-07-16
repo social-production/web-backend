@@ -12,7 +12,9 @@ ALGORITHM = "HS256"
 TokenKind = Literal["access", "refresh"]
 
 
-def create_access_token(subject: str, expires_delta: timedelta | None = None, extra_claims: dict[str, Any] | None = None) -> str:
+def create_access_token(
+    subject: str, expires_delta: timedelta | None = None, extra_claims: dict[str, Any] | None = None
+) -> str:
     settings = get_settings()
     now = datetime.now(UTC)
     expires = now + (expires_delta or timedelta(minutes=settings.jwt_access_expire_minutes))

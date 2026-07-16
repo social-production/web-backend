@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -42,7 +42,7 @@ def _weekly_active_users(db: Session) -> int:
     except Exception:
         pass
 
-    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    week_ago = datetime.now(UTC) - timedelta(days=7)
     try:
         total = db.execute(
             select(func.count(meaningful_actions.c.user_id.distinct())).where(
@@ -65,18 +65,26 @@ def _vote_stats_map(db: Session, target_user_ids: list[UUID]) -> dict[UUID, dict
     if not target_user_ids:
         return {}
 
-    yes_count_expr = func.coalesce(func.sum(case((board_standing_votes.c.vote == 1, 1), else_=0)), 0)
-    no_count_expr = func.coalesce(func.sum(case((board_standing_votes.c.vote == -1, 1), else_=0)), 0)
+    yes_count_expr = func.coalesce(
+        func.sum(case((board_standing_votes.c.vote == 1, 1), else_=0)), 0
+    )
+    no_count_expr = func.coalesce(
+        func.sum(case((board_standing_votes.c.vote == -1, 1), else_=0)), 0
+    )
 
-    rows = db.execute(
-        select(
-            board_standing_votes.c.target_user_id,
-            yes_count_expr.label("yes_count"),
-            no_count_expr.label("no_count"),
+    rows = (
+        db.execute(
+            select(
+                board_standing_votes.c.target_user_id,
+                yes_count_expr.label("yes_count"),
+                no_count_expr.label("no_count"),
+            )
+            .where(board_standing_votes.c.target_user_id.in_(target_user_ids))
+            .group_by(board_standing_votes.c.target_user_id)
         )
-        .where(board_standing_votes.c.target_user_id.in_(target_user_ids))
-        .group_by(board_standing_votes.c.target_user_id)
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     stats: dict[UUID, dict[str, object]] = {}
     for row in rows:
@@ -109,7 +117,9 @@ def _meets_standing_threshold(
 ) -> bool:
     vote_count = int(stats["vote_count"])
     approval_ratio = float(stats["approval_ratio"])
-    return vote_count >= required_quorum and (vote_count == 0 or approval_ratio >= MIN_APPROVAL_RATIO)
+    return vote_count >= required_quorum and (
+        vote_count == 0 or approval_ratio >= MIN_APPROVAL_RATIO
+    )
 
 
 def _compute_standing_state(
@@ -122,7 +132,7 @@ def _compute_standing_state(
 ) -> str:
     vote_count = int(stats["vote_count"])
     approval_ratio = float(stats["approval_ratio"])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     if db_state == BOARD_STATE_CANDIDATE:
         if _meets_standing_threshold(stats, required_quorum):
@@ -152,7 +162,9 @@ def _promote_qualified_candidates(
             select(platform_board_memberships.c.user_id).where(
                 platform_board_memberships.c.standing_state == BOARD_STATE_CANDIDATE
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
 
     promoted: list[UUID] = []
@@ -178,14 +190,18 @@ def _remove_unqualified_members(
     stats_map: dict[UUID, dict[str, object]],
     required_quorum: int,
 ) -> list[UUID]:
-    now = datetime.now(timezone.utc)
-    member_rows = db.execute(
-        select(
-            platform_board_memberships.c.user_id,
-            platform_board_memberships.c.grace_started_at,
-            platform_board_memberships.c.grace_ends_at,
-        ).where(platform_board_memberships.c.standing_state == BOARD_STATE_MEMBER)
-    ).mappings().all()
+    now = datetime.now(UTC)
+    member_rows = (
+        db.execute(
+            select(
+                platform_board_memberships.c.user_id,
+                platform_board_memberships.c.grace_started_at,
+                platform_board_memberships.c.grace_ends_at,
+            ).where(platform_board_memberships.c.standing_state == BOARD_STATE_MEMBER)
+        )
+        .mappings()
+        .all()
+    )
 
     remove_ids: list[UUID] = []
 
@@ -309,19 +325,23 @@ def _serialize_board_profile(
 
 
 def _board_rows_with_users(db: Session) -> list[Mapping[str, object]]:
-    return db.execute(
-        select(
-            platform_board_memberships.c.user_id,
-            platform_board_memberships.c.standing_state,
-            platform_board_memberships.c.grace_started_at,
-            platform_board_memberships.c.grace_ends_at,
-            platform_board_memberships.c.updated_at,
-            users.c.username,
+    return (
+        db.execute(
+            select(
+                platform_board_memberships.c.user_id,
+                platform_board_memberships.c.standing_state,
+                platform_board_memberships.c.grace_started_at,
+                platform_board_memberships.c.grace_ends_at,
+                platform_board_memberships.c.updated_at,
+                users.c.username,
+            )
+            .join(users, users.c.id == platform_board_memberships.c.user_id)
+            .where(platform_board_memberships.c.standing_state.in_(VALID_BOARD_STATES))
+            .order_by(platform_board_memberships.c.updated_at.desc())
         )
-        .join(users, users.c.id == platform_board_memberships.c.user_id)
-        .where(platform_board_memberships.c.standing_state.in_(VALID_BOARD_STATES))
-        .order_by(platform_board_memberships.c.updated_at.desc())
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
 
 def get_active_board_member_ids(db: Session) -> list[UUID]:
@@ -331,7 +351,9 @@ def get_active_board_member_ids(db: Session) -> list[UUID]:
             select(platform_board_memberships.c.user_id).where(
                 platform_board_memberships.c.standing_state == BOARD_STATE_MEMBER
             )
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     ]
 
 
@@ -342,10 +364,15 @@ def list_active_board_member_ids(db: Session) -> list[UUID]:
 
 
 def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, object]:
-    existing = db.execute(
-        select(platform_board_memberships.c.user_id, platform_board_memberships.c.standing_state)
-        .where(platform_board_memberships.c.user_id == current_user_id)
-    ).mappings().first()
+    existing = (
+        db.execute(
+            select(
+                platform_board_memberships.c.user_id, platform_board_memberships.c.standing_state
+            ).where(platform_board_memberships.c.user_id == current_user_id)
+        )
+        .mappings()
+        .first()
+    )
 
     try:
         if existing is None:
@@ -368,7 +395,9 @@ def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, obje
                 )
             )
 
-        promoted_ids, removed_member_ids, weekly_active_users, required_quorum = _reconcile_board_standing(db)
+        promoted_ids, removed_member_ids, weekly_active_users, required_quorum = (
+            _reconcile_board_standing(db)
+        )
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
@@ -381,7 +410,9 @@ def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, obje
             db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not volunteer") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not volunteer"
+        ) from exc
 
     rows = _board_rows_with_users(db)
     stats_map = _vote_stats_map(db, [row["user_id"] for row in rows])
@@ -404,17 +435,25 @@ def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, obje
 
 
 def remove_volunteer(db: Session, current_user_id: UUID) -> dict[str, object]:
-    row = db.execute(
-        select(platform_board_memberships.c.user_id, platform_board_memberships.c.standing_state).where(
-            platform_board_memberships.c.user_id == current_user_id
+    row = (
+        db.execute(
+            select(
+                platform_board_memberships.c.user_id, platform_board_memberships.c.standing_state
+            ).where(platform_board_memberships.c.user_id == current_user_id)
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         return {"removed": False, "detail": "Not a board volunteer or member"}
 
     was_member = row["standing_state"] == BOARD_STATE_MEMBER
 
-    db.execute(delete(platform_board_memberships).where(platform_board_memberships.c.user_id == current_user_id))
+    db.execute(
+        delete(platform_board_memberships).where(
+            platform_board_memberships.c.user_id == current_user_id
+        )
+    )
     db.commit()
 
     if was_member:
@@ -439,14 +478,18 @@ def cast_standing_vote(
                     board_standing_votes.c.voter_id == current_user_id,
                 )
             )
-            promoted_ids, removed_member_ids, weekly_active_users, required_quorum = _reconcile_board_standing(db)
+            promoted_ids, removed_member_ids, weekly_active_users, required_quorum = (
+                _reconcile_board_standing(db)
+            )
             db.commit()
             if promoted_ids or removed_member_ids:
                 _sync_platform_merge_capability_after_board_change(db)
                 db.commit()
         except IntegrityError as exc:
             db.rollback()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not remove vote") from exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not remove vote"
+            ) from exc
 
         stats_map = _vote_stats_map(db, [target_user_id])
         target_stats = _member_stats(stats_map, target_user_id)
@@ -470,24 +513,33 @@ def cast_standing_vote(
             detail="vote must be one of: ['no', 'yes']",
         )
 
-    target = db.execute(
-        select(
-            platform_board_memberships.c.user_id,
-            platform_board_memberships.c.standing_state,
-        ).where(platform_board_memberships.c.user_id == target_user_id)
-    ).mappings().first()
+    target = (
+        db.execute(
+            select(
+                platform_board_memberships.c.user_id,
+                platform_board_memberships.c.standing_state,
+            ).where(platform_board_memberships.c.user_id == target_user_id)
+        )
+        .mappings()
+        .first()
+    )
     if target is None or target["standing_state"] not in VALID_BOARD_STATES:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board candidate/member not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board candidate/member not found"
+        )
 
     value = VOTE_VALUE_MAP[normalized_vote]
 
-    existing_vote = db.execute(
-        select(board_standing_votes.c.target_user_id, board_standing_votes.c.voter_id)
-        .where(
-            board_standing_votes.c.target_user_id == target_user_id,
-            board_standing_votes.c.voter_id == current_user_id,
+    existing_vote = (
+        db.execute(
+            select(board_standing_votes.c.target_user_id, board_standing_votes.c.voter_id).where(
+                board_standing_votes.c.target_user_id == target_user_id,
+                board_standing_votes.c.voter_id == current_user_id,
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
 
     try:
         if existing_vote is None:
@@ -508,12 +560,18 @@ def cast_standing_vote(
                 .values(vote=value)
             )
 
-        promoted_ids, removed_member_ids, weekly_active_users, required_quorum = _reconcile_board_standing(db)
+        promoted_ids, removed_member_ids, weekly_active_users, required_quorum = (
+            _reconcile_board_standing(db)
+        )
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
             action_type="cast-vote",
-            metadata={"target_type": "board-standing", "target_id": str(target_user_id), "vote": normalized_vote},
+            metadata={
+                "target_type": "board-standing",
+                "target_id": str(target_user_id),
+                "vote": normalized_vote,
+            },
         )
         db.commit()
         if promoted_ids or removed_member_ids:
@@ -521,7 +579,9 @@ def cast_standing_vote(
             db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast vote") from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not cast vote"
+        ) from exc
 
     stats_map = _vote_stats_map(db, [target_user_id])
     target_stats = _member_stats(stats_map, target_user_id)
@@ -544,7 +604,9 @@ def list_board_standing(
     db: Session,
     viewer_user_id: UUID | None = None,
 ) -> dict[str, object]:
-    promoted_ids, removed_member_ids, weekly_active_users, required_quorum = _reconcile_board_standing(db)
+    promoted_ids, removed_member_ids, weekly_active_users, required_quorum = (
+        _reconcile_board_standing(db)
+    )
     if promoted_ids or removed_member_ids:
         db.commit()
         if promoted_ids or removed_member_ids:
@@ -557,8 +619,9 @@ def list_board_standing(
     active_votes: dict[UUID, str] = {}
     if viewer_user_id is not None:
         vote_rows = db.execute(
-            select(board_standing_votes.c.target_user_id, board_standing_votes.c.vote)
-            .where(board_standing_votes.c.voter_id == viewer_user_id)
+            select(board_standing_votes.c.target_user_id, board_standing_votes.c.vote).where(
+                board_standing_votes.c.voter_id == viewer_user_id
+            )
         ).all()
         for target_user_id, vote_value in vote_rows:
             active_votes[target_user_id] = vote_value
