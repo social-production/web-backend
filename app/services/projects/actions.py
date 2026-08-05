@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -33,19 +34,11 @@ from app.services.projects.helpers import (
     _get_signal_counts_db,
     _write_signal_counts_cache,
 )
+from app.utils.usernames import username_matches
 
-PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
-PROJECT_SUBTYPES = frozenset({"standard", "software"})
+logger = logging.getLogger(__name__)
+
 PROJECT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
-PROJECT_PHASES = (
-    ("phase-1", 1, "P1", "Proposal", "Define values and demand."),
-    ("phase-2", 2, "P2", "Production Plan", "Select production plan."),
-    ("phase-3", 3, "P3", "Distribution Plan", "Select distribution plan."),
-    ("phase-4", 4, "P4", "Acquisition", "Prepare acquisition and inventory."),
-    ("phase-5", 5, "P5", "Activity", "Run project activities."),
-    ("phase-6", 6, "P6", "Pending Execution", "Await execution confirmation."),
-    ("phase-7", 7, "P7", "Closed", "Project has closed."),
-)
 
 
 def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
@@ -299,6 +292,7 @@ def create_project_activity(
     is_online: bool = False,
     linked_plan_id: UUID | None = None,
     linked_plan_phase_id: str | None = None,
+    location_id: UUID | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     if project_row["project_mode"] == "personal-service":
@@ -312,6 +306,15 @@ def create_project_activity(
             detail="ends_at must be after scheduled_at",
         )
     ensure_future_scheduled_start(scheduled_at)
+
+    from app.services.locations.resolve import ensure_location_id
+
+    resolved_location_id, resolved_location_label = ensure_location_id(
+        db,
+        location_id=location_id,
+        location_label=location_label,
+        is_online=is_online,
+    )
 
     try:
         created = (
@@ -327,7 +330,8 @@ def create_project_activity(
                     scheduled_at=scheduled_at,
                     ends_at=ends_at,
                     is_online=is_online,
-                    location_label=location_label.strip(),
+                    location_label=resolved_location_label,
+                    location_id=resolved_location_id,
                     note=note.strip(),
                     status="active",
                 )
@@ -597,6 +601,11 @@ def add_project_update(
         .mappings()
         .one()
     )
+    db.execute(
+        update(projects)
+        .where(projects.c.id == project_row["id"])
+        .values(last_activity_at=datetime.now(UTC))
+    )
     db.commit()
 
     return {
@@ -674,7 +683,7 @@ def share_project_with_user(
 
     target_user = (
         db.execute(
-            select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+            select(users.c.id, users.c.username).where(username_matches(normalized_username))
         )
         .mappings()
         .first()
@@ -712,6 +721,12 @@ async def toggle_project_signal(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"signal_type must be one of: {sorted(PROJECT_SIGNAL_TYPES)}",
+        )
+
+    if project_row["is_closed"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Signals are closed for this project",
         )
 
     existing = (
@@ -777,11 +792,15 @@ async def toggle_project_signal(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not toggle signal"
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Signal was already updated. Please refresh and try again.",
         ) from exc
 
     counts = _get_signal_counts_db(db, project_row["id"])
-    await _write_signal_counts_cache(cache, project_row["id"], counts)
+    try:
+        await _write_signal_counts_cache(cache, project_row["id"], counts)
+    except Exception:
+        logger.warning("signal cache write failed", exc_info=True)
 
     return {
         "ok": True,

@@ -16,9 +16,12 @@ from app.models import (
 from app.services.events.phases.constants import VALID_PHASE_IDS, VALID_VOTES
 from app.services.events.phases.gates import (
     _compute_votes,
-    _ensure_member,
+    _ensure_can_cast_governance_vote,
+    _ensure_can_drive_lifecycle,
+    _ensure_event_proposal_signal_gate,
     _event_vote_population,
     _get_event_by_slug,
+    _is_organizer_controlled,
     _phase_change_kind_for_event,
 )
 from app.services.events.phases.serializers import _serialize_phase_request
@@ -34,7 +37,7 @@ def create_phase_change_request(
     reason: str,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_drive_lifecycle(db, event_row, current_user_id)
 
     normalized_target = target_phase_id.strip().lower()
     if normalized_target not in VALID_PHASE_IDS:
@@ -49,7 +52,23 @@ def create_phase_change_request(
             detail="target_phase_id must differ from current_phase_id",
         )
 
+    if _is_organizer_controlled(event_row) and normalized_target == "proposal":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events cannot return to proposal",
+        )
+
     change_kind = _phase_change_kind_for_event(normalized_target, event_row["current_phase_id"])
+    _ensure_event_proposal_signal_gate(
+        db,
+        event_row,
+        current_phase_id=str(event_row["current_phase_id"]),
+        change_kind=change_kind,
+    )
+
+    # Organizer-controlled events skip governance votes: the creator/
+    # co-organizers change phases (including closing) directly.
+    auto_execute = _is_organizer_controlled(event_row)
 
     open_request = db.execute(
         select(event_phase_change_requests.c.id).where(
@@ -58,7 +77,7 @@ def create_phase_change_request(
             event_phase_change_requests.c.target_phase_id == normalized_target,
         )
     ).first()
-    if open_request:
+    if open_request and not auto_execute:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A vote is already open — approve or reject it first.",
@@ -75,7 +94,7 @@ def create_phase_change_request(
                     change_kind=change_kind,
                     reason=reason.strip(),
                     author_id=current_user_id,
-                    status="open",
+                    status="approved" if auto_execute else "open",
                 )
                 .returning(
                     event_phase_change_requests.c.id,
@@ -92,6 +111,21 @@ def create_phase_change_request(
             .mappings()
             .one()
         )
+        if auto_execute:
+            db.execute(
+                update(event_phase_change_requests)
+                .where(
+                    event_phase_change_requests.c.event_id == event_row["id"],
+                    event_phase_change_requests.c.id != created["id"],
+                    event_phase_change_requests.c.status == "open",
+                )
+                .values(status="closed")
+            )
+            db.execute(
+                update(events)
+                .where(events.c.id == event_row["id"])
+                .values(current_phase_id=normalized_target)
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -120,13 +154,17 @@ def create_phase_change_request(
             db=db,
             recipient_id=member_id,
             actor_id=current_user_id,
-            kind="evt-phase-vote",
+            kind="evt-phase-done" if auto_execute else "evt-phase-vote",
             surface="event",
             subject_type="phase-change",
             subject_id=created["id"],
             target_id=event_row["id"],
-            title="Event phase vote open",
-            body=f"Vote on advancing to {target_label}.",
+            title="Event phase changed" if auto_execute else "Event phase vote open",
+            body=(
+                f"The event phase changed to {target_label}."
+                if auto_execute
+                else f"Vote on advancing to {target_label}."
+            ),
             href=f"/events/{event_row['slug']}?open=vote&voteKind=phase_change&voteTarget={created['id']}",
         )
     db.commit()
@@ -168,7 +206,12 @@ def vote_phase_change_request(
     vote: str,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    if _is_organizer_controlled(event_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events don't use phase-change votes",
+        )
+    _ensure_can_cast_governance_vote(db, event_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -229,6 +272,12 @@ def vote_phase_change_request(
         executed = False
         if summary["is_passing"]:
             target_phase_id = request_row["target_phase_id"]
+            _ensure_event_proposal_signal_gate(
+                db,
+                event_row,
+                current_phase_id=str(request_row["from_phase_id"]),
+                change_kind=str(request_row["change_kind"]),
+            )
             db.execute(
                 update(event_phase_change_requests)
                 .where(event_phase_change_requests.c.id == request_id)

@@ -51,6 +51,12 @@ user_settings = table(
     sa.Column("require_follow_approval", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("preferred_language", sa.String(5), nullable=False, server_default="en"),
     sa.Column("display_timezone", sa.String(64), nullable=True),
+    sa.Column(
+        "default_location_id",
+        UUID,
+        sa.ForeignKey("locations.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     updated_at(),
 )
 

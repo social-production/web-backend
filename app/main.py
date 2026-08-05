@@ -18,11 +18,13 @@ from app.routers.board import router as board_router
 from app.routers.bootstrap import router as bootstrap_router
 from app.routers.content import router as content_router
 from app.routers.events import router as events_router
+from app.routers.events_links import router as events_links_router
 from app.routers.events_phases import router as events_phases_router
 from app.routers.events_plans import router as events_plans_router
 from app.routers.feedback import router as feedback_router
 from app.routers.feeds import router as feeds_router
 from app.routers.governance import router as governance_router
+from app.routers.locations import router as locations_router
 from app.routers.messages import router as messages_router
 from app.routers.notifications import router as notifications_router
 from app.routers.platform import router as platform_router
@@ -104,11 +106,13 @@ def create_app() -> FastAPI:
     app.include_router(messages_router)
     app.include_router(notifications_router)
     app.include_router(events_router)
+    app.include_router(events_links_router)
     app.include_router(events_plans_router)
     app.include_router(events_phases_router)
     app.include_router(search_router)
     app.include_router(feeds_router)
     app.include_router(feedback_router)
+    app.include_router(locations_router)
     app.include_router(platform_router)
     app.include_router(projects_router)
     app.include_router(projects_links_router)

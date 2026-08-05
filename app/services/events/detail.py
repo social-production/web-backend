@@ -32,11 +32,13 @@ from app.models import (
     event_updates,
     event_value_importance_votes,
     event_values,
-    reports,
-    user_follows,
-    users,
+    events,
 )
-from app.services.access_control import assert_can_view_entity
+from app.services.access_control import (
+    COMMUNITY_SCOPE_KIND,
+    assert_can_view_entity,
+    is_scope_member,
+)
 from app.services.activity_history import (
     build_event_history_items,
     is_activity_ended,
@@ -44,6 +46,7 @@ from app.services.activity_history import (
     utc_now,
 )
 from app.services.content import activity_status_tone
+from app.services.detail_links import build_link_decision_history_entries, build_links_frame
 from app.services.events.helpers import (
     _can_propose_event_activity,
     _event_lifecycle_phases,
@@ -55,10 +58,13 @@ from app.services.events.helpers import (
     _username_lookup,
     _vote_summary,
 )
+from app.services.locations import get_location, is_map_eligible, serialize_location
+from app.services.people_suggestions import get_ranked_people_suggestions
 from app.services.plan_criteria import (
     assessment_criteria_for_plan,
     serialize_plan_criterion_assessments,
 )
+from app.services.signal_gates import build_proposal_signal_summary
 from app.utils.votes import is_platform_event, required_votes, resolve_event_vote_population
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
@@ -106,8 +112,18 @@ async def get_event_detail(
         db, member_ids | ({row["created_by"]} if row["created_by"] else set())
     )
 
+    audience = str(row["audience"] or "public")
+    governance = str(row["governance"] or "collaborative")
+    is_organizer_controlled = governance == "organizer_controlled"
+    home_community_id = row["home_community_id"]
+
     viewer_is_member = current_user_id is not None and current_user_id in member_ids
-    if row["is_private"] and not viewer_is_member:
+    viewer_is_home_community_member = bool(
+        home_community_id is not None
+        and current_user_id is not None
+        and is_scope_member(db, COMMUNITY_SCOPE_KIND, home_community_id, current_user_id)
+    )
+    if row["is_private"] and not viewer_is_member and not viewer_is_home_community_member:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
     assert_can_view_entity(db, current_user_id, "event", event_id)
@@ -137,6 +153,16 @@ async def get_event_detail(
         {"slug": slug_v, "label": name, "kind": "community"} for slug_v, name in community_tag_rows
     ]
 
+    home_community = None
+    if home_community_id is not None:
+        home_community_row = db.execute(
+            select(communities.c.slug, communities.c.name).where(
+                communities.c.id == home_community_id
+            )
+        ).first()
+        if home_community_row is not None:
+            home_community = {"slug": home_community_row[0], "name": home_community_row[1]}
+
     active_vote = 0
     if current_user_id is not None:
         vote_row = db.execute(
@@ -151,46 +177,50 @@ async def get_event_detail(
 
     attendees = [usernames.get(user_id, {}).get("username", "unknown") for user_id in member_ids]
 
+    organizer_ids: set[UUID] = set(editor_ids)
+    organizer_ids.add(row["created_by"])
+
+    def _member_payload(user_id: UUID) -> dict[str, object]:
+        return {
+            "id": str(user_id),
+            "username": usernames.get(user_id, {}).get("username", "unknown"),
+            "bio": usernames.get(user_id, {}).get("bio", ""),
+        }
+
+    # Organizers = creator (always) + promoted editors; creator listed first.
+    ordered_organizer_ids: list[UUID] = [row["created_by"]]
+    for user_id in sorted(
+        editor_ids, key=lambda value: usernames.get(value, {}).get("username", "")
+    ):
+        if user_id != row["created_by"] and user_id not in ordered_organizer_ids:
+            ordered_organizer_ids.append(user_id)
+
+    event_editors_payload = [_member_payload(user_id) for user_id in ordered_organizer_ids]
+
     members = [
-        {
-            "id": str(user_id),
-            "username": usernames.get(user_id, {}).get("username", "unknown"),
-            "bio": usernames.get(user_id, {}).get("bio", ""),
-        }
-        for user_id, _ in membership_rows
-    ]
-    event_editors_payload = [
-        {
-            "id": str(user_id),
-            "username": usernames.get(user_id, {}).get("username", "unknown"),
-            "bio": usernames.get(user_id, {}).get("bio", ""),
-        }
-        for user_id in editor_ids
+        _member_payload(user_id) for user_id, _ in membership_rows if user_id not in organizer_ids
     ]
 
     available_editor_invitees = [
-        {
-            "id": str(user_id),
-            "username": usernames.get(user_id, {}).get("username", "unknown"),
-            "bio": usernames.get(user_id, {}).get("bio", ""),
-        }
-        for user_id, _ in membership_rows
-        if user_id not in editor_ids
+        _member_payload(user_id) for user_id, _ in membership_rows if user_id not in organizer_ids
     ]
 
-    share_contact_rows = db.execute(
-        select(users.c.id, users.c.username, users.c.bio)
-        .select_from(user_follows.join(users, users.c.id == user_follows.c.followed_id))
-        .where(
-            user_follows.c.follower_id == row["created_by"],
-            user_follows.c.status == "accepted",
+    share_contacts: list[dict[str, object]] = []
+    if current_user_id is not None:
+        ranked = get_ranked_people_suggestions(
+            db,
+            current_user_id,
+            limit=24,
+            exclude_ids=set(member_ids),
         )
-        .limit(12)
-    ).all()
-    share_contacts = [
-        {"id": str(user_id), "username": username, "bio": bio or ""}
-        for user_id, username, bio in share_contact_rows
-    ]
+        share_contacts = [
+            {
+                "id": str(item["id"]),
+                "username": str(item["username"]),
+                "bio": str(item.get("bio") or ""),
+            }
+            for item in ranked
+        ]
 
     viewer_signal = None
     if current_user_id is not None:
@@ -202,24 +232,14 @@ async def get_event_detail(
         ).scalar_one_or_none()
 
     required_demand = required_votes(vote_context_population)
-    total_signals = signal_counts["total"]
-    signal_ratio_percent = (
-        (signal_counts["demand"] / total_signals * 100.0) if total_signals > 0 else 0.0
+    signal_summary = build_proposal_signal_summary(
+        signal_counts,
+        required_demand=required_demand,
+        uses_platform_vote_context=uses_platform_vote_context,
+        viewer_signal=viewer_signal,
+        vote_context_label=vote_context_label,
+        vote_context_population=vote_context_population,
     )
-    signal_summary = {
-        "demandCount": signal_counts["demand"],
-        "oppositionCount": signal_counts["opposition"],
-        "totalCount": signal_counts["total"],
-        "viewerSignal": viewer_signal,
-        "signalRatioPercent": signal_ratio_percent,
-        "ratioRequirementMet": signal_ratio_percent >= 66.0 if total_signals > 0 else False,
-        "requiredDemandCount": required_demand,
-        "demandRequirementMet": signal_counts["demand"] >= required_demand,
-        "advancementUnlocked": signal_counts["demand"] >= required_demand,
-        "usesPlatformVoteContext": uses_platform_vote_context,
-        "voteContextLabel": vote_context_label,
-        "voteContextPopulation": vote_context_population,
-    }
 
     value_rows = db.execute(
         select(event_values.c.id, event_values.c.label, event_values.c.author_id)
@@ -382,6 +402,7 @@ async def get_event_detail(
                 "demandConsiderationNote": plan["demand_consideration_note"] or "",
                 "valueConsiderationNotes": value_consideration_notes,
                 "locationLabel": plan["location_label"],
+                "locationId": str(plan["location_id"]) if plan.get("location_id") else None,
                 "schedule": schedule,
                 "planPhases": plan_phases,
                 "valueAssessments": value_assessments,
@@ -589,7 +610,9 @@ async def get_event_detail(
                     "voteSummary": summary,
                     "passesApprovalThreshold": passes,
                     "canStillPass": can_still,
-                    "canVote": viewer_is_member and req["status"] == "open",
+                    "canVote": (
+                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
+                    ),
                     "payload": {
                         "type": "update",
                         "body": req["body"],
@@ -649,7 +672,9 @@ async def get_event_detail(
                     "voteSummary": summary,
                     "passesApprovalThreshold": passes,
                     "canStillPass": can_still,
-                    "canVote": viewer_is_member and req["status"] == "open",
+                    "canVote": (
+                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
+                    ),
                     "payload": {
                         "type": "edit",
                         "changes": [
@@ -721,7 +746,9 @@ async def get_event_detail(
                     "voteSummary": summary,
                     "passesApprovalThreshold": passes,
                     "canStillPass": can_still,
-                    "canVote": viewer_is_member and req["status"] == "open",
+                    "canVote": (
+                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
+                    ),
                     "payload": {
                         "type": "phase-change",
                         "changeKind": req["change_kind"],
@@ -762,6 +789,15 @@ async def get_event_detail(
     current_order = phase_order.get(row["current_phase_id"], 1)
     previous_phase = next((p for p in EVENT_PHASES if p[1] == current_order - 1), None)
     next_phase = next((p for p in EVENT_PHASES if p[1] == current_order + 1), None)
+    viewer_is_organizer = bool(
+        current_user_id is not None
+        and (current_user_id == row["created_by"] or current_user_id in editor_ids)
+    )
+    in_proposal = row["current_phase_id"] == "proposal"
+    in_event_plan = row["current_phase_id"] == "event-plan"
+    viewer_can_cast_governance = (
+        current_user_id is not None if uses_platform_vote_context else viewer_is_member
+    )
 
     lifecycle = {
         "currentPhaseId": row["current_phase_id"],
@@ -776,19 +812,19 @@ async def get_event_detail(
         "phases": _event_lifecycle_phases(row["current_phase_id"]),
         "phaseOne": {
             "values": phase_one_values,
-            "viewerCanSignalDemand": current_user_id is not None,
+            "viewerCanSignalDemand": current_user_id is not None and in_proposal,
             "viewerHasDemandSignal": viewer_signal == "demand",
-            "viewerCanSignalOpposition": current_user_id is not None,
+            "viewerCanSignalOpposition": current_user_id is not None and in_proposal,
             "viewerHasOppositionSignal": viewer_signal == "opposition",
             "signalSummary": signal_summary,
-            "viewerCanAddValue": viewer_is_member,
-            "viewerCanVoteOnValues": viewer_is_member,
+            "viewerCanAddValue": viewer_is_member and in_proposal,
+            "viewerCanVoteOnValues": viewer_is_member and in_proposal,
         },
         "phaseTwo": {
             "plans": event_plans_payload,
             "winningPlanId": winning_plan_id,
-            "viewerCanSubmitPlans": viewer_is_member,
-            "viewerCanVoteOnPlans": viewer_is_member,
+            "viewerCanSubmitPlans": viewer_is_member and in_event_plan,
+            "viewerCanVoteOnPlans": viewer_can_cast_governance and in_event_plan,
         },
         "activity": {
             "activities": live_activities,
@@ -797,7 +833,7 @@ async def get_event_detail(
             "selectablePlanPhases": selectable_plan_phases,
         },
         "viewerCanRequestPhaseChanges": viewer_is_member,
-        "viewerCanVoteOnPhaseChanges": viewer_is_member,
+        "viewerCanVoteOnPhaseChanges": viewer_can_cast_governance,
         "phaseChangeRequests": phase_change_requests,
         "revertablePhaseIds": [
             phase_id for phase_id, order, _, _, _ in EVENT_PHASES if order < current_order
@@ -808,42 +844,30 @@ async def get_event_detail(
         "nextPhaseLabel": next_phase[3] if next_phase else None,
     }
 
-    report_row = (
+    event_moderation = (
         db.execute(
             select(
-                reports.c.id,
-                reports.c.reason,
-                reports.c.description,
-                reports.c.created_at,
-                reports.c.resolution,
-            )
-            .where(reports.c.target_type == "event", reports.c.target_id == event_id)
-            .limit(1)
+                events.c.moderation_state, events.c.moderation_reason, events.c.created_at
+            ).where(events.c.id == event_id)
         )
         .mappings()
         .first()
     )
-    report = None
+    moderation_state = str((event_moderation or {}).get("moderation_state") or "visible")
+    moderation_reason = (event_moderation or {}).get("moderation_reason")
+    if moderation_state == "removed":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    from app.services.moderation.serialize import load_active_report
+
+    report = load_active_report(
+        db,
+        target_type="event",
+        target_id=event_id,
+        current_user_id=current_user_id,
+        created_at=(event_moderation or {}).get("created_at"),
+    )
     is_removed = False
-    if report_row is not None:
-        report = {
-            "id": str(report_row["id"]),
-            "subjectId": str(event_id),
-            "targetId": str(event_id),
-            "reason": report_row["reason"],
-            "description": report_row["description"],
-            "createdAt": _iso(report_row["created_at"]),
-            "authorUsername": creator_username,
-            "resolution": report_row["resolution"],
-            "voteSummary": {
-                "yesCount": 0,
-                "noCount": 0,
-                "activeVote": None,
-                "eligibleVoterCount": vote_context_population,
-                "votesRequired": required_votes(vote_context_population),
-            },
-        }
-        is_removed = report_row["resolution"] in {"hidden", "removed"}
 
     discussion_rows = db.execute(
         select(
@@ -852,6 +876,8 @@ async def get_event_detail(
             comments.c.body,
             comments.c.created_at,
             comments.c.vote_count,
+            comments.c.moderation_state,
+            comments.c.moderation_reason,
         )
         .where(
             comments.c.subject_type == "event",
@@ -860,11 +886,13 @@ async def get_event_detail(
         )
         .order_by(comments.c.created_at.asc())
     ).all()
-    discussion_author_ids = {author_id for _, author_id, _, _, _ in discussion_rows if author_id}
+    discussion_author_ids = {
+        author_id for _, author_id, _, _, _, _, _ in discussion_rows if author_id
+    }
     missing_discussion_author_ids = discussion_author_ids - set(usernames.keys())
     if missing_discussion_author_ids:
         usernames.update(_username_lookup(db, missing_discussion_author_ids))
-    discussion_comment_ids = [comment_id for comment_id, _, _, _, _ in discussion_rows]
+    discussion_comment_ids = [comment_id for comment_id, _, _, _, _, _, _ in discussion_rows]
     discussion_active_votes: dict[UUID, int] = {}
     if current_user_id is not None and discussion_comment_ids:
         dv_rows = db.execute(
@@ -875,23 +903,144 @@ async def get_event_detail(
             )
         ).all()
         discussion_active_votes = {target_id: int(direction) for target_id, direction in dv_rows}
+    from app.services.moderation.serialize import (
+        load_active_reports_for_targets,
+        moderation_body_for_comment,
+    )
+
+    discussion_reports = load_active_reports_for_targets(
+        db,
+        target_type="comment",
+        target_ids=discussion_comment_ids,
+        current_user_id=current_user_id,
+    )
     discussion = [
         {
             "id": str(comment_id),
             "authorUsername": usernames.get(author_id, {}).get("username", "unknown"),
-            "body": body,
+            "body": moderation_body_for_comment(
+                body=body,
+                moderation_state=str(moderation_state or "visible"),
+                moderation_reason=str(moderation_reason) if moderation_reason else None,
+            ),
             "createdAt": _iso(created_at),
             "voteCount": int(vote_count or 0),
             "activeVote": discussion_active_votes.get(comment_id, 0),
-            "report": None,
+            "moderationState": str(moderation_state or "visible"),
+            "moderationReason": moderation_reason,
+            "report": discussion_reports.get(comment_id),
             "replies": [],
         }
-        for comment_id, author_id, body, created_at, vote_count in discussion_rows
+        for (
+            comment_id,
+            author_id,
+            body,
+            created_at,
+            vote_count,
+            moderation_state,
+            moderation_reason,
+        ) in discussion_rows
     ]
 
-    viewer_has_edit_access = bool(
+    viewer_is_organizer = bool(
         current_user_id is not None
         and (current_user_id == row["created_by"] or current_user_id in editor_ids)
+    )
+    viewer_has_edit_access = viewer_is_organizer
+    viewer_can_edit_directly = viewer_is_organizer and is_organizer_controlled
+    viewer_can_drive_lifecycle = (
+        viewer_is_organizer if is_organizer_controlled else viewer_is_member
+    )
+    viewer_can_toggle_membership = bool(
+        current_user_id is not None
+        and (
+            viewer_is_member
+            or audience == "public"
+            or (audience == "private_community" and viewer_is_home_community_member)
+        )
+    )
+    invited_usernames = (
+        [
+            usernames.get(user_id, {}).get("username", "unknown")
+            for user_id in member_ids
+            if user_id != row["created_by"]
+        ]
+        if audience == "invite_only"
+        else []
+    )
+
+    # Organizer-controlled private events skip collaborative proposal/plan participation.
+    # Collaborative private events keep the same signal/value/plan rules as public events.
+    if is_organizer_controlled:
+        lifecycle["phaseOne"]["viewerCanSignalDemand"] = False
+        lifecycle["phaseOne"]["viewerCanSignalOpposition"] = False
+        lifecycle["phaseOne"]["viewerCanAddValue"] = False
+        lifecycle["phaseOne"]["viewerCanVoteOnValues"] = False
+        lifecycle["phaseTwo"]["viewerCanSubmitPlans"] = viewer_is_organizer and in_event_plan
+        lifecycle["phaseTwo"]["viewerCanVoteOnPlans"] = False
+        # Organizer-controlled events never reopen collaborative proposal participation.
+        lifecycle["revertablePhaseIds"] = [
+            phase_id for phase_id in lifecycle["revertablePhaseIds"] if phase_id != "proposal"
+        ]
+        if lifecycle.get("previousPhaseId") == "proposal":
+            previous_usable = next(
+                (phase_id for phase_id in lifecycle["revertablePhaseIds"]),
+                None,
+            )
+            lifecycle["previousPhaseId"] = previous_usable
+            lifecycle["previousPhaseLabel"] = (
+                next(
+                    (
+                        label
+                        for phase_id, _, _, label, _ in EVENT_PHASES
+                        if phase_id == previous_usable
+                    ),
+                    None,
+                )
+                if previous_usable
+                else None
+            )
+    else:
+        lifecycle["phaseTwo"]["viewerCanSubmitPlans"] = viewer_can_drive_lifecycle and in_event_plan
+        lifecycle["phaseTwo"]["viewerCanVoteOnPlans"] = viewer_can_cast_governance and in_event_plan
+    lifecycle["viewerCanRequestPhaseChanges"] = viewer_can_drive_lifecycle
+    lifecycle["viewerCanVoteOnPhaseChanges"] = (
+        viewer_can_cast_governance and not is_organizer_controlled
+    )
+    lifecycle["activity"]["viewerCanCreateActivities"] = (
+        viewer_is_organizer if is_organizer_controlled else viewer_is_member
+    ) and can_propose_activities
+
+    location_row = None
+    location_id = row.get("location_id")
+    if location_id is not None:
+        location_row = get_location(db, location_id)
+    viewer_can_see_private_location = viewer_is_member or viewer_is_home_community_member
+    location_payload = serialize_location(
+        location_row,
+        viewer_authorized=viewer_can_see_private_location if bool(row["is_private"]) else True,
+        is_private_entity=bool(row["is_private"]),
+    )
+    map_eligible = is_map_eligible(
+        entity_kind="event",
+        location=location_row if location_payload is not None else None,
+    )
+
+    links_frame = build_links_frame(
+        db,
+        owner_kind="event",
+        owner_slug=str(row["slug"]),
+        current_user_id=current_user_id,
+    )
+    history_entries.extend(
+        build_link_decision_history_entries(
+            db,
+            owner_kind="event",
+            owner_id=event_id,
+            owner_slug=str(row["slug"]),
+            owner_title=str(row["title"]),
+            current_user_id=current_user_id,
+        )
     )
 
     return {
@@ -901,12 +1050,18 @@ async def get_event_detail(
         "title": row["title"],
         "description": row["description"],
         "isPrivate": bool(row["is_private"]),
+        "audience": audience,
+        "governance": governance,
+        "homeCommunity": home_community,
         "scheduledAt": _iso(row["scheduled_at"]),
         "channelTags": channel_tags,
         "communityTags": community_tags,
         "createdByUsername": creator_username,
         "timeLabel": row["time_label"],
         "locationLabel": row["location_label"],
+        "locationId": str(location_id) if location_id is not None else None,
+        "location": location_payload,
+        "mapEligible": map_eligible,
         "voteCount": int(row["vote_count"] or 0),
         "activeVote": active_vote,
         "commentCount": int(row["comment_count"] or 0),
@@ -919,27 +1074,32 @@ async def get_event_detail(
         "updates": updates,
         "updateRequests": update_requests,
         "viewerCanRequestUpdate": viewer_is_member,
-        "viewerCanVoteOnUpdateRequests": viewer_is_member,
+        "viewerCanVoteOnUpdateRequests": viewer_can_cast_governance,
         "editRequests": edit_requests,
-        "viewerCanRequestEdit": viewer_is_member,
-        "viewerCanVoteOnEditRequests": viewer_is_member,
+        "viewerCanRequestEdit": viewer_can_drive_lifecycle,
+        "viewerCanVoteOnEditRequests": viewer_can_cast_governance and not is_organizer_controlled,
+        "linksFrame": links_frame,
         "history": [
             entry for _, entry in sorted(history_entries, key=lambda item: item[0], reverse=True)
         ],
         "attendees": attendees,
-        "invitedUsernames": [],
+        "invitedUsernames": invited_usernames,
         "eventEditors": event_editors_payload,
         "members": members,
         "viewerIsMember": viewer_is_member,
-        "viewerCanToggleMembership": current_user_id is not None,
+        "viewerIsOrganizer": viewer_is_organizer,
+        "viewerCanEditDirectly": viewer_can_edit_directly,
+        "viewerCanToggleMembership": viewer_can_toggle_membership,
         "viewerHasEventEditAccess": viewer_has_edit_access,
-        "viewerCanManageEditors": current_user_id is not None
-        and current_user_id == row["created_by"],
-        "viewerCanShare": viewer_is_member,
+        "viewerCanManageEditors": bool(row["is_private"]) and viewer_is_organizer,
+        "viewerCanShare": (viewer_is_organizer if bool(row["is_private"]) else viewer_is_member),
         "availableEditorInvitees": available_editor_invitees,
         "shareContacts": share_contacts,
         "report": report,
         "isRemovedByReport": is_removed,
+        "moderationState": moderation_state,
+        "moderationReason": moderation_reason,
+        "isUnderReview": moderation_state == "under_review",
         "discussionNote": "",
         "discussion": discussion,
     }

@@ -26,9 +26,12 @@ def build_software_history_entries(
     project_id: UUID,
     vote_context_population: int,
     current_user_id: UUID | None,
+    *,
+    repository_url: str | None = None,
 ) -> list[tuple[object, dict[str, object]]]:
     _ensure_software_tables(db)
     entries: list[tuple[object, dict[str, object]]] = []
+    official_repository_url = (repository_url or "").strip() or None
 
     def _author_username(author_id: UUID | None) -> str:
         if author_id is None:
@@ -69,6 +72,8 @@ def build_software_history_entries(
             status = "rejected"
         elif row["stage"] == "confirmation":
             status = "open"
+        elif row["stage"] == "replaced":
+            status = "rejected"
 
         entries.append(
             (
@@ -87,7 +92,8 @@ def build_software_history_entries(
                     "voteSummary": vote_summary,
                     "passesApprovalThreshold": passes,
                     "canStillPass": can_still,
-                    "canVote": row["stage"] in {"approval", "confirmation"},
+                    "canVote": current_user_id is not None
+                    and row["stage"] in {"approval", "confirmation"},
                     "payload": {
                         "type": "pull-request",
                         "title": row["title"],
@@ -96,6 +102,8 @@ def build_software_history_entries(
                         "pullRequestUrl": row["pull_request_url"],
                         "stage": row["stage"],
                         "mergeId": row["merge_id"],
+                        "mergeUrl": row["merge_url"],
+                        "repositoryUrl": official_repository_url,
                     },
                 },
             )
@@ -119,6 +127,8 @@ def build_software_history_entries(
         target = db.execute(
             select(users.c.username).where(users.c.id == row["target_user_id"])
         ).first()
+        action = str(row["action"] or "grant")
+        action_label = "Grant merge capability" if action == "grant" else "Revoke merge capability"
         entries.append(
             (
                 row["created_at"],
@@ -134,10 +144,11 @@ def build_software_history_entries(
                     "voteSummary": vote_summary,
                     "passesApprovalThreshold": passes,
                     "canStillPass": can_still,
-                    "canVote": row["status"] == "open",
+                    "canVote": current_user_id is not None and row["status"] == "open",
                     "payload": {
-                        "type": "merge-capability-change",
-                        "action": row["action"],
+                        "type": "merge-capability",
+                        "action": action,
+                        "actionLabel": action_label,
                         "targetUsername": target[0] if target else "unknown",
                     },
                 },
@@ -159,6 +170,7 @@ def build_software_history_entries(
             vote_context_population,
             current_user_id,
         )
+        previous_url = str(row["previous_repository_url"] or "").strip() or None
         entries.append(
             (
                 row["created_at"],
@@ -174,11 +186,11 @@ def build_software_history_entries(
                     "voteSummary": vote_summary,
                     "passesApprovalThreshold": passes,
                     "canStillPass": can_still,
-                    "canVote": row["status"] == "open",
+                    "canVote": current_user_id is not None and row["status"] == "open",
                     "payload": {
                         "type": "repository-replacement",
                         "repositoryUrl": row["repository_url"],
-                        "previousRepositoryUrl": row["previous_repository_url"],
+                        "previousRepositoryUrl": previous_url or official_repository_url,
                         "reason": row["reason"],
                         "relatedPullRequestId": str(row["related_pull_request_id"]),
                     },

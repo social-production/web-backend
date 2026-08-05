@@ -154,12 +154,63 @@ def resolve_project_vote_population(
     project_id: UUID,
     is_platform_tagged: bool,
 ) -> int:
+    """Platform tag overrides local membership when sizing quorum.
+
+    If a project is tagged to ``platform`` (alone or with other channels/communities),
+    quorum N is always platform weekly actives.
+    """
     if is_platform_tagged:
         return weekly_active_users_global(db)
     return weekly_active_project_members(db, project_id)
 
 
 def resolve_event_vote_population(db: Session, event_id: UUID) -> int:
+    """Platform tag overrides local membership when sizing quorum."""
     if is_platform_event(db, event_id):
         return weekly_active_users_global(db)
     return weekly_active_event_members(db, event_id)
+
+
+def project_uses_platform_vote_context(is_platform_tagged: bool) -> bool:
+    return bool(is_platform_tagged)
+
+
+def event_uses_platform_vote_context(db: Session, event_id: UUID) -> bool:
+    return is_platform_event(db, event_id)
+
+
+def can_cast_project_governance_vote(
+    db: Session,
+    *,
+    project_id: UUID,
+    user_id: UUID,
+    is_platform_tagged: bool,
+) -> bool:
+    """Platform-tagged governance votes are open to any signed-in user."""
+    if is_platform_tagged:
+        return True
+    membership = db.execute(
+        select(project_memberships.c.user_id).where(
+            project_memberships.c.project_id == project_id,
+            project_memberships.c.user_id == user_id,
+        )
+    ).first()
+    return membership is not None
+
+
+def can_cast_event_governance_vote(
+    db: Session,
+    *,
+    event_id: UUID,
+    user_id: UUID,
+) -> bool:
+    """Platform-tagged governance votes are open to any signed-in user."""
+    if is_platform_event(db, event_id):
+        return True
+    membership = db.execute(
+        select(event_memberships.c.user_id).where(
+            event_memberships.c.event_id == event_id,
+            event_memberships.c.user_id == user_id,
+        )
+    ).first()
+    return membership is not None

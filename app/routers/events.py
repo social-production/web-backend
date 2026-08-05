@@ -38,15 +38,25 @@ router = APIRouter(prefix="/events", tags=["events"])
 class EventCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    slug: str = Field(min_length=3, max_length=120)
+    slug: str | None = Field(default=None, min_length=3, max_length=120)
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
     is_private: bool = False
+    audience: str | None = Field(default=None, pattern="^(public|private_community|invite_only)$")
+    governance: str | None = Field(default=None, pattern="^(collaborative|organizer_controlled)$")
+    home_community_slug: str | None = None
+    invited_usernames: list[str] = Field(default_factory=list)
+    editor_usernames: list[str] = Field(default_factory=list)
     time_label: str = Field(min_length=1, max_length=120)
     location_label: str = Field(min_length=1, max_length=160)
+    location_id: UUID | None = None
     scheduled_at: datetime | None = None
     channel_slugs: list[str] = Field(default_factory=list)
     community_slugs: list[str] = Field(default_factory=list)
+    plan_title: str | None = None
+    plan_description: str | None = None
+    schedule_payload: dict[str, Any] | None = None
+    plan_payload: dict[str, Any] | None = None
 
 
 class EventTagOut(BaseModel):
@@ -69,6 +79,9 @@ class EventOut(BaseModel):
     description: str
     created_by: UUID | None = None
     is_private: bool
+    audience: str
+    governance: str
+    home_community_id: UUID | None = None
     current_phase_id: str
     time_label: str
     location_label: str
@@ -96,12 +109,17 @@ class EventDetailResponse(BaseModel):
     title: str
     description: str
     isPrivate: bool
+    audience: str
+    governance: str
+    homeCommunity: dict[str, Any] | None = None
     scheduledAt: str | None = None
     channelTags: list[dict[str, Any]]
     communityTags: list[dict[str, Any]]
     createdByUsername: str
     timeLabel: str
     locationLabel: str
+    location: dict[str, Any] | None = None
+    mapEligible: bool = False
     voteCount: int
     activeVote: int
     commentCount: int
@@ -118,12 +136,15 @@ class EventDetailResponse(BaseModel):
     editRequests: list[dict[str, Any]]
     viewerCanRequestEdit: bool
     viewerCanVoteOnEditRequests: bool
+    linksFrame: dict[str, Any]
     history: list[dict[str, Any]]
     attendees: list[str]
     invitedUsernames: list[str]
     eventEditors: list[dict[str, Any]]
     members: list[dict[str, Any]]
     viewerIsMember: bool
+    viewerIsOrganizer: bool
+    viewerCanEditDirectly: bool
     viewerCanToggleMembership: bool
     viewerHasEventEditAccess: bool
     viewerCanManageEditors: bool
@@ -132,6 +153,9 @@ class EventDetailResponse(BaseModel):
     shareContacts: list[dict[str, Any]]
     report: dict[str, Any] | None = None
     isRemovedByReport: bool
+    moderationState: str | None = None
+    moderationReason: str | None = None
+    isUnderReview: bool = False
     discussionNote: str
     discussion: list[dict[str, Any]]
 
@@ -186,6 +210,7 @@ class EventActivityCreateRequest(BaseModel):
     ends_at: datetime
     is_online: bool = False
     location_label: str = Field(min_length=1, max_length=160)
+    location_id: UUID | None = None
     note: str = Field(min_length=1)
     role_requirements: list[EventActivityRoleRequirementIn] = Field(default_factory=list)
     linked_plan_id: UUID | None = None
@@ -224,7 +249,6 @@ async def create_new_event(
     return create_event(
         db=db,
         current_user_id=current_user_id,
-        slug=payload.slug,
         title=payload.title,
         description=payload.description,
         is_private=payload.is_private,
@@ -233,6 +257,16 @@ async def create_new_event(
         channel_slugs=payload.channel_slugs,
         community_slugs=payload.community_slugs,
         scheduled_at=payload.scheduled_at,
+        audience=payload.audience,
+        governance=payload.governance,
+        home_community_slug=payload.home_community_slug,
+        invited_usernames=payload.invited_usernames,
+        location_id=payload.location_id,
+        plan_title=payload.plan_title,
+        plan_description=payload.plan_description,
+        schedule_payload=payload.schedule_payload,
+        plan_payload=payload.plan_payload,
+        editor_usernames=payload.editor_usernames,
     )
 
 
@@ -363,6 +397,7 @@ async def create_event_activity_route(
         role_requirements=[item.model_dump() for item in payload.role_requirements],
         linked_plan_id=payload.linked_plan_id,
         linked_plan_phase_id=payload.linked_plan_phase_id,
+        location_id=payload.location_id,
     )
 
 

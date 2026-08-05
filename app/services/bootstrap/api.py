@@ -13,9 +13,8 @@ from app.services.bootstrap.directory import (
     _get_suggested_contacts,
 )
 from app.services.bootstrap.summary import (
-    _get_unread_message_count,
-    _get_unread_notification_count,
     _get_viewer_row,
+    get_bootstrap_summary,
 )
 
 
@@ -28,10 +27,7 @@ def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object
                 "funding": False,
                 "platform": True,
             },
-            "unreadCounts": {
-                "notifications": 0,
-                "messages": 0,
-            },
+            "unreadCounts": get_bootstrap_summary(db, None)["unreadCounts"],
             "directory": {
                 "platform": _get_platform_directory_item(db, None),
                 "channels": [],
@@ -56,10 +52,7 @@ def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object
             "funding": False,
             "platform": True,
         },
-        "unreadCounts": {
-            "notifications": _get_unread_notification_count(db, current_user_id),
-            "messages": _get_unread_message_count(db, current_user_id),
-        },
+        "unreadCounts": get_bootstrap_summary(db, current_user_id)["unreadCounts"],
         "directory": {
             "platform": _get_platform_directory_item(db, current_user_id),
             "channels": _get_channel_directory_items(db, current_user_id),

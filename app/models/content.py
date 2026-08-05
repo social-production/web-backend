@@ -22,6 +22,8 @@ posts = table(
     sa.Column("audience", sa.String(16), nullable=False),
     sa.Column("vote_count", sa.Integer, nullable=False, server_default="0"),
     sa.Column("comment_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
+    sa.Column("moderation_reason", sa.String(24), nullable=True),
     created_at(),
     updated_at(),
 )
@@ -46,6 +48,8 @@ threads = table(
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     sa.Column("vote_count", sa.Integer, nullable=False, server_default="0"),
     sa.Column("comment_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
+    sa.Column("moderation_reason", sa.String(24), nullable=True),
     created_at(),
     updated_at(),
     sa.Column("last_activity_at", sa.DateTime(timezone=True), nullable=False),
@@ -72,6 +76,8 @@ comments = table(
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     sa.Column("body", sa.Text, nullable=False),
     sa.Column("vote_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
+    sa.Column("moderation_reason", sa.String(24), nullable=True),
     created_at(),
     updated_at(),
 )
@@ -97,11 +103,20 @@ help_requests = table(
     sa.Column("title", sa.String(200), nullable=False),
     sa.Column("body", sa.Text, nullable=False),
     sa.Column("location_label", sa.String(200), nullable=False),
+    sa.Column(
+        "location_id",
+        UUID,
+        sa.ForeignKey("locations.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     sa.Column("schedule_label", sa.String(200), nullable=False),
     sa.Column("needed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("ends_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("roles", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
     sa.Column("vote_count", sa.Integer, nullable=False, server_default="0"),
     sa.Column("comment_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
+    sa.Column("moderation_reason", sa.String(24), nullable=True),
     created_at(),
 )
 
@@ -168,7 +183,6 @@ reports = table(
     sa.Column("resolution", sa.String(16), nullable=False, server_default="open"),
     created_at(),
     updated_at(),
-    sa.UniqueConstraint("target_type", "target_id", name="uq_reports_target"),
 )
 
 report_votes = table(

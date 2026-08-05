@@ -17,6 +17,7 @@ from app.services.notifications import create_notification
 from app.services.projects.software.constants import VALID_VOTES
 from app.services.projects.software.governance import _compute_vote_summary, _governance_payload
 from app.services.projects.software.helpers import (
+    _ensure_can_cast_software_vote,
     _ensure_member,
     _ensure_software_tables,
     _get_project_by_slug,
@@ -52,6 +53,7 @@ def submit_pull_request(
                 author_id=current_user_id,
                 stage="approval",
                 merge_id=None,
+                merge_url=None,
                 merged_by_user_id=None,
                 approval_threshold_percent=Decimal("66.00"),
             )
@@ -76,7 +78,7 @@ def vote_pull_request(
 ) -> dict[str, object]:
     _ensure_software_tables(db)
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_software_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -163,7 +165,7 @@ def vote_pull_request(
                 db.execute(
                     update(project_pull_requests)
                     .where(project_pull_requests.c.id == request_id)
-                    .values(merge_id=None, merged_by_user_id=None)
+                    .values(merge_id=None, merge_url=None, merged_by_user_id=None)
                 )
 
         record_meaningful_action(
@@ -200,7 +202,7 @@ def vote_pull_request(
             target_id=project_row["id"],
             title="Pull request approved",
             body="Voting passed and your pull request is approved for merge.",
-            href=f"/projects/{project_row['slug']}/software",
+            href=f"/projects/{project_row['slug']}?open=vote&voteKind=pull_request_merge&voteTarget={request_id}",
         )
 
     return _governance_payload(db, project_row, current_user_id)
@@ -212,6 +214,7 @@ def record_pull_request_merge(
     project_slug: str,
     request_id: UUID,
     merge_id: str,
+    merge_url: str,
 ) -> dict[str, object]:
     _ensure_software_tables(db)
     project_row = _get_project_by_slug(db, project_slug)
@@ -241,12 +244,22 @@ def record_pull_request_merge(
             detail="Pull request must be approved before merge recording",
         )
 
+    normalized_merge_url = merge_url.strip()
+    if not normalized_merge_url:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="mergeUrl is required",
+        )
+
     try:
         db.execute(
             update(project_pull_requests)
             .where(project_pull_requests.c.id == request_id)
             .values(
-                stage="confirmation", merge_id=merge_id.strip(), merged_by_user_id=current_user_id
+                stage="confirmation",
+                merge_id=merge_id.strip(),
+                merge_url=normalized_merge_url,
+                merged_by_user_id=current_user_id,
             )
         )
         db.execute(

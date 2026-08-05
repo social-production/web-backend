@@ -18,6 +18,7 @@ from app.services.notifications import create_notification
 from app.services.projects.phases.constants import PHASE_ORDER, VALID_PHASE_IDS, VALID_VOTES
 from app.services.projects.phases.gates import (
     _compute_vote_summary,
+    _ensure_can_cast_governance_vote,
     _ensure_member,
     _ensure_phase_requests_allowed,
     _get_project_by_slug,
@@ -113,7 +114,7 @@ def vote_revert_phase_change_request(
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_phase_requests_allowed(project_row["project_mode"])
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_governance_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:

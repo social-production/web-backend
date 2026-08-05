@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import insert
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.cookies import CSRF_COOKIE
-from app.db import SessionLocal
+from app.db import SessionLocal, engine
+from app.dependencies import get_db
 from app.main import app
 from app.models import channels, events, projects, scope_memberships, users
 
@@ -28,11 +31,62 @@ def client():
         yield test_client
 
 
+@pytest.fixture
+def db_transaction() -> Generator[Session, None, None]:
+    """Rollback all writes after the test — prevents polluting the dev database."""
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = sessionmaker(bind=connection, autoflush=False, autocommit=False, future=True)()
+    try:
+        yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
+
+
+@pytest.fixture
+def isolated_client(db_transaction: Session) -> Generator[TestClient, None, None]:
+    """TestClient that shares a single rolled-back database transaction."""
+
+    def override_get_db() -> Generator[Session, None, None]:
+        yield db_transaction
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
 def future_scheduled_at(*, hours: int = 1) -> tuple[str, str]:
     now = datetime.now(UTC)
     start = now + timedelta(hours=hours)
     end = now + timedelta(hours=hours + 2)
     return start.isoformat(), end.isoformat()
+
+
+def private_event_plan_fields(*, hours: int = 24, title: str = "Seeded plan") -> dict[str, object]:
+    """Required plan payload for private event creation (starts in Activity)."""
+    start = datetime.now(UTC) + timedelta(hours=hours)
+    end = start + timedelta(hours=3)
+    start_date = start.date().isoformat()
+    return {
+        "plan_title": title,
+        "plan_description": f"{title} description",
+        "schedule_payload": {
+            "mode": "date",
+            "startDate": start_date,
+            "startTimeLabel": "18:00",
+            "finishTimeLabel": "21:00",
+            "startAtUtc": start.isoformat(),
+            "endAtUtc": end.isoformat(),
+        },
+        "plan_payload": {
+            "planPhases": [
+                {"title": "Main stage", "details": "Run the event activities."},
+            ]
+        },
+    }
 
 
 def seed_user(

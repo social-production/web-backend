@@ -31,6 +31,10 @@ class UnreadCountsOut(BaseModel):
     messages: int
 
 
+class BootstrapSummaryResponse(BaseModel):
+    unreadCounts: UnreadCountsOut
+
+
 class DirectoryItemOut(BaseModel):
     slug: str
     label: str
@@ -69,7 +73,7 @@ class OnboardingResponse(BaseModel):
     starterCommunities: list[str]
 
 
-@router.get("/bootstrap/summary", response_model=UnreadCountsOut)
+@router.get("/bootstrap/summary", response_model=BootstrapSummaryResponse)
 async def bootstrap_summary(
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),

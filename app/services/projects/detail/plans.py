@@ -107,6 +107,9 @@ def load_project_plans(
 
         plan_payload = dict(plan["plan_payload"] or {})
         value_consideration_notes = dict(plan_payload.get("valueConsiderationNotes") or {})
+        location_label = str(plan_payload.get("locationLabel") or "")
+        project_location_id = plan_payload.get("projectLocationId")
+        project_location_label = str(plan_payload.get("projectLocationLabel") or "")
         plan_phases = [
             {
                 "id": str(item.get("id") or f"phase-{idx + 1}"),
@@ -135,6 +138,8 @@ def load_project_plans(
             "overallApproval": overall_summary,
             "isLeading": bool(plan["is_leading"]),
             "leaderStatus": leader_status,
+            "locationId": str(plan["location_id"]) if plan["location_id"] else None,
+            "locationLabel": location_label,
         }
 
         if plan["phase_kind"] in {"production", "organisation"}:
@@ -168,6 +173,8 @@ def load_project_plans(
                 "allowOffScheduleRequests": bool(
                     plan_payload.get("allowOffScheduleRequests") or False
                 ),
+                "projectLocationId": str(project_location_id) if project_location_id else None,
+                "projectLocationLabel": project_location_label,
             }
             phase_three_plans.append(item)
             if plan["is_leading"]:

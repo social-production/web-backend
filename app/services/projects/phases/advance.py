@@ -3,17 +3,17 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
     project_plans,
-    project_updates,
     projects,
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.projects.phases.constants import PHASE_ORDER
+from app.services.projects.phases.conversion import apply_project_close
 from app.services.projects.phases.gates import (
     _ensure_manager,
     _ensure_member,
@@ -97,18 +97,17 @@ def advance_project_phase(
                     update_values["project_subtype"] = plan_subtype
                     resolved_subtype = plan_subtype
 
-        db.execute(
-            update(projects).where(projects.c.id == project_row["id"]).values(**update_values)
-        )
-
-        if next_phase_id == "phase-7" and note:
+        if next_phase_id == "phase-7":
+            apply_project_close(
+                db,
+                project_row=project_row,
+                close_outcome="close",
+                close_note=note,
+                author_id=current_user_id,
+            )
+        else:
             db.execute(
-                insert(project_updates).values(
-                    project_id=project_row["id"],
-                    title="Closure note",
-                    body=note,
-                    author_id=current_user_id,
-                )
+                update(projects).where(projects.c.id == project_row["id"]).values(**update_values)
             )
 
         record_meaningful_action(

@@ -193,7 +193,7 @@ def run() -> None:
 
         report = client.post(
             "/governance/reports",
-            headers=_auth_header(seeded["owner_token"]),
+            headers=_auth_header(seeded["member_token"]),
             json={
                 "target_type": "project",
                 "target_id": seeded["project_id"],

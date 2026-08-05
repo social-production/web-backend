@@ -15,6 +15,7 @@ from app.models import (
     project_activities,
     project_activity_assignments,
     project_activity_roles,
+    project_conversions,
     project_edit_request_votes,
     project_edit_requests,
     project_link_request_votes,
@@ -48,6 +49,7 @@ from app.services.activity_history import (
     utc_now,
 )
 from app.services.content import activity_status_tone
+from app.services.detail_links import build_links_frame
 from app.services.projects.detail.plans import load_project_plans
 from app.services.projects.helpers import (
     _build_project_history,
@@ -60,8 +62,16 @@ from app.services.projects.helpers import (
     _visible_lifecycle_phases,
     _vote_summary,
 )
+from app.services.projects.phases.conversion import (
+    CONVERSION_FROM_LABEL,
+    CONVERSION_LINK_KIND,
+    CONVERSION_TO_LABEL,
+    INVENTORY_NOTE,
+    PERMANENCE_NOTE,
+)
 from app.services.projects_plans import _subtype_label
 from app.services.projects_software import get_project_software_governance
+from app.services.signal_gates import build_proposal_signal_summary
 from app.utils.votes import required_votes, resolve_project_vote_population
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
@@ -124,6 +134,11 @@ async def get_project_detail(
     viewer_is_member = viewer_membership is not None
     viewer_is_manager = bool(viewer_membership["is_manager"]) if viewer_membership else False
     viewer_is_author = current_user_id is not None and row["author_id"] == current_user_id
+    viewer_can_cast_governance = (
+        False
+        if row["project_mode"] == "personal-service"
+        else (current_user_id is not None if uses_platform_vote_context else viewer_is_member)
+    )
     viewer_can_review_requests = viewer_is_manager or (
         row["project_mode"] == "personal-service" and viewer_is_author
     )
@@ -264,24 +279,14 @@ async def get_project_detail(
             viewer_signal = viewer_signal_row[0]
 
     required_demand = required_votes(vote_context_population)
-    signal_total = signal_counts["total"]
-    demand_ratio_percent = (
-        (signal_counts["demand"] / signal_total * 100.0) if signal_total > 0 else 0.0
+    signal_summary = build_proposal_signal_summary(
+        signal_counts,
+        required_demand=required_demand,
+        uses_platform_vote_context=uses_platform_vote_context,
+        viewer_signal=viewer_signal,
+        vote_context_label=vote_context_label,
+        vote_context_population=vote_context_population,
     )
-    signal_summary = {
-        "demandCount": signal_counts["demand"],
-        "oppositionCount": signal_counts["opposition"],
-        "totalCount": signal_counts["total"],
-        "viewerSignal": viewer_signal,
-        "signalRatioPercent": demand_ratio_percent,
-        "ratioRequirementMet": demand_ratio_percent >= 66.0 if signal_total > 0 else False,
-        "requiredDemandCount": required_demand,
-        "demandRequirementMet": signal_counts["demand"] >= required_demand,
-        "advancementUnlocked": signal_counts["demand"] >= required_demand,
-        "usesPlatformVoteContext": uses_platform_vote_context,
-        "voteContextLabel": vote_context_label,
-        "voteContextPopulation": vote_context_population,
-    }
 
     plans_payload = load_project_plans(
         db,
@@ -524,18 +529,18 @@ async def get_project_detail(
             vote_rows, vote_context_population, current_user_id
         )
         conversion_target = None
-        if req["conversion_target_mode"] and req["conversion_target_subtype"]:
+        if req["conversion_target_mode"]:
+            mode = str(req["conversion_target_mode"])
+            subtype = (
+                str(req["conversion_target_subtype"]) if req["conversion_target_subtype"] else None
+            )
             conversion_target = {
-                "projectMode": req["conversion_target_mode"],
-                "projectSubtype": req["conversion_target_subtype"],
-                "projectModeLabel": str(req["conversion_target_mode"]).replace("-", " ").title(),
-                "projectSubtypeLabel": str(req["conversion_target_subtype"])
-                .replace("-", " ")
-                .title(),
-                "entryPhaseId": req["target_phase_id"],
-                "entryPhaseLabel": phase_title_map.get(
-                    req["target_phase_id"], req["target_phase_id"]
-                ),
+                "projectMode": mode,
+                "projectSubtype": subtype,
+                "projectModeLabel": mode.replace("-", " ").title(),
+                "projectSubtypeLabel": (subtype or "n/a").replace("-", " ").title(),
+                "entryPhaseId": "phase-1",
+                "entryPhaseLabel": phase_title_map.get("phase-1", "Proposal"),
             }
         if req["status"] != "open":
             continue
@@ -676,17 +681,143 @@ async def get_project_detail(
         .mappings()
         .all()
     )
-    auto_links = [
-        {
+    target_ids = {item["target_project_id"] for item in link_rows}
+    target_projects = {}
+    if target_ids:
+        for target in (
+            db.execute(
+                select(projects.c.id, projects.c.slug, projects.c.title).where(
+                    projects.c.id.in_(list(target_ids))
+                )
+            )
+            .mappings()
+            .all()
+        ):
+            target_projects[target["id"]] = target
+
+    auto_links = []
+    conversion_auto_links = []
+    for item in link_rows:
+        target = target_projects.get(item["target_project_id"])
+        frame_item = {
             "id": str(item["id"]),
-            "title": item["relationship_label"],
+            "title": target["title"] if target else item["relationship_label"],
             "relationshipLabel": item["relationship_label"],
             "summary": item["summary"],
-            "href": None,
+            "href": f"/projects/{target['slug']}" if target else None,
             "publicItem": None,
         }
-        for item in link_rows
-    ]
+        if item["link_kind"] == CONVERSION_LINK_KIND:
+            conversion_auto_links.append(frame_item)
+        else:
+            auto_links.append(frame_item)
+
+    conversion_row = (
+        db.execute(
+            select(project_conversions)
+            .where(
+                (project_conversions.c.predecessor_project_id == project_id)
+                | (project_conversions.c.successor_project_id == project_id)
+            )
+            .limit(1)
+        )
+        .mappings()
+        .first()
+    )
+    conversion_lineage = None
+    if conversion_row is not None:
+        pred = (
+            db.execute(
+                select(projects.c.id, projects.c.slug, projects.c.title).where(
+                    projects.c.id == conversion_row["predecessor_project_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        succ = (
+            db.execute(
+                select(projects.c.id, projects.c.slug, projects.c.title).where(
+                    projects.c.id == conversion_row["successor_project_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        conversion_lineage = {
+            "title": "Conversion lineage",
+            "statusLabel": "Permanent",
+            "summary": conversion_row["summary"],
+            "permanenceNote": conversion_row["permanence_note"] or PERMANENCE_NOTE,
+            "inventoryNote": conversion_row["inventory_note"] or INVENTORY_NOTE,
+            "predecessor": {
+                "id": str(pred["id"]),
+                "title": pred["title"],
+                "relationshipLabel": CONVERSION_FROM_LABEL,
+                "summary": conversion_row["summary"],
+                "href": f"/projects/{pred['slug']}",
+                "publicItem": None,
+            },
+            "successor": {
+                "id": str(succ["id"]),
+                "title": succ["title"],
+                "relationshipLabel": CONVERSION_TO_LABEL,
+                "summary": conversion_row["summary"],
+                "href": f"/projects/{succ['slug']}",
+                "publicItem": None,
+            },
+        }
+
+    conversion_workflow = []
+    for req in phase_change_rows:
+        if req["status"] != "open" or req["close_outcome"] != "convert":
+            continue
+        vote_rows = db.execute(
+            select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id).where(
+                project_phase_change_votes.c.request_id == req["id"]
+            )
+        ).all()
+        summary, _passes, _can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
+        mode = str(req["conversion_target_mode"] or "collective-service")
+        subtype = (
+            str(req["conversion_target_subtype"]) if req["conversion_target_subtype"] else None
+        )
+        conversion_workflow.append(
+            {
+                "id": str(req["id"]),
+                "title": req["conversion_successor_title"] or "Convert project",
+                "statusLabel": "Open conversion vote",
+                "requestedByUsername": usernames.get(req["author_id"], {}).get(
+                    "username", "unknown"
+                ),
+                "createdAtLabel": _iso(req["created_at"]),
+                "outcomeLabel": "Pending electorate approval",
+                "summary": req["reason"],
+                "inventoryNote": INVENTORY_NOTE,
+                "canVote": viewer_can_cast_governance,
+                "voteSummary": summary,
+                "approvalThresholdPercent": 66,
+                "target": {
+                    "projectMode": mode,
+                    "projectSubtype": subtype,
+                    "projectModeLabel": mode.replace("-", " ").title(),
+                    "projectSubtypeLabel": (subtype or "n/a").replace("-", " ").title(),
+                    "entryPhaseId": "phase-1",
+                    "entryPhaseLabel": phase_title_map.get("phase-1", "Proposal"),
+                },
+                "predecessor": {
+                    "id": str(project_id),
+                    "title": row["title"],
+                    "relationshipLabel": CONVERSION_FROM_LABEL,
+                    "summary": req["reason"],
+                    "href": f"/projects/{row['slug']}",
+                    "publicItem": None,
+                },
+                "successor": None,
+            }
+        )
 
     link_request_rows = (
         db.execute(
@@ -729,7 +860,7 @@ async def get_project_detail(
                     "approvalPercent": (yes / (yes + no) * 100.0) if (yes + no) > 0 else 0.0,
                     "statusLabel": req["status"],
                     "resultNote": "",
-                    "viewerCanVote": viewer_is_member,
+                    "viewerCanVote": viewer_can_cast_governance,
                     "viewerVote": None,
                 },
                 "otherProjectVote": {
@@ -793,9 +924,11 @@ async def get_project_detail(
 
     is_personal_service = row["project_mode"] == "personal-service"
     viewer_can_request_update = viewer_is_author if is_personal_service else viewer_is_member
-    viewer_can_vote_on_update_requests = False if is_personal_service else viewer_is_member
+    viewer_can_vote_on_update_requests = (
+        False if is_personal_service else viewer_can_cast_governance
+    )
     viewer_can_request_edit = viewer_is_author if is_personal_service else viewer_is_member
-    viewer_can_vote_on_edit_requests = False if is_personal_service else viewer_is_member
+    viewer_can_vote_on_edit_requests = False if is_personal_service else viewer_can_cast_governance
     viewer_can_create_activities = viewer_is_author if is_personal_service else viewer_is_member
     viewer_can_submit_requests = (
         (current_user_id is not None and not viewer_is_author)
@@ -805,9 +938,11 @@ async def get_project_detail(
     viewer_can_request_settings_changes = (
         viewer_is_author if is_personal_service else viewer_is_member
     )
-    viewer_can_vote_on_settings_changes = False if is_personal_service else viewer_is_member
+    viewer_can_vote_on_settings_changes = (
+        False if is_personal_service else viewer_can_cast_governance
+    )
     viewer_can_request_phase_changes = False if is_personal_service else viewer_is_member
-    viewer_can_vote_on_phase_changes = False if is_personal_service else viewer_is_member
+    viewer_can_vote_on_phase_changes = False if is_personal_service else viewer_can_cast_governance
     viewer_can_propose_links = False if is_personal_service else viewer_is_member
     phase_one_member_flags = (
         {
@@ -827,7 +962,10 @@ async def get_project_detail(
     phase_plan_member_flags = (
         {"viewerCanSubmitPlans": False, "viewerCanVoteOnPlans": False}
         if is_personal_service
-        else {"viewerCanSubmitPlans": viewer_is_member, "viewerCanVoteOnPlans": viewer_is_member}
+        else {
+            "viewerCanSubmitPlans": viewer_is_member,
+            "viewerCanVoteOnPlans": viewer_can_cast_governance,
+        }
     )
 
     request_system = {
@@ -916,15 +1054,55 @@ async def get_project_detail(
         },
     }
 
-    report_row = db.execute(
-        select(reports.c.id, reports.c.resolution).where(
-            reports.c.target_type == "project", reports.c.target_id == project_id
+    report_row = (
+        db.execute(
+            select(
+                reports.c.id,
+                reports.c.resolution,
+                projects.c.moderation_state,
+                projects.c.moderation_reason,
+                projects.c.created_at,
+                projects.c.vote_count,
+                projects.c.comment_count,
+            )
+            .select_from(
+                projects.outerjoin(
+                    reports,
+                    (reports.c.target_type == "project") & (reports.c.target_id == projects.c.id),
+                )
+            )
+            .where(projects.c.id == project_id)
         )
-    ).first()
+        .mappings()
+        .first()
+    )
     report = None
     is_removed = False
+    moderation_state = "visible"
+    moderation_reason = None
     if report_row is not None:
-        is_removed = report_row[1] == "removed"
+        moderation_state = str(report_row.get("moderation_state") or "visible")
+        moderation_reason = report_row.get("moderation_reason")
+        is_removed = moderation_state == "removed" or report_row.get("resolution") == "removed"
+        if report_row.get("id") is not None and report_row.get("resolution") in {
+            "open",
+            "under_review",
+            "hidden",
+        }:
+            from app.services.moderation.serialize import load_active_report
+
+            report = load_active_report(
+                db,
+                target_type="project",
+                target_id=project_id,
+                current_user_id=current_user_id,
+                created_at=report_row.get("created_at"),
+            )
+
+    if is_removed:
+        from fastapi import HTTPException, status
+
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
     discussion_rows = db.execute(
         select(
@@ -933,6 +1111,8 @@ async def get_project_detail(
             comments.c.body,
             comments.c.created_at,
             comments.c.vote_count,
+            comments.c.moderation_state,
+            comments.c.moderation_reason,
         )
         .where(
             comments.c.subject_type == "project",
@@ -941,11 +1121,13 @@ async def get_project_detail(
         )
         .order_by(comments.c.created_at.asc())
     ).all()
-    discussion_author_ids = {author_id for _, author_id, _, _, _ in discussion_rows if author_id}
+    discussion_author_ids = {
+        author_id for _, author_id, _, _, _, _, _ in discussion_rows if author_id
+    }
     missing_discussion_author_ids = discussion_author_ids - set(usernames.keys())
     if missing_discussion_author_ids:
         usernames.update(_username_lookup(db, missing_discussion_author_ids))
-    discussion_comment_ids = [comment_id for comment_id, _, _, _, _ in discussion_rows]
+    discussion_comment_ids = [comment_id for comment_id, _, _, _, _, _, _ in discussion_rows]
     discussion_active_votes: dict[UUID, int] = {}
     if current_user_id is not None and discussion_comment_ids:
         dv_rows = db.execute(
@@ -956,19 +1138,70 @@ async def get_project_detail(
             )
         ).all()
         discussion_active_votes = {target_id: int(direction) for target_id, direction in dv_rows}
+    from app.services.moderation.serialize import (
+        load_active_reports_for_targets,
+        moderation_body_for_comment,
+    )
+
+    discussion_reports = load_active_reports_for_targets(
+        db,
+        target_type="comment",
+        target_ids=discussion_comment_ids,
+        current_user_id=current_user_id,
+    )
     discussion = [
         {
             "id": str(comment_id),
             "authorUsername": usernames.get(author_id, {}).get("username", "unknown"),
-            "body": body,
+            "body": moderation_body_for_comment(
+                body=body,
+                moderation_state=str(moderation_state or "visible"),
+                moderation_reason=str(moderation_reason) if moderation_reason else None,
+            ),
             "createdAt": _iso(created_at),
             "voteCount": int(vote_count or 0),
             "activeVote": discussion_active_votes.get(comment_id, 0),
-            "report": None,
+            "moderationState": str(moderation_state or "visible"),
+            "moderationReason": moderation_reason,
+            "report": discussion_reports.get(comment_id),
             "replies": [],
         }
-        for comment_id, author_id, body, created_at, vote_count in discussion_rows
+        for (
+            comment_id,
+            author_id,
+            body,
+            created_at,
+            vote_count,
+            moderation_state,
+            moderation_reason,
+        ) in discussion_rows
     ]
+
+    links_frame = build_links_frame(
+        db,
+        owner_kind="project",
+        owner_slug=str(row["slug"]),
+        current_user_id=current_user_id,
+    )
+    links_frame["conversionNote"] = (
+        "Conversion lineage is permanent. Manual links stay visible alongside it."
+        if conversion_lineage
+        else ""
+    )
+    links_frame["conversionWorkflow"] = conversion_workflow
+    links_frame["conversionLineage"] = conversion_lineage
+    links_frame["projectSlug"] = row["slug"]
+    links_frame["autoLinks"] = conversion_auto_links + auto_links
+    links_frame["manualLinks"] = links_frame["activeLinks"]
+    links_frame["manualLinkRequests"] = manual_link_requests
+    links_frame["linkableProjects"] = linkable_projects
+    links_frame["viewerCanProposeLinks"] = viewer_can_propose_links
+    links_frame["requestFrames"] = [
+        {"id": "borrowing", "title": "Borrowing", "body": ""},
+        {"id": "delivery", "title": "Delivery", "body": ""},
+        {"id": "asset-use", "title": "Asset use", "body": ""},
+    ]
+    links_frame["placeholderSections"] = []
 
     return {
         "id": str(project_id),
@@ -987,6 +1220,7 @@ async def get_project_detail(
             str(row["current_phase_id"]),
         ),
         "locationLabel": row["location_label"],
+        "locationId": str(row["location_id"]) if row.get("location_id") else None,
         "voteCount": int(row["vote_count"] or 0),
         "activeVote": active_vote,
         "signalCount": signal_counts["total"],
@@ -1001,24 +1235,7 @@ async def get_project_detail(
         "editRequests": edit_requests,
         "viewerCanRequestEdit": viewer_can_request_edit,
         "viewerCanVoteOnEditRequests": viewer_can_vote_on_edit_requests,
-        "linksFrame": {
-            "projectSlug": row["slug"],
-            "intro": "Project links",
-            "autoLinks": auto_links,
-            "manualLinks": [],
-            "manualLinkRequests": manual_link_requests,
-            "linkableProjects": linkable_projects,
-            "viewerCanProposeLinks": viewer_can_propose_links,
-            "conversionNote": "",
-            "conversionWorkflow": [],
-            "conversionLineage": None,
-            "requestFrames": [
-                {"id": "borrowing", "title": "Borrowing", "body": ""},
-                {"id": "delivery", "title": "Delivery", "body": ""},
-                {"id": "asset-use", "title": "Asset use", "body": ""},
-            ],
-            "placeholderSections": [],
-        },
+        "linksFrame": links_frame,
         "inventoryFrame": None,
         "history": _build_project_history(db, project_id, current_user_id, vote_context_population),
         "members": members,
@@ -1028,6 +1245,9 @@ async def get_project_detail(
         "shareContacts": share_contacts,
         "report": report,
         "isRemovedByReport": is_removed,
+        "moderationState": moderation_state,
+        "moderationReason": moderation_reason,
+        "isUnderReview": moderation_state == "under_review",
         "discussionNote": "",
         "discussion": discussion,
     }

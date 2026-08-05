@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import insert, select
 
 from app.db import SessionLocal
-from app.models import channels, notifications, posts, scope_memberships, threads, users
+from app.models import channels, notifications, posts, scope_memberships, users
 from app.routers.content import DiscussionCommentOut
 from app.services.content import create_thread, get_thread_by_slug
 from app.services.feeds import get_user_feed
@@ -43,7 +43,6 @@ def test_thread_nested_reply_is_returned_and_notifies_parent_author() -> None:
 
     author_id = uuid4()
     replier_id = uuid4()
-    slug = f"nested-thread-{uuid4()}"
 
     db.execute(
         insert(users).values(
@@ -89,19 +88,16 @@ def test_thread_nested_reply_is_returned_and_notifies_parent_author() -> None:
     )
     db.commit()
 
-    create_thread(
+    created_thread = create_thread(
         db=db,
         current_user_id=author_id,
-        slug=slug,
         title="Nested reply thread",
         body="Root thread body",
         channel_slugs=[f"ch-{str(channel_id)[:8]}"],
         community_slugs=[],
     )
-
-    thread_row = db.execute(select(threads.c.id).where(threads.c.slug == slug)).first()
-    assert thread_row is not None
-    thread_id = thread_row[0]
+    slug = created_thread["thread"]["slug"]
+    thread_id = created_thread["thread"]["id"]
 
     parent = add_comment(
         db=db,
@@ -215,7 +211,6 @@ def test_user_feed_includes_comment_activity() -> None:
 
     author_id = uuid4()
     commenter_id = uuid4()
-    slug = f"profile-feed-thread-{uuid4()}"
     commenter_username = f"commenter-{str(commenter_id)[:8]}"
 
     db.execute(
@@ -262,19 +257,15 @@ def test_user_feed_includes_comment_activity() -> None:
     )
     db.commit()
 
-    create_thread(
+    created_thread = create_thread(
         db=db,
         current_user_id=author_id,
-        slug=slug,
         title="Profile feed thread",
         body="Thread body",
         channel_slugs=[f"ch-{str(channel_id)[:8]}"],
         community_slugs=[],
     )
-
-    thread_row = db.execute(select(threads.c.id).where(threads.c.slug == slug)).first()
-    assert thread_row is not None
-    thread_id = thread_row[0]
+    thread_id = created_thread["thread"]["id"]
 
     created = add_comment(
         db=db,

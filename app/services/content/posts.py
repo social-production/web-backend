@@ -19,6 +19,8 @@ from app.services.access_control import (
 from app.services.content.threads import _attach_usernames_to_comments
 from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.moderation.serialize import load_active_report
+from app.services.moderation.visibility import assert_not_removed
 
 VALID_AUDIENCE = frozenset({"public", "followers"})
 
@@ -102,6 +104,8 @@ def get_post_by_id(
                 posts.c.comment_count,
                 posts.c.created_at,
                 posts.c.updated_at,
+                posts.c.moderation_state,
+                posts.c.moderation_reason,
                 users.c.username.label("author_username"),
                 users.c.profile_image_url.label("author_profile_image_url"),
             )
@@ -113,6 +117,8 @@ def get_post_by_id(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+
+    assert_not_removed(db, "post", row["id"])
 
     if not can_view_post(db, current_user_id, row):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
@@ -133,6 +139,13 @@ def get_post_by_id(
         db, subject_type="post", subject_id=row["id"], current_user_id=current_user_id
     )
     discussion = _attach_usernames_to_comments(db, comments_result["items"])
+    report = load_active_report(
+        db,
+        target_type="post",
+        target_id=row["id"],
+        current_user_id=current_user_id,
+        created_at=row["created_at"],
+    )
 
     return {
         "post": {
@@ -148,5 +161,10 @@ def get_post_by_id(
             "updated_at": row["updated_at"],
             "active_vote": active_vote,
             "discussion": discussion,
+            "report": report,
+            "moderationState": row["moderation_state"],
+            "moderationReason": row["moderation_reason"],
+            "isRemovedByReport": row["moderation_state"] == "removed",
+            "isUnderReview": row["moderation_state"] == "under_review",
         }
     }

@@ -10,7 +10,7 @@
 - **IP + per-user rate limiting** via Redis (fail-closed in production)
 - **Security headers** on API and SvelteKit responses
 - **Production secret validation** at startup
-- **Shorter access tokens** (15 min) with refresh rotation (7 days)
+- **Shorter access tokens** (15 min) with sliding refresh rotation (30 days)
 
 ## Completed hardening (engineering phase 2)
 

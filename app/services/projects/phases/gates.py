@@ -14,11 +14,17 @@ from app.models import (
     projects,
 )
 from app.services.governance_votes import compute_vote_summary
+from app.services.projects.helpers import _get_signal_counts_db
 from app.services.projects.phases.constants import (
     PHASE_ORDER,
 )
 from app.services.projects.phases.labels import _skips_distribution_phase
-from app.utils.votes import resolve_project_vote_population
+from app.services.signal_gates import ensure_proposal_advancement_allowed
+from app.utils.votes import (
+    can_cast_project_governance_vote,
+    required_votes,
+    resolve_project_vote_population,
+)
 
 
 def _required_leading_plan_kind(
@@ -111,6 +117,24 @@ def _ensure_member(db: Session, project_id: UUID, user_id: UUID) -> None:
         )
 
 
+def _ensure_can_cast_governance_vote(
+    db: Session,
+    project_row: Mapping[str, object],
+    user_id: UUID,
+    *,
+    detail: str = "Only project members can request or vote",
+) -> None:
+    """Platform-tagged projects open governance votes to any signed-in user."""
+    if can_cast_project_governance_vote(
+        db,
+        project_id=project_row["id"],
+        user_id=user_id,
+        is_platform_tagged=bool(project_row.get("is_platform_tagged")),
+    ):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
 def _ensure_phase_requests_allowed(project_mode: str) -> None:
     if project_mode == "personal-service":
         raise HTTPException(
@@ -139,6 +163,26 @@ def _ensure_manager(db: Session, project_id: UUID, user_id: UUID) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only project managers can perform this action",
         )
+
+
+def _ensure_project_proposal_signal_gate(
+    db: Session,
+    project_row: Mapping[str, object],
+    *,
+    current_phase_id: str,
+    change_kind: str,
+) -> None:
+    if current_phase_id != "phase-1" or change_kind != "advance":
+        return
+
+    uses_platform = bool(project_row["is_platform_tagged"])
+    population = resolve_project_vote_population(db, project_row["id"], uses_platform)
+    signal_counts = _get_signal_counts_db(db, project_row["id"])
+    ensure_proposal_advancement_allowed(
+        signal_counts,
+        required_demand=required_votes(population),
+        uses_platform_vote_context=uses_platform,
+    )
 
 
 def _phase_change_kind_for_project(target_phase_id: str, current_phase_id: str) -> str:

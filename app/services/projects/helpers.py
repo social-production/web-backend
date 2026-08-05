@@ -16,6 +16,7 @@ from app.models import (
     communities,
     project_edit_request_votes,
     project_edit_requests,
+    project_inherited_decisions,
     project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
@@ -29,14 +30,15 @@ from app.models import (
     scope_memberships,
     users,
 )
+from app.services.detail_links import build_link_decision_history_entries
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.projects_plans import _plan_subtype_from_payload
 from app.services.search import index_document
+from app.utils.slugs import allocate_unique_slug
 from app.utils.votes import required_votes
 
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
-PROJECT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 PROJECT_PHASES = (
     ("phase-1", 1, "P1", "Proposal", "Define values and demand."),
     ("phase-2", 2, "P2", "Production Plan", "Select production plan."),
@@ -267,7 +269,6 @@ def _phase_for_mode(project_mode: str) -> tuple[str, str]:
 def create_project(
     db: Session,
     current_user_id: UUID,
-    slug: str,
     title: str,
     description: str,
     project_mode: str,
@@ -276,15 +277,12 @@ def create_project(
     channel_slugs: list[str],
     community_slugs: list[str] | None = None,
     request_mode: str | None = None,
+    location_id: UUID | None = None,
 ) -> dict[str, object]:
-    normalized_slug = slug.strip().lower()
+    normalized_slug = allocate_unique_slug(db, projects, title)
     normalized_mode = project_mode.strip().lower()
     normalized_subtype = project_subtype.strip().lower() if project_subtype else None
 
-    if not normalized_slug:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
-        )
     if normalized_mode not in PROJECT_MODES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -323,6 +321,18 @@ def create_project(
     phase_id, stage_label = _phase_for_mode(normalized_mode)
     now = datetime.now(UTC)
 
+    from app.services.locations.resolve import resolve_entity_location_fields
+
+    label = (location_label or "").strip()
+    if not label and location_id is None:
+        resolved_location_id, resolved_location_label = None, ""
+    else:
+        resolved_location_id, resolved_location_label = resolve_entity_location_fields(
+            db,
+            location_id=location_id,
+            location_label=location_label,
+        )
+
     try:
         created = (
             db.execute(
@@ -336,7 +346,8 @@ def create_project(
                     project_subtype=normalized_subtype,
                     current_phase_id=phase_id,
                     stage_label=stage_label,
-                    location_label=location_label.strip(),
+                    location_label=resolved_location_label,
+                    location_id=resolved_location_id,
                     member_count=1,
                     last_activity_at=now,
                     is_platform_tagged=is_platform_tagged,
@@ -763,9 +774,89 @@ def _build_project_history(
     if project_subtype == "software":
         from app.services.projects_software import build_software_history_entries
 
+        leading_repo = db.execute(
+            select(project_plans.c.repository_url)
+            .where(
+                project_plans.c.project_id == project_id,
+                project_plans.c.is_leading.is_(True),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
         for created_at, entry in build_software_history_entries(
-            db, project_id, vote_context_population, current_user_id
+            db,
+            project_id,
+            vote_context_population,
+            current_user_id,
+            repository_url=str(leading_repo) if leading_repo else None,
         ):
             history.append((created_at, entry))
+
+    inherited_rows = (
+        db.execute(
+            select(project_inherited_decisions)
+            .where(project_inherited_decisions.c.successor_project_id == project_id)
+            .order_by(project_inherited_decisions.c.original_created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
+    for item in inherited_rows:
+        yes = int(item["yes_count"] or 0)
+        no = int(item["no_count"] or 0)
+        total = yes + no
+        electorate = int(item["electorate_size"] or 0)
+        summary = {
+            "yesCount": yes,
+            "noCount": no,
+            "totalVotes": total,
+            "memberCount": electorate,
+            "approvalsRequired": required_votes(electorate) if electorate else 0,
+            "approvalsRemaining": max(0, (required_votes(electorate) if electorate else 0) - yes),
+            "approvalPercent": (yes / total * 100.0) if total else 0.0,
+            "activeVote": None,
+            "viewerCanVote": False,
+        }
+        history.append(
+            (
+                item["original_created_at"],
+                {
+                    "id": str(item["id"]),
+                    "entityKind": "project",
+                    "kind": item["kind"],
+                    "kindLabel": item["kind_label"],
+                    "createdAt": _iso(item["original_created_at"]),
+                    "authorUsername": item["author_username"],
+                    "status": item["status"],
+                    "approvalThresholdPercent": int(item["approval_threshold_percent"] or 66),
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": False,
+                    "canStillPass": False,
+                    "canVote": False,
+                    "isInherited": True,
+                    "originPredecessorSlug": item["predecessor_slug"],
+                    "originPredecessorTitle": item["predecessor_title"],
+                    "originLabel": (
+                        f"Inherited from {item['predecessor_title']} ({item['predecessor_slug']})"
+                    ),
+                    "payload": item["payload"] or {"type": "phase-change"},
+                },
+            )
+        )
+
+    project_row = (
+        db.execute(select(projects.c.slug, projects.c.title).where(projects.c.id == project_id))
+        .mappings()
+        .one()
+    )
+    history.extend(
+        build_link_decision_history_entries(
+            db,
+            owner_kind="project",
+            owner_id=project_id,
+            owner_slug=str(project_row["slug"]),
+            owner_title=str(project_row["title"]),
+            current_user_id=current_user_id,
+        )
+    )
 
     return [entry for _, entry in sorted(history, key=lambda item: item[0], reverse=True)]

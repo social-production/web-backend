@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost/social_production"
     jwt_secret: str = "dev-only-change-me"
     jwt_access_expire_minutes: int = 15
-    jwt_refresh_expire_days: int = 7
+    jwt_refresh_expire_days: int = 30
     rate_limit_fail_closed: bool = False
     message_encryption_key: str = "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8="
     redis_url: str = "redis://localhost:6379/0"
@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     github_token: str = ""
     github_repo: str = "social-production/web"
     disable_openapi_in_production: bool = True
+    # OSM-compatible geocoding provider (Nominatim-style). Credentials stay server-side.
+    geocoding_provider_url: str = "https://nominatim.openstreetmap.org"
+    geocoding_provider_api_key: str = ""
+    geocoding_user_agent: str = "SocialProduction/0.1 (location-foundation)"
+    geocoding_cache_ttl_seconds: int = 86400
+    geocoding_rate_limit: int = 30
+    geocoding_rate_limit_window_seconds: int = 60
+    geocoding_timeout_seconds: float = 8.0
 
     @field_validator("database_url", mode="before")
     @classmethod

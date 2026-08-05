@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from redis.asyncio import Redis
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,9 @@ from app.cache import cache_ttl_seconds
 from app.models import (
     channels,
     communities,
+    event_editors,
     event_memberships,
+    event_plans,
     event_signals,
     event_tags,
     events,
@@ -22,10 +24,14 @@ from app.models import (
     users,
 )
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.notifications import create_notification
 from app.services.search import index_document
+from app.utils.slugs import allocate_unique_slug
+from app.utils.usernames import username_matches
 from app.utils.votes import required_votes
 
-EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
+EVENT_AUDIENCES = frozenset({"public", "private_community", "invite_only"})
+EVENT_GOVERNANCES = frozenset({"collaborative", "organizer_controlled"})
 _PLACEHOLDER_SCHEDULE_LABELS = frozenset({"tbd", "not specified", "to be determined"})
 EVENT_PHASES = (
     ("proposal", 1, "P1", "Proposal", "Collect demand and define event values."),
@@ -269,6 +275,9 @@ def _serialize_event(
         "description": row["description"],
         "created_by": row["created_by"],
         "is_private": row["is_private"],
+        "audience": row["audience"],
+        "governance": row["governance"],
+        "home_community_id": row["home_community_id"],
         "current_phase_id": row["current_phase_id"],
         "time_label": row["time_label"],
         "location_label": row["location_label"],
@@ -374,6 +383,55 @@ def _resolve_community_ids(
     return [row["id"] for row in rows]
 
 
+def _resolve_home_community_id(
+    db: Session, community_slug: str | None, current_user_id: UUID
+) -> UUID:
+    normalized = (community_slug or "").strip().lower()
+    if not normalized:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="home_community_slug is required for private_community events",
+        )
+
+    ids = _resolve_community_ids(db, [normalized], current_user_id)
+    if not ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown community slug: {normalized}",
+        )
+    return ids[0]
+
+
+def _resolve_invited_user_ids(
+    db: Session, usernames: list[str], current_user_id: UUID
+) -> list[tuple[UUID, str]]:
+    normalized = [value.strip() for value in usernames if value.strip()]
+    if not normalized:
+        return []
+
+    seen: dict[str, UUID] = {}
+    resolved: list[tuple[UUID, str]] = []
+    for username in normalized:
+        row = (
+            db.execute(select(users.c.id, users.c.username).where(username_matches(username)))
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown username: {username}",
+            )
+        if row["id"] == current_user_id:
+            continue
+        key = row["username"].lower()
+        if key in seen:
+            continue
+        seen[key] = row["id"]
+        resolved.append((row["id"], row["username"]))
+    return resolved
+
+
 def _get_event_tags(db: Session, event_id: UUID) -> list[dict[str, object]]:
     rows = (
         db.execute(
@@ -443,7 +501,6 @@ async def _get_signal_counts(db: Session, cache: Redis, event_id: UUID) -> dict[
 def create_event(
     db: Session,
     current_user_id: UUID,
-    slug: str,
     title: str,
     description: str,
     is_private: bool,
@@ -452,22 +509,109 @@ def create_event(
     channel_slugs: list[str],
     community_slugs: list[str] | None = None,
     scheduled_at: datetime | None = None,
+    audience: str | None = None,
+    governance: str | None = None,
+    home_community_slug: str | None = None,
+    invited_usernames: list[str] | None = None,
+    location_id: UUID | None = None,
+    plan_title: str | None = None,
+    plan_description: str | None = None,
+    schedule_payload: dict[str, object] | None = None,
+    plan_payload: dict[str, object] | None = None,
+    editor_usernames: list[str] | None = None,
 ) -> dict[str, object]:
-    normalized_slug = slug.strip().lower()
-    if not normalized_slug:
+    normalized_slug = allocate_unique_slug(db, events, title)
+
+    # `audience` is authoritative; `is_private` is accepted for backward
+    # compatibility and only used to pick a default when audience is omitted.
+    normalized_audience = (audience or "").strip().lower()
+    if not normalized_audience:
+        normalized_audience = "invite_only" if is_private else "public"
+    if normalized_audience not in EVENT_AUDIENCES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"audience must be one of: {sorted(EVENT_AUDIENCES)}",
         )
+
+    normalized_governance = (governance or "").strip().lower()
+    if not normalized_governance:
+        normalized_governance = "collaborative"
+    if normalized_governance not in EVENT_GOVERNANCES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"governance must be one of: {sorted(EVENT_GOVERNANCES)}",
+        )
+
+    if normalized_audience == "public" and normalized_governance != "collaborative":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Public events must be collaborative",
+        )
+
+    resolved_is_private = normalized_audience != "public"
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
     community_ids = _resolve_community_ids(db, community_slugs or [], current_user_id)
-    if not is_private and not channel_ids and not community_ids:
+    if normalized_audience == "public" and not channel_ids and not community_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Public events require at least one channel or community tag",
         )
 
+    home_community_id: UUID | None = None
+    if normalized_audience == "private_community":
+        home_community_id = _resolve_home_community_id(db, home_community_slug, current_user_id)
+        if home_community_id not in community_ids:
+            community_ids = [*community_ids, home_community_id]
+
+    invitees: list[tuple[UUID, str]] = []
+    if normalized_audience == "invite_only":
+        invitees = _resolve_invited_user_ids(db, invited_usernames or [], current_user_id)
+
+    editors: list[tuple[UUID, str]] = []
+    direct_to_activity = resolved_is_private and normalized_governance == "organizer_controlled"
+    # Create-time organizers apply to all private events so invite/manage
+    # authority is effective immediately (not only after a later promote).
+    if resolved_is_private and editor_usernames:
+        editors = _resolve_invited_user_ids(db, editor_usernames, current_user_id)
+
+    # Organizer-controlled private events skip Proposal/signals and start in Activity
+    # with a seeded plan. Collaborative private events use the full public-style lifecycle.
+    if direct_to_activity:
+        current_phase_id = "activity"
+        plan_title_value = (plan_title or "").strip() or title.strip()
+        plan_description_value = (plan_description or "").strip() or description.strip()
+        schedule_value = dict(schedule_payload or {})
+        plan_value = dict(plan_payload or {})
+        plan_phases = plan_value.get("planPhases") or plan_value.get("plan_phases") or []
+        if not isinstance(plan_phases, list) or not plan_phases:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Organizer-controlled private events require at least one plan stage",
+            )
+        if not schedule_value:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Organizer-controlled private events require a schedule",
+            )
+    else:
+        current_phase_id = (
+            "event-plan" if normalized_governance == "organizer_controlled" else "proposal"
+        )
+        plan_title_value = (plan_title or "").strip()
+        plan_description_value = (plan_description or "").strip()
+        schedule_value = dict(schedule_payload or {})
+        plan_value = dict(plan_payload or {})
+
     now = datetime.now(UTC)
+
+    from app.services.locations.resolve import resolve_entity_location_fields
+
+    resolved_location_id, resolved_location_label = resolve_entity_location_fields(
+        db,
+        location_id=location_id,
+        location_label=location_label,
+    )
 
     try:
         created = (
@@ -478,10 +622,14 @@ def create_event(
                     title=title.strip(),
                     description=description.strip(),
                     created_by=current_user_id,
-                    is_private=is_private,
-                    current_phase_id="proposal",
+                    is_private=resolved_is_private,
+                    audience=normalized_audience,
+                    governance=normalized_governance,
+                    home_community_id=home_community_id,
+                    current_phase_id=current_phase_id,
                     time_label=time_label.strip(),
-                    location_label=location_label.strip(),
+                    location_label=resolved_location_label,
+                    location_id=resolved_location_id,
                     scheduled_at=scheduled_at,
                     member_count=1,
                     last_activity_at=now,
@@ -493,6 +641,9 @@ def create_event(
                     events.c.description,
                     events.c.created_by,
                     events.c.is_private,
+                    events.c.audience,
+                    events.c.governance,
+                    events.c.home_community_id,
                     events.c.current_phase_id,
                     events.c.time_label,
                     events.c.location_label,
@@ -519,6 +670,51 @@ def create_event(
             )
         )
 
+        for invitee_id, _username in invitees:
+            db.execute(
+                insert(event_memberships).values(
+                    event_id=created["id"],
+                    user_id=invitee_id,
+                    role="member",
+                    joined_at=now,
+                )
+            )
+        if invitees:
+            db.execute(
+                update(events)
+                .where(events.c.id == created["id"])
+                .values(member_count=events.c.member_count + len(invitees))
+            )
+
+        # Ensure co-organizers are members before granting editor.
+        existing_member_ids = {current_user_id, *[invitee_id for invitee_id, _ in invitees]}
+        for editor_id, _username in editors:
+            if editor_id not in existing_member_ids:
+                db.execute(
+                    insert(event_memberships).values(
+                        event_id=created["id"],
+                        user_id=editor_id,
+                        role="member",
+                        joined_at=now,
+                    )
+                )
+                existing_member_ids.add(editor_id)
+                db.execute(
+                    update(events)
+                    .where(events.c.id == created["id"])
+                    .values(member_count=events.c.member_count + 1)
+                )
+            if editor_id == current_user_id:
+                continue
+            db.execute(
+                insert(event_editors).values(
+                    event_id=created["id"],
+                    user_id=editor_id,
+                    granted_by=current_user_id,
+                    granted_at=now,
+                )
+            )
+
         for channel_id in channel_ids:
             db.execute(
                 insert(event_tags).values(
@@ -539,6 +735,32 @@ def create_event(
                 )
             )
 
+        if direct_to_activity:
+            from app.services.events_plans import _sync_event_schedule_from_leading_plan
+
+            plan_row = (
+                db.execute(
+                    insert(event_plans)
+                    .values(
+                        event_id=created["id"],
+                        title=plan_title_value,
+                        description=plan_description_value,
+                        author_id=current_user_id,
+                        demand_consideration_note="",
+                        location_label=resolved_location_label,
+                        location_id=resolved_location_id,
+                        schedule_payload=schedule_value,
+                        plan_payload=plan_value,
+                        is_leading=True,
+                        status="approved",
+                    )
+                    .returning(event_plans.c.id)
+                )
+                .mappings()
+                .one()
+            )
+            _sync_event_schedule_from_leading_plan(db, created["id"], plan_row["id"])
+
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
@@ -551,6 +773,24 @@ def create_event(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Event slug already exists"
         ) from exc
+
+    # Reload after schedule sync may have updated the event.
+    created = _get_event_by_slug_row(db, created["slug"])
+
+    for invitee_id, _username in invitees:
+        create_notification(
+            db=db,
+            recipient_id=invitee_id,
+            actor_id=current_user_id,
+            kind="evt-invite",
+            surface="event",
+            subject_type="event",
+            subject_id=created["id"],
+            target_id=created["id"],
+            title=created["title"],
+            body=f"You were invited to an event: {created['title']}. Open /events/{created['slug']}",
+            href=f"/events/{created['slug']}",
+        )
 
     tags = _get_event_tags(db, created["id"])
     index_document(

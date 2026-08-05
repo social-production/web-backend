@@ -14,6 +14,7 @@ from app.models import (
     users,
 )
 from app.services.projects.software.constants import PR_STAGE_LABELS
+from app.utils.votes import can_cast_project_governance_vote
 
 _TABLES_READY = False
 
@@ -36,6 +37,7 @@ def _ensure_software_tables(db: Session) -> None:
             author_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
             stage VARCHAR(24) NOT NULL DEFAULT 'approval',
             merge_id VARCHAR(120) NULL,
+            merge_url TEXT NULL,
             merged_by_user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
             approval_threshold_percent NUMERIC(5, 2) NOT NULL DEFAULT 66.00,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -112,6 +114,11 @@ def _ensure_software_tables(db: Session) -> None:
 
     for statement in ddl:
         db.execute(text(statement))
+
+    # Existing installs created project_pull_requests before merge_url existed.
+    db.execute(
+        text("ALTER TABLE project_pull_requests ADD COLUMN IF NOT EXISTS merge_url TEXT NULL")
+    )
     db.commit()
     _TABLES_READY = True
 
@@ -151,6 +158,22 @@ def _ensure_member(db: Session, project_id: UUID, user_id: UUID) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only project members can perform this action",
         )
+
+
+def _ensure_can_cast_software_vote(
+    db: Session, project_row: Mapping[str, object], user_id: UUID
+) -> None:
+    if can_cast_project_governance_vote(
+        db,
+        project_id=project_row["id"],
+        user_id=user_id,
+        is_platform_tagged=bool(project_row.get("is_platform_tagged")),
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only project members can perform this action",
+    )
 
 
 def _is_merge_capable(db: Session, project_id: UUID, user_id: UUID) -> bool:

@@ -17,7 +17,7 @@ from app.models import (
     projects,
 )
 from app.services.governance_votes import compute_vote_summary
-from app.utils.votes import resolve_project_vote_population
+from app.utils.votes import can_cast_project_governance_vote, resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_VOTES = frozenset({"yes", "no"})
@@ -43,6 +43,22 @@ def _ensure_member(db: Session, project_id: UUID, user_id: UUID) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only project members can request or vote",
         )
+
+
+def _ensure_can_cast_settings_vote(
+    db: Session, project_row: Mapping[str, object], user_id: UUID
+) -> None:
+    if can_cast_project_governance_vote(
+        db,
+        project_id=project_row["id"],
+        user_id=user_id,
+        is_platform_tagged=bool(project_row.get("is_platform_tagged")),
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only project members can request or vote",
+    )
 
 
 def _project_vote_population(db: Session, project_row: Mapping[str, object]) -> int:
@@ -189,7 +205,7 @@ def vote_settings_change_request(
     vote: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_settings_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:

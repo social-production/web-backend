@@ -7,6 +7,8 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    detail_link_request_votes,
+    detail_link_requests,
     event_activities,
     event_activity_assignments,
     event_activity_roles,
@@ -31,11 +33,18 @@ from app.models import (
     project_edit_request_votes,
     project_edit_requests,
     project_memberships,
+    project_merge_capability_change_requests,
+    project_merge_capability_change_votes,
+    project_merge_capability_members,
     project_phase_change_requests,
     project_phase_change_votes,
     project_plan_criterion_ratings,
     project_plan_votes,
     project_plans,
+    project_pull_request_votes,
+    project_pull_requests,
+    project_repository_replacement_requests,
+    project_repository_replacement_votes,
     project_service_requests,
     project_update_request_votes,
     project_update_requests,
@@ -1011,6 +1020,416 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                     "voteEntityKind": "event",
                     "voteKindLabel": "edit",
                     "voteTargetId": str(r["id"]),
+                }
+            )
+
+    # Open link requests the viewer can vote on
+    link_rows = (
+        db.execute(
+            select(
+                detail_link_requests.c.id,
+                detail_link_requests.c.created_at,
+                detail_link_requests.c.summary,
+                detail_link_requests.c.request_type,
+                detail_link_requests.c.source_kind,
+                detail_link_requests.c.target_kind,
+                detail_link_requests.c.source_project_id,
+                detail_link_requests.c.source_event_id,
+                detail_link_requests.c.target_project_id,
+                detail_link_requests.c.target_event_id,
+            )
+            .where(detail_link_requests.c.status == "open")
+            .order_by(detail_link_requests.c.created_at.desc())
+            .limit(limit_per_type * 3)
+        )
+        .mappings()
+        .all()
+    )
+    if link_rows:
+        member_project_ids = {
+            row[0]
+            for row in db.execute(
+                select(project_memberships.c.project_id).where(
+                    project_memberships.c.user_id == current_user_id
+                )
+            ).all()
+        }
+        member_event_ids = {
+            row[0]
+            for row in db.execute(
+                select(event_memberships.c.event_id).where(
+                    event_memberships.c.user_id == current_user_id
+                )
+            ).all()
+        }
+        counts = _vote_counts(
+            detail_link_request_votes,
+            detail_link_request_votes.c.request_id,
+            [r["id"] for r in link_rows],
+        )
+        for r in link_rows:
+            source_is_project = r["source_kind"] == "project"
+            target_is_project = r["target_kind"] == "project"
+            source_id = r["source_project_id"] if source_is_project else r["source_event_id"]
+            target_id = r["target_project_id"] if target_is_project else r["target_event_id"]
+            viewer_on_source = (
+                source_id in member_project_ids
+                if source_is_project
+                else source_id in member_event_ids
+            )
+            viewer_on_target = (
+                target_id in member_project_ids
+                if target_is_project
+                else target_id in member_event_ids
+            )
+            if not viewer_on_source and not viewer_on_target:
+                continue
+
+            scopes: list[tuple[str, str, object]] = []
+            if viewer_on_source:
+                scopes.append(
+                    (
+                        "source",
+                        "project" if source_is_project else "event",
+                        source_id,
+                    )
+                )
+            if viewer_on_target:
+                scopes.append(
+                    (
+                        "target",
+                        "project" if target_is_project else "event",
+                        target_id,
+                    )
+                )
+
+            for vote_scope, entity_kind, entity_id in scopes:
+                already_voted = db.execute(
+                    select(detail_link_request_votes.c.vote).where(
+                        detail_link_request_votes.c.request_id == r["id"],
+                        detail_link_request_votes.c.voter_id == current_user_id,
+                        detail_link_request_votes.c.vote_scope == vote_scope,
+                    )
+                ).first()
+                if already_voted is not None:
+                    continue
+
+                if entity_kind == "project":
+                    subject = (
+                        db.execute(
+                            select(projects.c.slug, projects.c.title).where(
+                                projects.c.id == entity_id
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    surface = "projects"
+                else:
+                    subject = (
+                        db.execute(
+                            select(events.c.slug, events.c.title).where(events.c.id == entity_id)
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    surface = "events"
+                if subject is None:
+                    continue
+
+                counterpart_kind = r["target_kind"] if vote_scope == "source" else r["source_kind"]
+                counterpart_id = target_id if vote_scope == "source" else source_id
+                if counterpart_kind == "project":
+                    counterpart = (
+                        db.execute(select(projects.c.title).where(projects.c.id == counterpart_id))
+                        .mappings()
+                        .first()
+                    )
+                else:
+                    counterpart = (
+                        db.execute(select(events.c.title).where(events.c.id == counterpart_id))
+                        .mappings()
+                        .first()
+                    )
+                counterpart_title = counterpart["title"] if counterpart else "linked record"
+                c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+                request_type = str(r.get("request_type") or "create")
+                meta_prefix = "Sever link" if request_type == "sever" else "Link vote"
+                vote_items.append(
+                    {
+                        "kind": "vote",
+                        "id": f"{r['id']}:{vote_scope}",
+                        "subjectId": subject["slug"],
+                        "title": subject["title"],
+                        "href": (f"/{surface}/{subject['slug']}?tab=links&linkRequest={r['id']}"),
+                        "meta": f"{meta_prefix} · {counterpart_title}",
+                        "createdAt": _small_iso(r["created_at"]),
+                        "countLabel": _build_count_label(c["yes"], c["no"]),
+                        "voteEntityKind": entity_kind,
+                        "voteKindLabel": "link_sever" if request_type == "sever" else "link",
+                        "voteTargetId": str(r["id"]),
+                        "projectSlug": subject["slug"] if entity_kind == "project" else None,
+                        "eventSlug": subject["slug"] if entity_kind == "event" else None,
+                        "body": r["summary"],
+                    }
+                )
+
+    # Project software pull-request votes (approval + confirmation)
+    rows = (
+        db.execute(
+            select(
+                project_pull_requests.c.id,
+                project_pull_requests.c.created_at,
+                project_pull_requests.c.title,
+                project_pull_requests.c.summary,
+                project_pull_requests.c.stage,
+                projects.c.slug,
+                projects.c.title.label("project_title"),
+            )
+            .select_from(
+                project_pull_requests.join(
+                    projects, projects.c.id == project_pull_requests.c.project_id
+                )
+                .join(
+                    project_memberships,
+                    and_(
+                        project_memberships.c.project_id == projects.c.id,
+                        project_memberships.c.user_id == current_user_id,
+                    ),
+                )
+                .outerjoin(
+                    project_pull_request_votes,
+                    and_(
+                        project_pull_request_votes.c.request_id == project_pull_requests.c.id,
+                        project_pull_request_votes.c.voter_id == current_user_id,
+                    ),
+                )
+            )
+            .where(
+                projects.c.is_closed.is_(False),
+                project_pull_requests.c.stage.in_(("approval", "confirmation")),
+                project_pull_request_votes.c.voter_id.is_(None),
+            )
+            .limit(limit_per_type)
+        )
+        .mappings()
+        .all()
+    )
+    if rows:
+        counts = _vote_counts(
+            project_pull_request_votes,
+            project_pull_request_votes.c.request_id,
+            [r["id"] for r in rows],
+        )
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            needs_confirmation = r["stage"] == "confirmation"
+            vote_items.append(
+                {
+                    "kind": "vote",
+                    "id": str(r["id"]),
+                    "title": r["project_title"],
+                    "href": _vote_href("projects", r["slug"], "pull_request", r["id"], assess=True),
+                    "meta": (
+                        f"Merge confirmation · {r['title']}"
+                        if needs_confirmation
+                        else f"Pull request vote · {r['title']}"
+                    ),
+                    "createdAt": _small_iso(r["created_at"]),
+                    "countLabel": _build_count_label(c["yes"], c["no"]),
+                    "voteEntityKind": "project",
+                    "voteKindLabel": "pull_request",
+                    "voteTargetId": str(r["id"]),
+                    "body": r["summary"],
+                    "projectSlug": r["slug"],
+                }
+            )
+
+    # Project software merge-needed actions for merge-capable members
+    rows = (
+        db.execute(
+            select(
+                project_pull_requests.c.id,
+                project_pull_requests.c.created_at,
+                project_pull_requests.c.title,
+                project_pull_requests.c.summary,
+                projects.c.slug,
+                projects.c.title.label("project_title"),
+            )
+            .select_from(
+                project_pull_requests.join(
+                    projects, projects.c.id == project_pull_requests.c.project_id
+                ).join(
+                    project_merge_capability_members,
+                    and_(
+                        project_merge_capability_members.c.project_id == projects.c.id,
+                        project_merge_capability_members.c.user_id == current_user_id,
+                    ),
+                )
+            )
+            .where(
+                projects.c.is_closed.is_(False),
+                project_pull_requests.c.stage == "awaiting-merge",
+                project_pull_requests.c.merge_id.is_(None),
+            )
+            .limit(limit_per_type)
+        )
+        .mappings()
+        .all()
+    )
+    for r in rows:
+        vote_items.append(
+            {
+                "kind": "vote",
+                "id": f"merge:{r['id']}",
+                "title": r["project_title"],
+                "href": _vote_href("projects", r["slug"], "pull_request_merge", r["id"]),
+                "meta": f"Merge needed · {r['title']}",
+                "createdAt": _small_iso(r["created_at"]),
+                "countLabel": "Record merge",
+                "voteEntityKind": "project",
+                "voteKindLabel": "pull_request_merge",
+                "voteTargetId": str(r["id"]),
+                "body": r["summary"],
+                "projectSlug": r["slug"],
+                "voteSubKind": "criterion",
+            }
+        )
+
+    # Project merge-capability change votes
+    rows = (
+        db.execute(
+            select(
+                project_merge_capability_change_requests.c.id,
+                project_merge_capability_change_requests.c.created_at,
+                project_merge_capability_change_requests.c.action,
+                projects.c.slug,
+                projects.c.title.label("project_title"),
+                users.c.username.label("target_username"),
+            )
+            .select_from(
+                project_merge_capability_change_requests.join(
+                    projects, projects.c.id == project_merge_capability_change_requests.c.project_id
+                )
+                .join(
+                    project_memberships,
+                    and_(
+                        project_memberships.c.project_id == projects.c.id,
+                        project_memberships.c.user_id == current_user_id,
+                    ),
+                )
+                .outerjoin(
+                    users,
+                    users.c.id == project_merge_capability_change_requests.c.target_user_id,
+                )
+                .outerjoin(
+                    project_merge_capability_change_votes,
+                    and_(
+                        project_merge_capability_change_votes.c.request_id
+                        == project_merge_capability_change_requests.c.id,
+                        project_merge_capability_change_votes.c.voter_id == current_user_id,
+                    ),
+                )
+            )
+            .where(
+                projects.c.is_closed.is_(False),
+                project_merge_capability_change_requests.c.status == "open",
+                project_merge_capability_change_votes.c.voter_id.is_(None),
+            )
+            .limit(limit_per_type)
+        )
+        .mappings()
+        .all()
+    )
+    if rows:
+        counts = _vote_counts(
+            project_merge_capability_change_votes,
+            project_merge_capability_change_votes.c.request_id,
+            [r["id"] for r in rows],
+        )
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            action = "Grant" if r["action"] == "grant" else "Revoke"
+            target = r["target_username"] or "member"
+            vote_items.append(
+                {
+                    "kind": "vote",
+                    "id": str(r["id"]),
+                    "title": r["project_title"],
+                    "href": _vote_href("projects", r["slug"], "merge_capability", r["id"]),
+                    "meta": f"Merge capability · {action} {target}",
+                    "createdAt": _small_iso(r["created_at"]),
+                    "countLabel": _build_count_label(c["yes"], c["no"]),
+                    "voteEntityKind": "project",
+                    "voteKindLabel": "merge_capability",
+                    "voteTargetId": str(r["id"]),
+                    "projectSlug": r["slug"],
+                }
+            )
+
+    # Project repository replacement votes
+    rows = (
+        db.execute(
+            select(
+                project_repository_replacement_requests.c.id,
+                project_repository_replacement_requests.c.created_at,
+                project_repository_replacement_requests.c.repository_url,
+                project_repository_replacement_requests.c.reason,
+                projects.c.slug,
+                projects.c.title.label("project_title"),
+            )
+            .select_from(
+                project_repository_replacement_requests.join(
+                    projects, projects.c.id == project_repository_replacement_requests.c.project_id
+                )
+                .join(
+                    project_memberships,
+                    and_(
+                        project_memberships.c.project_id == projects.c.id,
+                        project_memberships.c.user_id == current_user_id,
+                    ),
+                )
+                .outerjoin(
+                    project_repository_replacement_votes,
+                    and_(
+                        project_repository_replacement_votes.c.request_id
+                        == project_repository_replacement_requests.c.id,
+                        project_repository_replacement_votes.c.voter_id == current_user_id,
+                    ),
+                )
+            )
+            .where(
+                projects.c.is_closed.is_(False),
+                project_repository_replacement_requests.c.status == "open",
+                project_repository_replacement_votes.c.voter_id.is_(None),
+            )
+            .limit(limit_per_type)
+        )
+        .mappings()
+        .all()
+    )
+    if rows:
+        counts = _vote_counts(
+            project_repository_replacement_votes,
+            project_repository_replacement_votes.c.request_id,
+            [r["id"] for r in rows],
+        )
+        for r in rows:
+            c = counts.get(str(r["id"]), {"yes": 0, "no": 0})
+            vote_items.append(
+                {
+                    "kind": "vote",
+                    "id": str(r["id"]),
+                    "title": r["project_title"],
+                    "href": _vote_href("projects", r["slug"], "repository_replacement", r["id"]),
+                    "meta": f"Repository replacement · {r['repository_url']}",
+                    "createdAt": _small_iso(r["created_at"]),
+                    "countLabel": _build_count_label(c["yes"], c["no"]),
+                    "voteEntityKind": "project",
+                    "voteKindLabel": "repository_replacement",
+                    "voteTargetId": str(r["id"]),
+                    "body": r["reason"],
+                    "projectSlug": r["slug"],
                 }
             )
 

@@ -22,16 +22,35 @@ from app.services.messages.conversations import (
     _get_conversation_row,
 )
 from app.services.messages.linked_chats import get_linked_chats
+from app.services.moderation.serialize import (
+    load_active_reports_for_targets,
+    moderation_body_for_comment,
+)
 
 
-def _serialize_message(row: Mapping[str, object], body: str) -> dict[str, object]:
+def _serialize_message(
+    row: Mapping[str, object],
+    body: str,
+    *,
+    report: dict[str, object] | None = None,
+) -> dict[str, object]:
+    moderation_state = str(row.get("moderation_state") or "visible")
+    moderation_reason = row.get("moderation_reason")
+    display_body = moderation_body_for_comment(
+        body=body,
+        moderation_state=moderation_state,
+        moderation_reason=str(moderation_reason) if moderation_reason else None,
+    )
     return {
         "id": row["id"],
         "conversation_id": row["conversation_id"],
         "sender_id": row["sender_id"],
-        "body": body,
+        "body": display_body,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "moderation_state": moderation_state,
+        "moderation_reason": moderation_reason,
+        "report": report,
     }
 
 
@@ -145,6 +164,12 @@ def get_messages_for_conversation(
     )
 
     items = []
+    reports_by_id = load_active_reports_for_targets(
+        db,
+        target_type="message",
+        target_ids=[row["id"] for row in rows],
+        current_user_id=current_user_id,
+    )
     for row in rows:
         try:
             plaintext = decrypt_message(row["encrypted_body"])
@@ -153,7 +178,13 @@ def get_messages_for_conversation(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Stored message could not be decrypted",
             ) from exc
-        items.append(_serialize_message(row, plaintext))
+        items.append(
+            _serialize_message(
+                row,
+                plaintext,
+                report=reports_by_id.get(row["id"]),
+            )
+        )
 
     return {
         "conversation_id": conversation_id,

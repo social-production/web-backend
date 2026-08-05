@@ -8,12 +8,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    event_editors,
     event_memberships,
     events,
 )
+from app.services.events.helpers import _get_signal_counts_db
 from app.services.events.phases.constants import EVENT_PHASE_ORDER
 from app.services.governance_votes import compute_vote_summary
-from app.utils.votes import resolve_event_vote_population
+from app.services.signal_gates import ensure_proposal_advancement_allowed
+from app.utils.votes import (
+    can_cast_event_governance_vote,
+    is_platform_event,
+    required_votes,
+    resolve_event_vote_population,
+)
 
 
 def _get_event_by_slug(db: Session, slug: str) -> Mapping[str, object]:
@@ -40,6 +48,49 @@ def _ensure_member(db: Session, event_id: UUID, user_id: UUID) -> None:
         )
 
 
+def _ensure_can_cast_governance_vote(
+    db: Session,
+    event_row: Mapping[str, object],
+    user_id: UUID,
+    *,
+    detail: str = "Only event members can request or vote",
+) -> None:
+    """Platform-tagged events open governance votes to any signed-in user."""
+    if can_cast_event_governance_vote(db, event_id=event_row["id"], user_id=user_id):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+def _is_event_organizer(db: Session, event_row: Mapping[str, object], user_id: UUID) -> bool:
+    if event_row.get("created_by") == user_id:
+        return True
+    row = db.execute(
+        select(event_editors.c.user_id).where(
+            event_editors.c.event_id == event_row["id"],
+            event_editors.c.user_id == user_id,
+        )
+    ).first()
+    return row is not None
+
+
+def _is_organizer_controlled(event_row: Mapping[str, object]) -> bool:
+    return event_row.get("governance") == "organizer_controlled"
+
+
+def _ensure_can_drive_lifecycle(
+    db: Session, event_row: Mapping[str, object], user_id: UUID
+) -> None:
+    """Only members can act, but organizer-controlled events restrict this to organizers."""
+    if _is_organizer_controlled(event_row):
+        if not _is_event_organizer(db, event_row, user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the creator or co-organizers can manage this organizer-controlled event",
+            )
+        return
+    _ensure_member(db, event_row["id"], user_id)
+
+
 def _compute_votes(
     db: Session,
     table,
@@ -47,6 +98,27 @@ def _compute_votes(
     member_count: int,
 ) -> dict[str, object]:
     return compute_vote_summary(db, table, request_id, member_count)
+
+
+def _ensure_event_proposal_signal_gate(
+    db: Session,
+    event_row: Mapping[str, object],
+    *,
+    current_phase_id: str,
+    change_kind: str,
+) -> None:
+    if current_phase_id != "proposal" or change_kind != "advance":
+        return
+
+    event_id = event_row["id"]
+    uses_platform = is_platform_event(db, event_id)
+    population = resolve_event_vote_population(db, event_id)
+    signal_counts = _get_signal_counts_db(db, event_id)
+    ensure_proposal_advancement_allowed(
+        signal_counts,
+        required_demand=required_votes(population),
+        uses_platform_vote_context=uses_platform,
+    )
 
 
 def _phase_change_kind_for_event(target_phase_id: str, current_phase_id: str) -> str:

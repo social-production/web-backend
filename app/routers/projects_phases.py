@@ -32,6 +32,8 @@ class PhaseChangeRequestCreateIn(BaseModel):
     close_outcome: str | None = Field(default=None, pattern="^(close|convert)$")
     conversion_target_mode: str | None = Field(default=None, max_length=32)
     conversion_target_subtype: str | None = Field(default=None, max_length=32)
+    conversion_successor_title: str | None = Field(default=None, max_length=200)
+    conversion_successor_description: str | None = Field(default=None)
 
 
 class PhaseChangeVoteIn(BaseModel):
@@ -62,6 +64,8 @@ class PhaseChangeRequestOut(BaseModel):
     close_outcome: str | None = None
     conversion_target_mode: str | None = None
     conversion_target_subtype: str | None = None
+    conversion_successor_title: str | None = None
+    conversion_successor_description: str | None = None
     reason: str
     author_id: UUID | None = None
     status: str
@@ -164,6 +168,8 @@ def create_project_phase_request(
         close_outcome=payload.close_outcome,
         conversion_target_mode=payload.conversion_target_mode,
         conversion_target_subtype=payload.conversion_target_subtype,
+        conversion_successor_title=payload.conversion_successor_title,
+        conversion_successor_description=payload.conversion_successor_description,
     )
 
 

@@ -25,7 +25,7 @@ from app.services.plan_criteria import (
     assessment_criteria_for_plan,
     parse_value_criterion_id,
 )
-from app.utils.votes import resolve_project_vote_population
+from app.utils.votes import can_cast_project_governance_vote, resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 
@@ -103,6 +103,21 @@ def _ensure_member(db: Session, project_id: UUID, user_id: UUID) -> None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can vote on plans"
         )
+
+
+def _ensure_can_cast_plan_vote(
+    db: Session, project_row: Mapping[str, object], user_id: UUID
+) -> None:
+    if can_cast_project_governance_vote(
+        db,
+        project_id=project_row["id"],
+        user_id=user_id,
+        is_platform_tagged=bool(project_row.get("is_platform_tagged")),
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can vote on plans"
+    )
 
 
 def _assert_plan_type_allowed(project_mode: str, plan_type: str) -> None:
@@ -205,6 +220,7 @@ def submit_project_plan(
     demand_consideration_note: str,
     total_cost_label: str | None,
     repository_url: str | None,
+    location_id: UUID | None,
     plan_payload: dict[str, object],
 ) -> dict[str, object]:
     project_row = _get_project_row_by_slug(db, project_slug)
@@ -228,6 +244,7 @@ def submit_project_plan(
                     repository_url=repository_url.strip() if repository_url else None,
                     demand_consideration_note=demand_consideration_note.strip(),
                     total_cost_label=total_cost_label.strip() if total_cost_label else None,
+                    location_id=location_id,
                     plan_payload=plan_payload,
                     is_leading=False,
                     status="open",
@@ -314,7 +331,7 @@ def cast_project_plan_vote(
     vote: str,
 ) -> dict[str, object]:
     project_row = _get_project_row_by_slug(db, project_slug)
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_plan_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -457,7 +474,7 @@ def cast_project_plan_value_vote(
     vote: str,
 ) -> dict[str, object]:
     project_row = _get_project_row_by_slug(db, project_slug)
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_plan_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -559,7 +576,7 @@ def cast_project_plan_criterion_rating(
     rating: int | None,
 ) -> dict[str, object]:
     project_row = _get_project_row_by_slug(db, project_slug)
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_plan_vote(db, project_row, current_user_id)
 
     plan_row = (
         db.execute(

@@ -40,6 +40,8 @@ messages = table(
     user_fk("sender_id", nullable=True, ondelete="SET NULL"),
     sa.Column("encrypted_body", sa.Text, nullable=False),
     sa.Column("encryption_version", sa.SmallInteger, nullable=False, server_default="1"),
+    sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
+    sa.Column("moderation_reason", sa.String(24), nullable=True),
     created_at(),
     updated_at(),
 )

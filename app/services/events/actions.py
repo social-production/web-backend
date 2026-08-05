@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -21,6 +22,7 @@ from app.models import (
     events,
     users,
 )
+from app.services.access_control import COMMUNITY_SCOPE_KIND, is_scope_member
 from app.services.activity_history import (
     ensure_activity_roles_unlocked,
     ensure_future_scheduled_start,
@@ -31,17 +33,14 @@ from app.services.events.helpers import (
     _get_signal_counts_db,
     _write_signal_counts_cache,
 )
+from app.services.events.phases.gates import _is_event_organizer, _is_organizer_controlled
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
+from app.utils.usernames import username_matches
+
+logger = logging.getLogger(__name__)
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
-_PLACEHOLDER_SCHEDULE_LABELS = frozenset({"tbd", "not specified", "to be determined"})
-EVENT_PHASES = (
-    ("proposal", 1, "P1", "Proposal", "Collect demand and define event values."),
-    ("event-plan", 2, "P2", "Event Plan", "Propose and approve event plans."),
-    ("activity", 3, "P3", "Activity", "Run event activities."),
-    ("closed", 4, "P4", "Closed", "Event is closed."),
-)
 
 
 def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
@@ -56,10 +55,20 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
     if existing is not None:
         return {"ok": True, "joined": True, "slug": event_row["slug"]}
 
-    if event_row["is_private"]:
+    audience = event_row["audience"]
+    if audience == "invite_only":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Private events are invite-only"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Invite-only events require an invitation"
         )
+    if audience == "private_community":
+        home_community_id = event_row["home_community_id"]
+        if home_community_id is None or not is_scope_member(
+            db, COMMUNITY_SCOPE_KIND, home_community_id, current_user_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Join the event's community to join this event",
+            )
 
     inserted = False
     try:
@@ -174,6 +183,18 @@ async def toggle_event_signal(
             detail=f"signal_type must be one of: {sorted(EVENT_SIGNAL_TYPES)}",
         )
 
+    if event_row["current_phase_id"] == "closed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Signals are closed for this event",
+        )
+
+    if _is_organizer_controlled(event_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events don't use proposal signals",
+        )
+
     existing = (
         db.execute(
             select(event_signals.c.id, event_signals.c.signal_type)
@@ -224,11 +245,15 @@ async def toggle_event_signal(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not toggle signal"
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Signal was already updated. Please refresh and try again.",
         ) from exc
 
     counts = _get_signal_counts_db(db, event_row["id"])
-    await _write_signal_counts_cache(cache, event_row["id"], counts)
+    try:
+        await _write_signal_counts_cache(cache, event_row["id"], counts)
+    except Exception:
+        logger.warning("signal cache write failed", exc_info=True)
 
     return {
         "ok": True,
@@ -246,12 +271,44 @@ def grant_event_editor(
     target_user_id: UUID,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
-    if event_row["created_by"] != current_user_id:
+    if not _is_event_organizer(db, event_row, current_user_id):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only event organizers can manage organizers",
         )
+    if target_user_id == event_row["created_by"]:
+        return {
+            "ok": True,
+            "slug": event_row["slug"],
+            "editor_user_id": target_user_id,
+            "granted": True,
+        }
 
-    _ensure_event_member(db, event_row["id"], target_user_id)
+    # Promote also invites: ensure membership before granting organizer authority.
+    existing_membership = db.execute(
+        select(event_memberships.c.event_id).where(
+            event_memberships.c.event_id == event_row["id"],
+            event_memberships.c.user_id == target_user_id,
+        )
+    ).first()
+    if existing_membership is None:
+        try:
+            db.execute(
+                insert(event_memberships).values(
+                    event_id=event_row["id"],
+                    user_id=target_user_id,
+                    role="member",
+                    joined_at=datetime.now(UTC),
+                )
+            )
+            db.execute(
+                update(events)
+                .where(events.c.id == event_row["id"])
+                .values(member_count=events.c.member_count + 1)
+            )
+            db.commit()
+        except IntegrityError:
+            db.rollback()
 
     try:
         db.execute(
@@ -281,9 +338,15 @@ def revoke_event_editor(
     target_user_id: UUID,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
-    if event_row["created_by"] != current_user_id:
+    if not _is_event_organizer(db, event_row, current_user_id):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Only event creator can manage editors"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only event organizers can manage organizers",
+        )
+    if target_user_id == event_row["created_by"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot revoke the event creator's organizer authority",
         )
 
     db.execute(
@@ -310,6 +373,12 @@ def add_event_value(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
+
+    if _is_organizer_controlled(event_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events don't use proposal values",
+        )
 
     normalized = label.strip()
     if not normalized:
@@ -360,6 +429,12 @@ def vote_event_value_importance(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
+
+    if _is_organizer_controlled(event_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events don't use proposal values",
+        )
 
     if importance < 1 or importance > 10:
         raise HTTPException(
@@ -453,9 +528,21 @@ def create_event_activity(
     is_online: bool = False,
     linked_plan_id: UUID | None = None,
     linked_plan_phase_id: str | None = None,
+    location_id: UUID | None = None,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
+
+    # Organizer-controlled events: only creator and co-organizers can create activities.
+    # Collaborative members create activities once the plan supports them; invitees can still
+    # sign up for roles either way.
+    if event_row.get("governance") == "organizer_controlled" and not _is_event_organizer(
+        db, event_row, current_user_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the creator or chosen organizers can create activities for this event",
+        )
 
     if ends_at <= scheduled_at:
         raise HTTPException(
@@ -463,6 +550,15 @@ def create_event_activity(
             detail="ends_at must be after scheduled_at",
         )
     ensure_future_scheduled_start(scheduled_at)
+
+    from app.services.locations.resolve import ensure_location_id
+
+    resolved_location_id, resolved_location_label = ensure_location_id(
+        db,
+        location_id=location_id,
+        location_label=location_label,
+        is_online=is_online,
+    )
 
     try:
         created = (
@@ -477,7 +573,8 @@ def create_event_activity(
                     scheduled_at=scheduled_at,
                     ends_at=ends_at,
                     is_online=is_online,
-                    location_label=location_label.strip(),
+                    location_label=resolved_location_label,
+                    location_id=resolved_location_id,
                     note=note.strip(),
                 )
                 .returning(
@@ -711,7 +808,14 @@ def share_event_with_user(
     username: str,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
-    _ensure_event_member(db, event_row["id"], current_user_id)
+    if event_row["is_private"]:
+        if not _is_event_organizer(db, event_row, current_user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only event organizers can invite people",
+            )
+    else:
+        _ensure_event_member(db, event_row["id"], current_user_id)
 
     normalized_username = username.strip()
     if not normalized_username:
@@ -719,7 +823,7 @@ def share_event_with_user(
 
     target_user = (
         db.execute(
-            select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+            select(users.c.id, users.c.username).where(username_matches(normalized_username))
         )
         .mappings()
         .first()

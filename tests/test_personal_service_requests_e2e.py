@@ -85,6 +85,7 @@ def run() -> None:
             },
         )
         assert created.status_code == 200, created.text
+        project_slug = created.json()["project"]["slug"]
 
         request_resp = client.post(
             f"/projects/{project_slug}/service-requests",

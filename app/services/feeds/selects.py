@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     String,
+    and_,
     cast,
     func,
     literal,
@@ -18,11 +19,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models import (
     comments,
+    event_signals,
     event_tags,
     events,
     help_request_tags,
     help_requests,
     posts,
+    project_activities,
+    project_signals,
     project_tags,
     projects,
     thread_tags,
@@ -33,7 +37,7 @@ from app.services.access_control import (
     closed_community_only_tag_condition,
 )
 
-VALID_SORTS = frozenset({"popular", "recent"})
+VALID_SORTS = frozenset({"trending", "recent", "popular", "oldest", "top"})
 
 EVENT_STAGE_LABEL_BY_PHASE_ID = {
     "proposal": "Proposal",
@@ -46,12 +50,75 @@ _ZERO_INT = literal(0, Integer)
 _EMPTY_ROLES = cast(literal("[]"), JSONB)
 
 
+def _project_signal_subqueries():
+    """Returns (support_count_subquery, oppose_count_subquery) correlated to `projects.c.id`."""
+    support = (
+        select(func.count())
+        .select_from(project_signals)
+        .where(
+            project_signals.c.project_id == projects.c.id,
+            project_signals.c.signal_type == "demand",
+        )
+        .correlate(projects)
+        .scalar_subquery()
+    )
+    oppose = (
+        select(func.count())
+        .select_from(project_signals)
+        .where(
+            project_signals.c.project_id == projects.c.id,
+            project_signals.c.signal_type == "opposition",
+        )
+        .correlate(projects)
+        .scalar_subquery()
+    )
+    return support, oppose
+
+
+def _event_signal_subqueries():
+    """Returns (support_count_subquery, oppose_count_subquery) correlated to `events.c.id`."""
+    support = (
+        select(func.count())
+        .select_from(event_signals)
+        .where(
+            event_signals.c.event_id == events.c.id,
+            event_signals.c.signal_type == "demand",
+        )
+        .correlate(events)
+        .scalar_subquery()
+    )
+    oppose = (
+        select(func.count())
+        .select_from(event_signals)
+        .where(
+            event_signals.c.event_id == events.c.id,
+            event_signals.c.signal_type == "opposition",
+        )
+        .correlate(events)
+        .scalar_subquery()
+    )
+    return support, oppose
+
+
+def _next_project_activity_scheduled_at():
+    return (
+        select(func.min(project_activities.c.scheduled_at))
+        .where(
+            project_activities.c.project_id == projects.c.id,
+            project_activities.c.scheduled_at.is_not(None),
+        )
+        .correlate(projects)
+        .scalar_subquery()
+    )
+
+
 def _projects_select(
     channel_ids: list[UUID] | None,
     community_ids: list[UUID] | None,
     *,
     public_only: bool = False,
 ):
+    support_count, oppose_count = _project_signal_subqueries()
     q = select(
         projects.c.id,
         literal("project").label("entity_type"),
@@ -63,6 +130,8 @@ def _projects_select(
         users.c.username.label("author_username"),
         users.c.profile_image_url.label("author_profile_image_url"),
         projects.c.signal_count,
+        support_count.label("support_count"),
+        oppose_count.label("oppose_count"),
         projects.c.vote_count,
         projects.c.comment_count,
         projects.c.member_count,
@@ -75,10 +144,12 @@ def _projects_select(
         projects.c.current_phase_id,
         projects.c.location_label,
         literal(False, Boolean).label("is_private"),
-        cast(null(), DateTime(timezone=True)).label("scheduled_at"),
+        _next_project_activity_scheduled_at().label("scheduled_at"),
         literal(None).label("time_label"),
         _EMPTY_ROLES.label("roles"),
-    ).where(projects.c.is_closed.is_(False))
+        projects.c.moderation_state,
+        projects.c.moderation_reason,
+    ).where(projects.c.is_closed.is_(False), projects.c.moderation_state != "removed")
     q = q.select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
 
     if channel_ids is not None:
@@ -116,6 +187,8 @@ def _threads_select(
         users.c.username.label("author_username"),
         users.c.profile_image_url.label("author_profile_image_url"),
         _ZERO_INT.label("signal_count"),
+        _ZERO_INT.label("support_count"),
+        _ZERO_INT.label("oppose_count"),
         threads.c.vote_count,
         threads.c.comment_count,
         _ZERO_INT.label("member_count"),
@@ -131,7 +204,9 @@ def _threads_select(
         cast(null(), DateTime(timezone=True)).label("scheduled_at"),
         literal(None).label("time_label"),
         _EMPTY_ROLES.label("roles"),
-    )
+        threads.c.moderation_state,
+        threads.c.moderation_reason,
+    ).where(threads.c.moderation_state != "removed")
     q = q.select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
 
     if channel_ids is not None:
@@ -158,6 +233,8 @@ def _events_select(
     *,
     public_only: bool = False,
 ):
+    total_support, total_oppose = _event_signal_subqueries()
+    support_count, oppose_count = _event_signal_subqueries()
     q = select(
         events.c.id,
         literal("event").label("entity_type"),
@@ -168,7 +245,9 @@ def _events_select(
         events.c.created_by.label("author_id"),
         users.c.username.label("author_username"),
         users.c.profile_image_url.label("author_profile_image_url"),
-        _ZERO_INT.label("signal_count"),
+        (total_support + total_oppose).label("signal_count"),
+        support_count.label("support_count"),
+        oppose_count.label("oppose_count"),
         events.c.vote_count,
         events.c.comment_count,
         events.c.member_count,
@@ -184,7 +263,18 @@ def _events_select(
         events.c.scheduled_at,
         events.c.time_label,
         _EMPTY_ROLES.label("roles"),
-    ).where(events.c.is_private.is_(False))
+        events.c.moderation_state,
+        events.c.moderation_reason,
+    ).where(
+        events.c.moderation_state != "removed",
+        or_(
+            events.c.is_private.is_(False),
+            and_(
+                events.c.audience == "private_community",
+                events.c.home_community_id.in_(community_ids or []),
+            ),
+        ),
+    )
     q = q.select_from(events.outerjoin(users, users.c.id == events.c.created_by))
 
     if channel_ids is not None:
@@ -211,33 +301,41 @@ def _help_requests_select(
     *,
     public_only: bool = False,
 ):
-    q = select(
-        help_requests.c.id,
-        literal("help_request").label("entity_type"),
-        literal(None).label("slug"),
-        help_requests.c.title,
-        help_requests.c.body,
-        literal(None).label("audience"),
-        help_requests.c.author_id,
-        users.c.username.label("author_username"),
-        users.c.profile_image_url.label("author_profile_image_url"),
-        _ZERO_INT.label("signal_count"),
-        help_requests.c.vote_count,
-        help_requests.c.comment_count,
-        _ZERO_INT.label("member_count"),
-        _ZERO_INT.label("going_count"),
-        help_requests.c.created_at.label("last_activity_at"),
-        help_requests.c.created_at,
-        literal(None).label("project_mode"),
-        literal(None).label("project_subtype"),
-        literal(None).label("stage_label"),
-        literal(None).label("current_phase_id"),
-        help_requests.c.location_label,
-        literal(False, Boolean).label("is_private"),
-        help_requests.c.needed_at.label("scheduled_at"),
-        help_requests.c.schedule_label.label("time_label"),
-        help_requests.c.roles,
-    ).select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
+    q = (
+        select(
+            help_requests.c.id,
+            literal("help_request").label("entity_type"),
+            literal(None).label("slug"),
+            help_requests.c.title,
+            help_requests.c.body,
+            literal(None).label("audience"),
+            help_requests.c.author_id,
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("support_count"),
+            _ZERO_INT.label("oppose_count"),
+            help_requests.c.vote_count,
+            help_requests.c.comment_count,
+            _ZERO_INT.label("member_count"),
+            _ZERO_INT.label("going_count"),
+            help_requests.c.created_at.label("last_activity_at"),
+            help_requests.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            literal(None).label("current_phase_id"),
+            help_requests.c.location_label,
+            literal(False, Boolean).label("is_private"),
+            help_requests.c.needed_at.label("scheduled_at"),
+            help_requests.c.schedule_label.label("time_label"),
+            help_requests.c.roles,
+            help_requests.c.moderation_state,
+            help_requests.c.moderation_reason,
+        )
+        .where(help_requests.c.moderation_state != "removed")
+        .select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
+    )
 
     if channel_ids is not None:
         tag_conditions = []
@@ -276,6 +374,8 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("support_count"),
+            _ZERO_INT.label("oppose_count"),
             posts.c.vote_count,
             posts.c.comment_count,
             _ZERO_INT.label("member_count"),
@@ -290,10 +390,12 @@ def _posts_select_for_followed(followed_user_ids: list[UUID]):
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            posts.c.moderation_state,
+            posts.c.moderation_reason,
             literal("following").label("feed_source"),
         )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
-        .where(posts.c.author_id.in_(followed_user_ids))
+        .where(posts.c.author_id.in_(followed_user_ids), posts.c.moderation_state != "removed")
     )
 
 
@@ -312,6 +414,8 @@ def _posts_select_discovery(excluded_author_ids: list[UUID]):
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("support_count"),
+            _ZERO_INT.label("oppose_count"),
             posts.c.vote_count,
             posts.c.comment_count,
             _ZERO_INT.label("member_count"),
@@ -326,12 +430,15 @@ def _posts_select_discovery(excluded_author_ids: list[UUID]):
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            posts.c.moderation_state,
+            posts.c.moderation_reason,
             literal("discovery").label("feed_source"),
         )
         .select_from(posts.outerjoin(users, users.c.id == posts.c.author_id))
         .where(
             posts.c.audience == "public",
             posts.c.author_id.not_in(excluded_author_ids),
+            posts.c.moderation_state != "removed",
         )
     )
 
@@ -339,6 +446,7 @@ def _posts_select_discovery(excluded_author_ids: list[UUID]):
 def _projects_select_for_followed(followed_user_ids: list[UUID]):
     if not followed_user_ids:
         return None
+    support_count, oppose_count = _project_signal_subqueries()
     return (
         select(
             projects.c.id,
@@ -351,6 +459,8 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             projects.c.signal_count,
+            support_count.label("support_count"),
+            oppose_count.label("oppose_count"),
             projects.c.vote_count,
             projects.c.comment_count,
             projects.c.member_count,
@@ -365,12 +475,15 @@ def _projects_select_for_followed(followed_user_ids: list[UUID]):
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            projects.c.moderation_state,
+            projects.c.moderation_reason,
             literal("following").label("feed_source"),
         )
         .select_from(projects.outerjoin(users, users.c.id == projects.c.author_id))
         .where(
             projects.c.author_id.in_(followed_user_ids),
             projects.c.is_closed.is_(False),
+            projects.c.moderation_state != "removed",
         )
     )
 
@@ -390,6 +503,8 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("support_count"),
+            _ZERO_INT.label("oppose_count"),
             threads.c.vote_count,
             threads.c.comment_count,
             _ZERO_INT.label("member_count"),
@@ -404,10 +519,15 @@ def _threads_select_for_followed(followed_user_ids: list[UUID]):
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            threads.c.moderation_state,
+            threads.c.moderation_reason,
             literal("following").label("feed_source"),
         )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
-        .where(threads.c.author_id.in_(followed_user_ids))
+        .where(
+            threads.c.author_id.in_(followed_user_ids),
+            threads.c.moderation_state != "removed",
+        )
     )
 
 
@@ -426,6 +546,8 @@ def _threads_select_discovery(excluded_author_ids: list[UUID]):
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("support_count"),
+            _ZERO_INT.label("oppose_count"),
             threads.c.vote_count,
             threads.c.comment_count,
             _ZERO_INT.label("member_count"),
@@ -440,10 +562,15 @@ def _threads_select_discovery(excluded_author_ids: list[UUID]):
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            threads.c.moderation_state,
+            threads.c.moderation_reason,
             literal("discovery").label("feed_source"),
         )
         .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
-        .where(threads.c.author_id.not_in(excluded_author_ids))
+        .where(
+            threads.c.author_id.not_in(excluded_author_ids),
+            threads.c.moderation_state != "removed",
+        )
     )
 
 
@@ -481,6 +608,8 @@ def _comment_activity_select(
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("support_count"),
+            _ZERO_INT.label("oppose_count"),
             comments.c.vote_count.label("vote_count"),
             reply_count_subq.label("comment_count"),
             _ZERO_INT.label("member_count"),
@@ -495,12 +624,15 @@ def _comment_activity_select(
             literal(False, Boolean).label("is_private"),
             cast(null(), DateTime(timezone=True)).label("scheduled_at"),
             literal(None).label("time_label"),
+            comments.c.moderation_state,
+            comments.c.moderation_reason,
             literal(feed_source).label("feed_source"),
         )
         .select_from(join_clause)
         .where(
             comments.c.subject_type == subject_type,
             comments.c.author_id.in_(followed_user_ids),
+            comments.c.moderation_state != "removed",
             extra_where,
         )
     )
@@ -526,7 +658,7 @@ def _comments_select_for_followed(
                 comments.outerjoin(users, users.c.id == comments.c.author_id).join(
                     threads, comments.c.subject_id == threads.c.id
                 ),
-                literal(True),
+                threads.c.moderation_state != "removed",
                 followed_user_ids,
                 feed_source=feed_source,
             ),
@@ -538,9 +670,12 @@ def _comments_select_for_followed(
                 comments.outerjoin(users, users.c.id == comments.c.author_id).join(
                     posts, comments.c.subject_id == posts.c.id
                 ),
-                or_(
-                    posts.c.audience == "public",
-                    posts.c.author_id.in_(visible_post_author_ids),
+                and_(
+                    or_(
+                        posts.c.audience == "public",
+                        posts.c.author_id.in_(visible_post_author_ids),
+                    ),
+                    posts.c.moderation_state != "removed",
                 ),
                 followed_user_ids,
                 feed_source=feed_source,
@@ -553,7 +688,10 @@ def _comments_select_for_followed(
                 comments.outerjoin(users, users.c.id == comments.c.author_id).join(
                     projects, comments.c.subject_id == projects.c.id
                 ),
-                projects.c.is_closed.is_(False),
+                and_(
+                    projects.c.is_closed.is_(False),
+                    projects.c.moderation_state != "removed",
+                ),
                 followed_user_ids,
                 feed_source=feed_source,
             ),
@@ -565,7 +703,10 @@ def _comments_select_for_followed(
                 comments.outerjoin(users, users.c.id == comments.c.author_id).join(
                     events, comments.c.subject_id == events.c.id
                 ),
-                events.c.is_private.is_(False),
+                and_(
+                    events.c.is_private.is_(False),
+                    events.c.moderation_state != "removed",
+                ),
                 followed_user_ids,
                 feed_source=feed_source,
             ),
@@ -577,7 +718,7 @@ def _comments_select_for_followed(
                 comments.outerjoin(users, users.c.id == comments.c.author_id).join(
                     help_requests, comments.c.subject_id == help_requests.c.id
                 ),
-                literal(True),
+                help_requests.c.moderation_state != "removed",
                 followed_user_ids,
                 feed_source=feed_source,
             ),
@@ -589,6 +730,8 @@ def _comments_select_for_followed(
 def _events_select_for_followed(followed_user_ids: list[UUID]):
     if not followed_user_ids:
         return None
+    total_support, total_oppose = _event_signal_subqueries()
+    support_count, oppose_count = _event_signal_subqueries()
     return (
         select(
             events.c.id,
@@ -600,7 +743,9 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
             events.c.created_by.label("author_id"),
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
-            _ZERO_INT.label("signal_count"),
+            (total_support + total_oppose).label("signal_count"),
+            support_count.label("support_count"),
+            oppose_count.label("oppose_count"),
             events.c.vote_count,
             events.c.comment_count,
             events.c.member_count,
@@ -615,12 +760,65 @@ def _events_select_for_followed(followed_user_ids: list[UUID]):
             events.c.is_private,
             events.c.scheduled_at,
             events.c.time_label,
+            events.c.moderation_state,
+            events.c.moderation_reason,
             literal("following").label("feed_source"),
         )
         .select_from(events.outerjoin(users, users.c.id == events.c.created_by))
         .where(
             events.c.created_by.in_(followed_user_ids),
             events.c.is_private.is_(False),
+            events.c.moderation_state != "removed",
+        )
+    )
+
+
+def _events_select_for_member(member_event_ids: list[UUID]):
+    """Private-audience events (invite-only or private-community) the viewer belongs to.
+
+    Used by the personal feed so invited/authorized members can discover events
+    even when they don't follow the organizer.
+    """
+    if not member_event_ids:
+        return None
+    total_support, total_oppose = _event_signal_subqueries()
+    support_count, oppose_count = _event_signal_subqueries()
+    return (
+        select(
+            events.c.id,
+            literal("event").label("entity_type"),
+            events.c.slug,
+            events.c.title,
+            events.c.description.label("body"),
+            literal(None).label("audience"),
+            events.c.created_by.label("author_id"),
+            users.c.username.label("author_username"),
+            users.c.profile_image_url.label("author_profile_image_url"),
+            (total_support + total_oppose).label("signal_count"),
+            support_count.label("support_count"),
+            oppose_count.label("oppose_count"),
+            events.c.vote_count,
+            events.c.comment_count,
+            events.c.member_count,
+            events.c.going_count,
+            events.c.last_activity_at,
+            events.c.created_at,
+            literal(None).label("project_mode"),
+            literal(None).label("project_subtype"),
+            literal(None).label("stage_label"),
+            events.c.current_phase_id,
+            events.c.location_label,
+            events.c.is_private,
+            events.c.scheduled_at,
+            events.c.time_label,
+            events.c.moderation_state,
+            events.c.moderation_reason,
+            literal("member").label("feed_source"),
+        )
+        .select_from(events.outerjoin(users, users.c.id == events.c.created_by))
+        .where(
+            events.c.id.in_(member_event_ids),
+            events.c.moderation_state != "removed",
         )
     )
 
@@ -640,6 +838,8 @@ def _help_requests_select_for_followed(followed_user_ids: list[UUID]):
             users.c.username.label("author_username"),
             users.c.profile_image_url.label("author_profile_image_url"),
             _ZERO_INT.label("signal_count"),
+            _ZERO_INT.label("support_count"),
+            _ZERO_INT.label("oppose_count"),
             help_requests.c.vote_count,
             help_requests.c.comment_count,
             _ZERO_INT.label("member_count"),
@@ -654,8 +854,13 @@ def _help_requests_select_for_followed(followed_user_ids: list[UUID]):
             literal(False, Boolean).label("is_private"),
             help_requests.c.needed_at.label("scheduled_at"),
             help_requests.c.schedule_label.label("time_label"),
+            help_requests.c.moderation_state,
+            help_requests.c.moderation_reason,
             literal("following").label("feed_source"),
         )
         .select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
-        .where(help_requests.c.author_id.in_(followed_user_ids))
+        .where(
+            help_requests.c.author_id.in_(followed_user_ids),
+            help_requests.c.moderation_state != "removed",
+        )
     )

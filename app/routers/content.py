@@ -26,7 +26,7 @@ router = APIRouter(prefix="/content", tags=["content"])
 class ThreadCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    slug: str = Field(min_length=3, max_length=120)
+    slug: str | None = Field(default=None, min_length=3, max_length=120)
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1)
     channel_slugs: list[str] = Field(
@@ -52,6 +52,10 @@ class DiscussionCommentOut(BaseModel):
     active_vote: int = 0
     created_at: object
     replies: list[DiscussionCommentOut] = Field(default_factory=list)
+    report: dict[str, object] | None = None
+    moderation_state: str | None = None
+    moderationState: str | None = None
+    isUnderReview: bool = False
 
 
 class TagRefOut(BaseModel):
@@ -85,6 +89,12 @@ class ThreadOut(BaseModel):
     channel_tags: list[ChannelTagOut] = Field(default_factory=list)
     community_tags: list[ChannelTagOut] = Field(default_factory=list)
     discussion: list[DiscussionCommentOut] = Field(default_factory=list)
+    report: dict[str, object] | None = None
+    moderationState: str | None = None
+    moderation_state: str | None = None
+    moderationReason: str | None = None
+    isRemovedByReport: bool = False
+    isUnderReview: bool = False
 
 
 class PostOut(BaseModel):
@@ -100,6 +110,12 @@ class PostOut(BaseModel):
     created_at: object
     updated_at: object
     discussion: list[DiscussionCommentOut] = Field(default_factory=list)
+    report: dict[str, object] | None = None
+    moderationState: str | None = None
+    moderation_state: str | None = None
+    moderationReason: str | None = None
+    isRemovedByReport: bool = False
+    isUnderReview: bool = False
 
 
 class ThreadResponse(BaseModel):
@@ -122,7 +138,9 @@ class HelpRequestCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     body: str = Field(min_length=1)
     location_label: str = Field(min_length=1, max_length=200)
+    location_id: UUID | None = None
     needed_at: datetime
+    ends_at: datetime | None = None
     roles: list[HelpRequestRole] = Field(min_length=1)
     channel_slugs: list[str] = Field(default_factory=list)
     community_slugs: list[str] = Field(default_factory=list)
@@ -146,6 +164,7 @@ class HelpRequestOut(BaseModel):
     location_label: str
     schedule_label: str
     needed_at: object
+    ends_at: object | None = None
     roles: list[HelpRequestRoleOut]
     vote_count: int = 0
     comment_count: int = 0
@@ -154,6 +173,12 @@ class HelpRequestOut(BaseModel):
     channel_tags: list[TagRefOut] = Field(default_factory=list)
     community_tags: list[TagRefOut] = Field(default_factory=list)
     created_at: object
+    report: dict[str, object] | None = None
+    moderationState: str | None = None
+    moderation_state: str | None = None
+    moderationReason: str | None = None
+    isRemovedByReport: bool = False
+    isUnderReview: bool = False
 
 
 class HelpRequestActionResponse(BaseModel):
@@ -175,7 +200,6 @@ def create_new_thread(
     return create_thread(
         db,
         current_user_id,
-        payload.slug,
         payload.title,
         payload.body,
         payload.channel_slugs,
@@ -223,9 +247,11 @@ def create_new_help_request(
         body=payload.body,
         location_label=payload.location_label,
         needed_at=payload.needed_at,
+        ends_at=payload.ends_at,
         roles=[role.model_dump() for role in payload.roles],
         channel_slugs=payload.channel_slugs,
         community_slugs=payload.community_slugs,
+        location_id=payload.location_id,
     )
 
 

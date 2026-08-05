@@ -2,16 +2,15 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import not_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
     channels,
     communities,
     scope_memberships,
-    user_follows,
-    users,
 )
+from app.services.people_suggestions import get_ranked_people_suggestions
 
 
 def _get_platform_directory_item(
@@ -119,36 +118,4 @@ def _get_community_directory_items(
 
 
 def _get_suggested_contacts(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
-    followed_subquery = (
-        select(user_follows.c.followed_id)
-        .where(
-            user_follows.c.follower_id == current_user_id,
-            user_follows.c.status == "accepted",
-        )
-        .subquery("followed_users")
-    )
-
-    rows = (
-        db.execute(
-            select(users.c.id, users.c.username, users.c.bio, users.c.profile_image_url)
-            .where(
-                users.c.is_active.is_(True),
-                users.c.id != current_user_id,
-                not_(users.c.id.in_(select(followed_subquery.c.followed_id))),
-            )
-            .order_by(users.c.username.asc())
-            .limit(8)
-        )
-        .mappings()
-        .all()
-    )
-
-    return [
-        {
-            "id": row["id"],
-            "username": row["username"],
-            "bio": row["bio"],
-            "profileImageUrl": row["profile_image_url"],
-        }
-        for row in rows
-    ]
+    return get_ranked_people_suggestions(db, current_user_id, limit=24)

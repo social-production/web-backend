@@ -17,6 +17,7 @@ from app.models import (
     messages,
     users,
 )
+from app.utils.usernames import username_matches
 
 
 def _serialize_conversation(
@@ -42,11 +43,7 @@ def _serialize_conversation(
 
 def _get_user_by_username(db: Session, username: str) -> Mapping[str, object]:
     row = (
-        db.execute(
-            select(users.c.id, users.c.username)
-            .where(users.c.username == username.strip().lower())
-            .limit(1)
-        )
+        db.execute(select(users.c.id, users.c.username).where(username_matches(username)).limit(1))
         .mappings()
         .first()
     )

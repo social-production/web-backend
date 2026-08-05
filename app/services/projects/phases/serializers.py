@@ -15,6 +15,8 @@ def _serialize_phase_request(
         "close_outcome": row["close_outcome"],
         "conversion_target_mode": row["conversion_target_mode"],
         "conversion_target_subtype": row["conversion_target_subtype"],
+        "conversion_successor_title": row.get("conversion_successor_title"),
+        "conversion_successor_description": row.get("conversion_successor_description"),
         "reason": row["reason"],
         "author_id": row["author_id"],
         "status": row["status"],

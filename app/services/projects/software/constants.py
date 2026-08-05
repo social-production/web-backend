@@ -8,9 +8,9 @@ VALID_VOTES = frozenset({"yes", "no"})
 VALID_ACTIONS = frozenset({"grant", "revoke"})
 
 PR_STAGE_LABELS: dict[str, str] = {
-    "approval": "Approval",
-    "awaiting-merge": "Awaiting merge",
-    "confirmation": "Awaiting confirmation",
+    "approval": "Vote needed",
+    "awaiting-merge": "Merge needed",
+    "confirmation": "Merge confirmation needed",
     "confirmed": "Merged",
     "rejected": "Rejected",
     "replaced": "Replaced",

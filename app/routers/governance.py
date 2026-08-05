@@ -42,6 +42,9 @@ class CommentOut(BaseModel):
     active_vote: int = 0
     created_at: object
     updated_at: object
+    moderation_state: str = "visible"
+    moderation_reason: str | None = None
+    report: dict[str, object] | None = None
     replies: list[CommentOut] = Field(default_factory=list)
 
 
@@ -66,7 +69,7 @@ class VoteCastResponse(BaseModel):
 class ReportSubmitRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    target_type: str = Field(pattern="^(project|thread|post|comment)$")
+    target_type: str = Field(pattern="^(project|thread|post|comment|event|help_request|message)$")
     target_id: UUID
     reason: str = Field(pattern="^(spam|serious-harm)$")
     description: str = Field(min_length=1)
@@ -83,7 +86,18 @@ class ReportVoteSummaryOut(BaseModel):
     no_count: int
     active_vote: str | None = None
     eligible_voter_count: int
+    audience_size: int = 0
+    total_votes: int = 0
     votes_required: int
+    required_yes_share: float = 0.66
+    delete_yes_share: float = 0.66
+    hide_yes_share: float = 0.66
+    delete_quorum: int = 1
+    hide_quorum: int = 1
+    removal_quorum: int = 1
+    restriction_quorum: int = 1
+    restriction_votes_required: int = 1
+    confirming_votes_required: int | None = None
 
 
 class ReportOut(BaseModel):

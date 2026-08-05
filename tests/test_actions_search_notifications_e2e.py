@@ -87,6 +87,7 @@ def run() -> None:
         )
         assert project_create.status_code == 200, project_create.text
         project_id = UUID(project_create.json()["project"]["id"])
+        project_slug = project_create.json()["project"]["slug"]
 
         event_create = client.post(
             "/events",
@@ -103,6 +104,7 @@ def run() -> None:
         )
         assert event_create.status_code == 200, event_create.text
         event_id = UUID(event_create.json()["event"]["id"])
+        event_slug = event_create.json()["event"]["slug"]
 
         join_project = client.post(
             f"/projects/{project_slug}/join",

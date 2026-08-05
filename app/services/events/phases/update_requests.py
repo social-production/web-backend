@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -11,16 +12,24 @@ from app.models import (
     event_update_request_votes,
     event_update_requests,
     event_updates,
+    events,
 )
 from app.services.events.phases.constants import VALID_VOTES
 from app.services.events.phases.gates import (
     _compute_votes,
+    _ensure_can_cast_governance_vote,
     _ensure_member,
     _event_vote_population,
     _get_event_by_slug,
 )
 from app.services.events.phases.serializers import _serialize_update_request
 from app.services.meaningful_actions import record_meaningful_action
+
+
+def _bump_event_recent_activity(db: Session, event_id: UUID) -> None:
+    db.execute(
+        update(events).where(events.c.id == event_id).values(last_activity_at=datetime.now(UTC))
+    )
 
 
 def create_update_request(
@@ -71,6 +80,7 @@ def create_update_request(
                     author_id=created["author_id"],
                 )
             )
+            _bump_event_recent_activity(db, event_row["id"])
             created = {**created, "status": "approved"}
             executed = True
 
@@ -120,7 +130,7 @@ def vote_update_request(
     vote: str,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_cast_governance_vote(db, event_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -193,6 +203,7 @@ def vote_update_request(
                     author_id=request_row["author_id"],
                 )
             )
+            _bump_event_recent_activity(db, event_row["id"])
             executed = True
         elif not summary.get("can_still_pass", True):
             db.execute(

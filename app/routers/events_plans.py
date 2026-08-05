@@ -26,6 +26,8 @@ class EventPlanSubmitRequest(BaseModel):
     description: str = Field(min_length=1)
     demand_consideration_note: str = Field(default="")
     location_label: str = Field(min_length=1, max_length=160)
+    location_id: UUID | None = None
+    is_online: bool = False
     schedule_payload: dict[str, object] = Field(default_factory=dict)
     plan_payload: dict[str, object] = Field(default_factory=dict)
 
@@ -112,6 +114,8 @@ def submit_plan(
         location_label=payload.location_label,
         schedule_payload=payload.schedule_payload,
         plan_payload=payload.plan_payload,
+        location_id=payload.location_id,
+        is_online=payload.is_online,
     )
 
 

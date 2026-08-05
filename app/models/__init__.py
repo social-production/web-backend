@@ -50,6 +50,8 @@ from app.models.governance import (
     governance_decision_history,
     platform_board_memberships,
 )
+from app.models.links import detail_link_request_votes, detail_link_requests, detail_links
+from app.models.locations import locations
 from app.models.messages import conversation_members, conversations, messages, subject_chat_reads
 from app.models.notifications import notifications
 from app.models.projects import (
@@ -59,6 +61,7 @@ from app.models.projects import (
     project_conversions,
     project_edit_request_votes,
     project_edit_requests,
+    project_inherited_decisions,
     project_link_request_votes,
     project_link_requests,
     project_links,
@@ -167,6 +170,7 @@ __all__ = [
     "project_repository_replacement_requests",
     "project_repository_replacement_votes",
     "project_conversions",
+    "project_inherited_decisions",
     "events",
     "event_memberships",
     "event_editors",
@@ -198,4 +202,8 @@ __all__ = [
     "platform_board_memberships",
     "board_standing_votes",
     "governance_decision_history",
+    "detail_links",
+    "detail_link_requests",
+    "detail_link_request_votes",
+    "locations",
 ]

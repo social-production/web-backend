@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -11,17 +12,27 @@ from app.models import (
     project_update_request_votes,
     project_update_requests,
     project_updates,
+    projects,
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.projects.phases.constants import VALID_VOTES
 from app.services.projects.phases.gates import (
     _compute_simple_vote_summary,
+    _ensure_can_cast_governance_vote,
     _ensure_governance_requests_allowed,
     _ensure_member,
     _get_project_by_slug,
     _project_vote_population,
 )
 from app.services.projects.phases.serializers import _serialize_update_request
+
+
+def _bump_project_recent_activity(db: Session, project_id: UUID) -> None:
+    db.execute(
+        update(projects)
+        .where(projects.c.id == project_id)
+        .values(last_activity_at=datetime.now(UTC))
+    )
 
 
 def create_project_update_request(
@@ -73,6 +84,7 @@ def create_project_update_request(
                     author_id=created["author_id"],
                 )
             )
+            _bump_project_recent_activity(db, project_row["id"])
             created = {**created, "status": "approved"}
             executed = True
 
@@ -99,7 +111,7 @@ def vote_project_update_request(
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_governance_requests_allowed(project_row["project_mode"])
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_governance_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -171,6 +183,7 @@ def vote_project_update_request(
                     author_id=request_row["author_id"],
                 )
             )
+            _bump_project_recent_activity(db, project_row["id"])
             executed = True
         elif not summary.get("can_still_pass", True):
             db.execute(

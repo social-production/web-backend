@@ -51,6 +51,9 @@ PROJECT_PAGE_DATA_KEYS = {
     "isRemovedByReport",
     "discussionNote",
     "discussion",
+    "isUnderReview",
+    "moderationReason",
+    "moderationState",
 }
 
 
@@ -115,6 +118,7 @@ def run() -> None:
             },
         )
         assert create_resp.status_code == 200, create_resp.text
+        project_slug = create_resp.json()["project"]["slug"]
 
         detail_resp = client.get(f"/projects/{project_slug}", headers=headers)
         assert detail_resp.status_code == 200, detail_resp.text

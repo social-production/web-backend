@@ -23,7 +23,10 @@ from app.services.access_control import (
 from app.services.content.scopes import _resolve_channel_ids, _resolve_community_ids
 from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.moderation.serialize import load_active_report
+from app.services.moderation.visibility import assert_not_removed
 from app.services.search import index_document
+from app.utils.slugs import allocate_unique_slug
 
 VALID_AUDIENCE = frozenset({"public", "followers"})
 
@@ -131,17 +134,12 @@ def _get_thread_tags_enriched(db: Session, thread_id: UUID) -> tuple[list[dict],
 def create_thread(
     db: Session,
     current_user_id: UUID,
-    slug: str,
     title: str,
     body: str,
     channel_slugs: list[str],
     community_slugs: list[str] | None = None,
 ) -> dict[str, object]:
-    normalized_slug = slug.strip().lower()
-    if not normalized_slug:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
-        )
+    normalized_slug = allocate_unique_slug(db, threads, title)
 
     community_slugs = community_slugs or []
     if not channel_slugs and not community_slugs:
@@ -245,6 +243,8 @@ def get_thread_by_slug(
                 threads.c.last_activity_at,
                 threads.c.created_at,
                 threads.c.updated_at,
+                threads.c.moderation_state,
+                threads.c.moderation_reason,
                 users.c.username.label("author_username"),
             )
             .select_from(threads.outerjoin(users, users.c.id == threads.c.author_id))
@@ -256,6 +256,7 @@ def get_thread_by_slug(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
 
+    assert_not_removed(db, "thread", row["id"])
     assert_can_view_entity(db, current_user_id, "thread", row["id"])
 
     active_vote = 0
@@ -275,6 +276,13 @@ def get_thread_by_slug(
         db, subject_type="thread", subject_id=row["id"], current_user_id=current_user_id
     )
     discussion = _attach_usernames_to_comments(db, comments_result["items"])
+    report = load_active_report(
+        db,
+        target_type="thread",
+        target_id=row["id"],
+        current_user_id=current_user_id,
+        created_at=row["created_at"],
+    )
 
     return {
         "thread": {
@@ -293,5 +301,10 @@ def get_thread_by_slug(
             "channel_tags": channel_tags,
             "community_tags": community_tags,
             "discussion": discussion,
+            "report": report,
+            "moderationState": row["moderation_state"],
+            "moderationReason": row["moderation_reason"],
+            "isRemovedByReport": row["moderation_state"] == "removed",
+            "isUnderReview": row["moderation_state"] == "under_review",
         }
     }

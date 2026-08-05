@@ -15,9 +15,11 @@ from app.models import (
 from app.services.events.phases.constants import VALID_VOTES
 from app.services.events.phases.gates import (
     _compute_votes,
-    _ensure_member,
+    _ensure_can_cast_governance_vote,
+    _ensure_can_drive_lifecycle,
     _event_vote_population,
     _get_event_by_slug,
+    _is_organizer_controlled,
 )
 from app.services.events.phases.serializers import _serialize_edit_request
 from app.services.meaningful_actions import record_meaningful_action
@@ -32,7 +34,11 @@ def create_edit_request(
     description: str,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_drive_lifecycle(db, event_row, current_user_id)
+
+    # Organizer-controlled events skip the vote: the request is auto-approved
+    # and applied immediately for the creator/co-organizers.
+    auto_execute = _is_organizer_controlled(event_row)
 
     try:
         created = (
@@ -43,7 +49,7 @@ def create_edit_request(
                     title=title.strip(),
                     description=description.strip(),
                     author_id=current_user_id,
-                    status="open",
+                    status="approved" if auto_execute else "open",
                 )
                 .returning(
                     event_edit_requests.c.id,
@@ -58,6 +64,12 @@ def create_edit_request(
             .mappings()
             .one()
         )
+        if auto_execute:
+            db.execute(
+                update(events)
+                .where(events.c.id == event_row["id"])
+                .values(title=created["title"], description=created["description"])
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -65,6 +77,18 @@ def create_edit_request(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not create edit request",
         ) from exc
+
+    if auto_execute:
+        index_document(
+            db=db,
+            entity_type="event",
+            entity_id=event_row["id"],
+            title=created["title"],
+            summary=created["description"],
+            meta="event",
+            href=f"/events/{event_row['slug']}",
+        )
+        db.commit()
 
     summary = _compute_votes(
         db, event_edit_request_votes, created["id"], _event_vote_population(db, event_row)
@@ -106,7 +130,7 @@ def vote_edit_request(
     vote: str,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_cast_governance_vote(db, event_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:

@@ -108,6 +108,7 @@ def run() -> None:
             },
         )
         assert personal.status_code == 200, personal.text
+        personal_slug = personal.json()["project"]["slug"]
 
         personal_detail = client.get(
             f"/projects/{personal_slug}", headers=_auth_header(seeded["creator_token"])
@@ -134,6 +135,7 @@ def run() -> None:
             },
         )
         assert software.status_code == 200, software.text
+        software_slug = software.json()["project"]["slug"]
 
         db = SessionLocal()
         db.execute(

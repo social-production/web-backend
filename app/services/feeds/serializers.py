@@ -19,14 +19,17 @@ from app.models import (
     channels,
     communities,
     content_votes,
+    event_signals,
     event_tags,
     event_updates,
     help_request_tags,
+    project_signals,
     project_tags,
     project_updates,
     thread_tags,
 )
 from app.services.content import _help_request_role_summaries
+from app.services.moderation.serialize import load_active_reports_for_targets
 from app.services.projects_phases import display_stage_label as project_display_stage_label
 
 VALID_SORTS = frozenset({"popular", "recent"})
@@ -55,6 +58,13 @@ def _resolved_feed_stage_label(row: Mapping[str, object]) -> str | None:
         return EVENT_STAGE_LABEL_BY_PHASE_ID.get(phase_id, "Proposal")
     stage_label = row.get("stage_label")
     return str(stage_label) if stage_label else None
+
+
+def _favorability(support_count: int, oppose_count: int) -> float | None:
+    total = support_count + oppose_count
+    if total <= 0:
+        return None
+    return support_count / total
 
 
 def _truncate_update_body(body: str, limit: int = 200) -> str:
@@ -126,25 +136,106 @@ def _fetch_latest_updates_for_items(
     return result
 
 
+def _fetch_active_report_keys(
+    db: Session,
+    rows: list[Mapping[str, object]],
+) -> set[str]:
+    """Return {"entity_type:id"} keys that currently have an active report."""
+    return set(_fetch_active_reports(db, rows).keys())
+
+
+def _fetch_active_reports(
+    db: Session,
+    rows: list[Mapping[str, object]],
+    current_user_id: UUID | None = None,
+) -> dict[str, dict[str, object]]:
+    """Return {"entity_type:id"} -> frontend report summary for active reports."""
+    ids_by_type: dict[str, list[UUID]] = {}
+    for row in rows:
+        entity_type = str(row["entity_type"] or "")
+        if entity_type == "comment_activity":
+            entity_type = "comment"
+        if entity_type not in {
+            "post",
+            "thread",
+            "project",
+            "event",
+            "help_request",
+            "comment",
+        }:
+            continue
+        ids_by_type.setdefault(entity_type, []).append(row["id"])
+
+    if not ids_by_type:
+        return {}
+
+    reports_by_key: dict[str, dict[str, object]] = {}
+    for entity_type, ids in ids_by_type.items():
+        loaded = load_active_reports_for_targets(
+            db,
+            target_type=entity_type,
+            target_ids=ids,
+            current_user_id=current_user_id,
+        )
+        for target_id, report in loaded.items():
+            feed_type = "comment_activity" if entity_type == "comment" else entity_type
+            reports_by_key[f"{feed_type}:{target_id}"] = report
+            reports_by_key[f"{entity_type}:{target_id}"] = report
+    return reports_by_key
+
+
+def _moderation_fields(
+    row: Mapping[str, object],
+    active_report_keys: set[str] | None = None,
+    active_reports: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
+    entity_type = str(row["entity_type"] or "")
+    moderation_state = str(row.get("moderation_state") or "visible")
+    key = f"{entity_type}:{row['id']}"
+    report = (active_reports or {}).get(key)
+    has_active_report = (
+        moderation_state in {"under_review", "hidden"}
+        or report is not None
+        or (active_report_keys is not None and key in active_report_keys)
+    )
+    is_under_review = moderation_state == "under_review" or (
+        report is not None and str(report.get("resolution") or "") in {"open", "under_review"}
+    )
+    return {
+        "moderation_state": moderation_state,
+        "moderation_reason": row.get("moderation_reason"),
+        "is_under_review": is_under_review,
+        "has_active_report": has_active_report,
+        "report": report,
+    }
+
+
 def _serialize_item(
     row: Mapping[str, object],
     tags: dict[str, dict[str, list[dict[str, str]]]],
     active_votes: dict[str, int] | None = None,
     updates: dict[str, dict[str, object]] | None = None,
     help_request_roles: list[dict[str, object]] | None = None,
+    viewer_signals: dict[str, str] | None = None,
+    active_report_keys: set[str] | None = None,
+    active_reports: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
-    vote_key = f"{row['entity_type']}:{row['id']}"
+    entity_type = row["entity_type"]
+    vote_key = f"{entity_type}:{row['id']}"
     update_data = (updates or {}).get(item_id, {})
     roles_data = help_request_roles if help_request_roles is not None else (row.get("roles") or [])
     signup_count = 0
     slots_needed = 0
-    if row["entity_type"] == "help_request" and help_request_roles is not None:
+    if entity_type == "help_request" and help_request_roles is not None:
         signup_count, slots_needed = _help_request_role_summaries(help_request_roles)
+    is_signal_entity = entity_type in ("project", "event")
+    support_count = int(row.get("support_count") or 0)
+    oppose_count = int(row.get("oppose_count") or 0)
     return {
         "id": item_id,
-        "entity_type": row["entity_type"],
+        "entity_type": entity_type,
         "slug": row["slug"],
         "title": row["title"],
         "body": row["body"],
@@ -153,7 +244,12 @@ def _serialize_item(
         "author_username": row["author_username"],
         "author_profile_image_url": row.get("author_profile_image_url"),
         "signal_count": int(row["signal_count"] or 0),
+        "support_count": support_count if is_signal_entity else 0,
+        "oppose_count": oppose_count if is_signal_entity else 0,
+        "favorability": _favorability(support_count, oppose_count) if is_signal_entity else None,
+        "viewer_signal": (viewer_signals or {}).get(vote_key) if is_signal_entity else None,
         "vote_count": int(row["vote_count"] or 0),
+        **_moderation_fields(row, active_report_keys, active_reports),
         "comment_count": int(row["comment_count"] or 0),
         "member_count": int(row["member_count"] or 0),
         "going_count": int(row["going_count"] or 0),
@@ -167,7 +263,7 @@ def _serialize_item(
         "is_private": bool(row["is_private"]),
         "scheduled_at": row["scheduled_at"],
         "time_label": row["time_label"],
-        "active_vote": int((active_votes or {}).get(vote_key, 0)),
+        "active_vote": 0 if is_signal_entity else int((active_votes or {}).get(vote_key, 0)),
         "channel_tags": tag_data["channels"],
         "community_tags": tag_data["communities"],
         "last_update_at": update_data.get("last_update_at"),
@@ -183,17 +279,24 @@ def _serialize_personal_item(
     tags: dict[str, dict[str, list[dict[str, str]]]],
     active_votes: dict[str, int] | None = None,
     updates: dict[str, dict[str, object]] | None = None,
+    viewer_signals: dict[str, str] | None = None,
+    active_report_keys: set[str] | None = None,
+    active_reports: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     item_id = str(row["id"])
     tag_data = tags.get(item_id, {"channels": [], "communities": []})
-    if row["entity_type"] == "comment_activity":
+    entity_type = row["entity_type"]
+    if entity_type == "comment_activity":
         vote_key = f"comment:{row['id']}"
     else:
-        vote_key = f"{row['entity_type']}:{row['id']}"
+        vote_key = f"{entity_type}:{row['id']}"
     update_data = (updates or {}).get(item_id, {})
+    is_signal_entity = entity_type in ("project", "event")
+    support_count = int(row.get("support_count") or 0)
+    oppose_count = int(row.get("oppose_count") or 0)
     return {
         "id": item_id,
-        "entity_type": row["entity_type"],
+        "entity_type": entity_type,
         "slug": row["slug"],
         "title": row["title"],
         "body": row["body"],
@@ -202,7 +305,12 @@ def _serialize_personal_item(
         "author_username": row["author_username"],
         "author_profile_image_url": row.get("author_profile_image_url"),
         "signal_count": int(row["signal_count"] or 0),
+        "support_count": support_count if is_signal_entity else 0,
+        "oppose_count": oppose_count if is_signal_entity else 0,
+        "favorability": _favorability(support_count, oppose_count) if is_signal_entity else None,
+        "viewer_signal": (viewer_signals or {}).get(vote_key) if is_signal_entity else None,
         "vote_count": int(row["vote_count"] or 0),
+        **_moderation_fields(row, active_report_keys, active_reports),
         "comment_count": int(row["comment_count"] or 0),
         "member_count": int(row["member_count"] or 0),
         "going_count": int(row["going_count"] or 0),
@@ -216,7 +324,7 @@ def _serialize_personal_item(
         "is_private": bool(row["is_private"]),
         "scheduled_at": row["scheduled_at"],
         "time_label": row["time_label"],
-        "active_vote": int((active_votes or {}).get(vote_key, 0)),
+        "active_vote": 0 if is_signal_entity else int((active_votes or {}).get(vote_key, 0)),
         "channel_tags": tag_data["channels"],
         "community_tags": tag_data["communities"],
         "last_update_at": update_data.get("last_update_at"),
@@ -237,8 +345,6 @@ def _fetch_active_votes_for_rows(
     item_ids_by_type: dict[str, list[UUID]] = {
         "post": [],
         "thread": [],
-        "project": [],
-        "event": [],
         "help_request": [],
         "comment": [],
     }
@@ -247,6 +353,7 @@ def _fetch_active_votes_for_rows(
         if entity_type == "comment_activity":
             item_ids_by_type["comment"].append(row["id"])
             continue
+        # Projects and events use signals, not content votes.
         if entity_type in item_ids_by_type:
             item_ids_by_type[entity_type].append(row["id"])
 
@@ -268,6 +375,45 @@ def _fetch_active_votes_for_rows(
     ).all()
 
     return {f"{row[0]}:{row[1]}": int(row[2]) for row in vote_rows}
+
+
+def _fetch_viewer_signals_for_rows(
+    db: Session,
+    rows: list[Mapping[str, object]],
+    current_user_id: UUID | None,
+) -> dict[str, str]:
+    """Returns {"project:<id>" | "event:<id>": "demand" | "opposition"} for the viewer's own signals."""
+    if current_user_id is None or not rows:
+        return {}
+
+    project_ids = [row["id"] for row in rows if row["entity_type"] == "project"]
+    event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
+    if not project_ids and not event_ids:
+        return {}
+
+    result: dict[str, str] = {}
+
+    if project_ids:
+        project_rows = db.execute(
+            select(project_signals.c.project_id, project_signals.c.signal_type).where(
+                project_signals.c.user_id == current_user_id,
+                project_signals.c.project_id.in_(project_ids),
+            )
+        ).all()
+        for project_id, signal_type in project_rows:
+            result[f"project:{project_id}"] = signal_type
+
+    if event_ids:
+        event_rows = db.execute(
+            select(event_signals.c.event_id, event_signals.c.signal_type).where(
+                event_signals.c.user_id == current_user_id,
+                event_signals.c.event_id.in_(event_ids),
+            )
+        ).all()
+        for event_id, signal_type in event_rows:
+            result[f"event:{event_id}"] = signal_type
+
+    return result
 
 
 def _fetch_tags_for_items(

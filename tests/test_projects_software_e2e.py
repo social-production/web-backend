@@ -248,7 +248,7 @@ def run() -> None:
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/merge",
         method="POST",
         token=seeded["member_token"],
-        body={"mergeId": "abc123"},
+        body={"mergeId": "abc123", "mergeUrl": "https://github.com/example/repo/commit/abc123"},
     )
     assert merge_forbidden == 403
 
@@ -293,11 +293,12 @@ def run() -> None:
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/merge",
         method="POST",
         token=seeded["member_token"],
-        body={"mergeId": "abc123"},
+        body={"mergeId": "abc123", "mergeUrl": "https://github.com/example/repo/commit/abc123"},
     )
     merged_pr = next(item for item in merged["pullRequests"] if item["id"] == pr_request_id)
     assert merged_pr["stage"] == "confirmation"
     assert merged_pr["mergeId"] == "abc123"
+    assert merged_pr["mergeUrl"] == "https://github.com/example/repo/commit/abc123"
 
     first_confirmation_vote = _request_json(
         f"{base}/projects/{slug}/software/pull-requests/{pr_request_id}/vote",

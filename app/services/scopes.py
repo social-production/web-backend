@@ -18,6 +18,8 @@ from app.services.access_control import assert_can_view_scope
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
+from app.utils.handles import canonicalize_handle, validate_handle
+from app.utils.usernames import username_matches
 
 CHANNEL_SCOPE_KIND = "channel"
 COMMUNITY_SCOPE_KIND = "community"
@@ -337,25 +339,23 @@ def list_taggable_scopes(
 def create_channel(
     db: Session, current_user_id: UUID, slug: str, name: str, description: str
 ) -> dict[str, object]:
-    normalized_slug = slug.strip().lower()
-    normalized_name = name.strip()
-    if not normalized_slug:
+    display_name = validate_handle(name, field_label="Channel name")
+    canonical_slug = canonicalize_handle(display_name)
+    provided_slug = slug.strip()
+    if provided_slug and canonicalize_handle(provided_slug) != canonical_slug:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Channel slug must match the channel name",
         )
-    if not normalized_name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required"
-        )
-    if _slug_in_use(db, normalized_slug):
+    if _slug_in_use(db, canonical_slug):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="That slug is already used by a channel or community",
+            detail="That handle is already used by a channel or community",
         )
-    if _name_in_use(db, normalized_name):
+    if _name_in_use(db, display_name):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="That name is already used by a channel or community",
+            detail="That handle is already used by a channel or community",
         )
 
     try:
@@ -363,8 +363,8 @@ def create_channel(
             db.execute(
                 insert(channels)
                 .values(
-                    slug=normalized_slug,
-                    name=normalized_name,
+                    slug=canonical_slug,
+                    name=display_name,
                     description=description.strip(),
                     created_by=current_user_id,
                 )
@@ -416,26 +416,24 @@ def create_community(
     description: str,
     join_policy: str = "open",
 ) -> dict[str, object]:
-    normalized_slug = slug.strip().lower()
-    normalized_name = name.strip()
+    display_name = validate_handle(name, field_label="Community name")
+    canonical_slug = canonicalize_handle(display_name)
+    provided_slug = slug.strip()
+    if provided_slug and canonicalize_handle(provided_slug) != canonical_slug:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Community slug must match the community name",
+        )
     normalized_join_policy = join_policy.strip().lower()
-    if not normalized_slug:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Slug is required"
-        )
-    if not normalized_name:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required"
-        )
-    if _slug_in_use(db, normalized_slug):
+    if _slug_in_use(db, canonical_slug):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="That slug is already used by a channel or community",
+            detail="That handle is already used by a channel or community",
         )
-    if _name_in_use(db, normalized_name):
+    if _name_in_use(db, display_name):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="That name is already used by a channel or community",
+            detail="That handle is already used by a channel or community",
         )
 
     try:
@@ -443,8 +441,8 @@ def create_community(
             db.execute(
                 insert(communities)
                 .values(
-                    slug=normalized_slug,
-                    name=normalized_name,
+                    slug=canonical_slug,
+                    name=display_name,
                     description=description.strip(),
                     join_policy=normalized_join_policy,
                     created_by=current_user_id,
@@ -764,7 +762,7 @@ def invite_user_to_community(
 
     target_user = (
         db.execute(
-            select(users.c.id, users.c.username).where(users.c.username == normalized_username)
+            select(users.c.id, users.c.username).where(username_matches(normalized_username))
         )
         .mappings()
         .first()

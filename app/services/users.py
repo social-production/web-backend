@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import notifications, user_follows, user_settings, users
 from app.services.meaningful_actions import record_meaningful_action
+from app.utils.usernames import username_matches
 
 USER_SETTINGS_FIELDS = {
     "appearance_theme_mode",
@@ -30,6 +31,7 @@ USER_SETTINGS_FIELDS = {
     "require_follow_approval",
     "preferred_language",
     "display_timezone",
+    "default_location_id",
 }
 
 
@@ -66,6 +68,7 @@ def _serialize_settings(row: Mapping[str, object]) -> dict[str, object]:
         "require_follow_approval": row["require_follow_approval"],
         "preferred_language": row["preferred_language"],
         "display_timezone": row["display_timezone"],
+        "default_location_id": row["default_location_id"],
     }
 
 
@@ -78,7 +81,7 @@ def _get_user_by_username(db: Session, username: str) -> Mapping[str, object]:
                 users.c.bio,
                 users.c.profile_image_url,
                 users.c.is_active,
-            ).where(users.c.username == username.lower())
+            ).where(username_matches(username))
         )
         .mappings()
         .first()
@@ -196,6 +199,27 @@ def update_own_profile_settings(
                     detail="invalid_display_timezone",
                 )
             settings_updates["display_timezone"] = timezone_name
+
+    if "default_location_id" in settings_updates:
+        from app.services.locations import get_location
+
+        location_value = settings_updates["default_location_id"]
+        if location_value is None or str(location_value).strip() == "":
+            settings_updates["default_location_id"] = None
+        else:
+            try:
+                location_id = UUID(str(location_value))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="invalid_default_location_id",
+                ) from exc
+            if get_location(db, location_id) is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="default_location_not_found",
+                )
+            settings_updates["default_location_id"] = location_id
 
     if not profile_updates and not settings_updates:
         return get_own_profile(db, current_user_id)

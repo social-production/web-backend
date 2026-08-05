@@ -40,12 +40,13 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 class ProjectCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    slug: str = Field(min_length=3, max_length=120)
+    slug: str | None = Field(default=None, min_length=3, max_length=120)
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
     project_mode: str = Field(pattern="^(productive|collective-service|personal-service)$")
     project_subtype: str | None = Field(default=None, pattern="^(standard|software)$")
-    location_label: str = Field(min_length=1, max_length=160)
+    location_label: str = Field(default="", max_length=160)
+    location_id: UUID | None = None
     channel_slugs: list[str] = Field(default_factory=list)
     community_slugs: list[str] = Field(default_factory=list)
     request_mode: str | None = Field(default=None, pattern="^(calendar|direct|both)$")
@@ -130,6 +131,9 @@ class ProjectDetailResponse(BaseModel):
     shareContacts: list[dict[str, Any]]
     report: dict[str, Any] | None = None
     isRemovedByReport: bool
+    moderationState: str | None = None
+    moderationReason: str | None = None
+    isUnderReview: bool = False
     discussionNote: str
     discussion: list[dict[str, Any]]
 
@@ -180,6 +184,7 @@ class ProjectActivityCreateRequest(BaseModel):
     ends_at: datetime
     is_online: bool = False
     location_label: str = Field(min_length=1, max_length=160)
+    location_id: UUID | None = None
     note: str = Field(min_length=1)
     role_requirements: list[ProjectActivityRoleRequirementIn] = Field(default_factory=list)
     linked_plan_id: UUID | None = None
@@ -227,7 +232,6 @@ async def create_new_project(
     return create_project(
         db=db,
         current_user_id=current_user_id,
-        slug=payload.slug,
         title=payload.title,
         description=payload.description,
         project_mode=payload.project_mode,
@@ -236,6 +240,7 @@ async def create_new_project(
         channel_slugs=payload.channel_slugs,
         community_slugs=payload.community_slugs,
         request_mode=payload.request_mode,
+        location_id=payload.location_id,
     )
 
 
@@ -336,6 +341,7 @@ async def create_activity_route(
         role_requirements=[item.model_dump() for item in payload.role_requirements],
         linked_plan_id=payload.linked_plan_id,
         linked_plan_phase_id=payload.linked_plan_phase_id,
+        location_id=payload.location_id,
     )
 
 

@@ -18,6 +18,10 @@ from app.models import (
     event_values,
     events,
 )
+from app.services.events.phases.gates import (
+    _ensure_can_drive_lifecycle,
+    _is_organizer_controlled,
+)
 from app.services.governance_votes import compute_plan_vote_summary
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
@@ -26,20 +30,18 @@ from app.services.plan_criteria import (
     assessment_criteria_for_plan,
     parse_value_criterion_id,
 )
-from app.utils.votes import resolve_event_vote_population
+from app.utils.votes import can_cast_event_governance_vote, resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
 VALID_VOTES = {"yes", "no", "neutral"}
 
 
-def _schedule_start_utc_from_payload(schedule_payload: dict[str, object]) -> datetime | None:
-    start_at_utc = schedule_payload.get("startAtUtc") or schedule_payload.get("start_at_utc")
-
-    if not start_at_utc:
+def _parse_schedule_utc(value: object) -> datetime | None:
+    if not value:
         return None
 
     try:
-        parsed = datetime.fromisoformat(str(start_at_utc).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
 
@@ -47,6 +49,18 @@ def _schedule_start_utc_from_payload(schedule_payload: dict[str, object]) -> dat
         parsed = parsed.replace(tzinfo=UTC)
 
     return parsed.astimezone(UTC)
+
+
+def _schedule_start_utc_from_payload(schedule_payload: dict[str, object]) -> datetime | None:
+    return _parse_schedule_utc(
+        schedule_payload.get("startAtUtc") or schedule_payload.get("start_at_utc")
+    )
+
+
+def _schedule_end_utc_from_payload(schedule_payload: dict[str, object]) -> datetime | None:
+    return _parse_schedule_utc(
+        schedule_payload.get("endAtUtc") or schedule_payload.get("end_at_utc")
+    )
 
 
 def _sync_event_schedule_from_leading_plan(
@@ -59,6 +73,7 @@ def _sync_event_schedule_from_leading_plan(
             select(
                 event_plans.c.schedule_payload,
                 event_plans.c.location_label,
+                event_plans.c.location_id,
             ).where(event_plans.c.id == plan_id)
         )
         .mappings()
@@ -67,14 +82,27 @@ def _sync_event_schedule_from_leading_plan(
 
     schedule_payload = dict(plan_row["schedule_payload"] or {})
     scheduled_at = _schedule_start_utc_from_payload(schedule_payload)
+    ends_at = _schedule_end_utc_from_payload(schedule_payload)
     update_values: dict[str, object] = {}
 
     if scheduled_at is not None:
         update_values["scheduled_at"] = scheduled_at
 
+    if ends_at is not None:
+        if scheduled_at is not None and ends_at <= scheduled_at:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="ends_at must be after scheduled_at",
+            )
+        update_values["ends_at"] = ends_at
+
     location_label = str(plan_row["location_label"] or "").strip()
     if location_label:
         update_values["location_label"] = location_label
+
+    location_id = plan_row["location_id"]
+    if location_id is not None:
+        update_values["location_id"] = location_id
 
     if update_values:
         db.execute(update(events).where(events.c.id == event_id).values(**update_values))
@@ -119,6 +147,15 @@ def _ensure_member(db: Session, event_id: UUID, user_id: UUID) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only event members can submit or vote on plans",
         )
+
+
+def _ensure_can_cast_plan_vote(db: Session, event_row: Mapping[str, object], user_id: UUID) -> None:
+    if can_cast_event_governance_vote(db, event_id=event_row["id"], user_id=user_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only event members can submit or vote on plans",
+    )
 
 
 def _compute_vote_summary(db: Session, plan_id: UUID, member_count: int) -> dict[str, object]:
@@ -172,9 +209,24 @@ def submit_event_plan(
     location_label: str,
     schedule_payload: dict[str, object],
     plan_payload: dict[str, object],
+    location_id: UUID | None = None,
+    is_online: bool = False,
 ) -> dict[str, object]:
     event_row = _get_event_row_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_drive_lifecycle(db, event_row, current_user_id)
+
+    # Organizer-controlled events skip governance votes: the creator/
+    # co-organizers directly edit the plan, which becomes leading immediately.
+    auto_execute = _is_organizer_controlled(event_row)
+
+    from app.services.locations.resolve import ensure_location_id
+
+    resolved_location_id, resolved_location_label = ensure_location_id(
+        db,
+        location_id=location_id,
+        location_label=location_label,
+        is_online=is_online,
+    )
 
     try:
         created = (
@@ -186,11 +238,12 @@ def submit_event_plan(
                     description=description.strip(),
                     author_id=current_user_id,
                     demand_consideration_note=demand_consideration_note.strip(),
-                    location_label=location_label.strip(),
+                    location_label=resolved_location_label,
+                    location_id=resolved_location_id,
                     schedule_payload=schedule_payload,
                     plan_payload=plan_payload,
-                    is_leading=False,
-                    status="open",
+                    is_leading=auto_execute,
+                    status="approved" if auto_execute else "open",
                 )
                 .returning(
                     event_plans.c.id,
@@ -210,6 +263,16 @@ def submit_event_plan(
             .mappings()
             .one()
         )
+        if auto_execute:
+            db.execute(
+                update(event_plans)
+                .where(
+                    event_plans.c.event_id == event_row["id"],
+                    event_plans.c.id != created["id"],
+                )
+                .values(is_leading=False)
+            )
+            _sync_event_schedule_from_leading_plan(db, event_row["id"], created["id"])
         record_meaningful_action(
             db=db,
             user_id=current_user_id,
@@ -262,7 +325,12 @@ def cast_event_plan_vote(
     vote: str,
 ) -> dict[str, object]:
     event_row = _get_event_row_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_cast_plan_vote(db, event_row, current_user_id)
+    if _is_organizer_controlled(event_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events don't use plan votes",
+        )
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -390,7 +458,12 @@ def cast_event_plan_value_vote(
     vote: str,
 ) -> dict[str, object]:
     event_row = _get_event_row_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_cast_plan_vote(db, event_row, current_user_id)
+    if _is_organizer_controlled(event_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events don't use plan votes",
+        )
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -492,7 +565,12 @@ def cast_event_plan_criterion_rating(
     rating: int | None,
 ) -> dict[str, object]:
     event_row = _get_event_row_by_slug(db, event_slug)
-    _ensure_member(db, event_row["id"], current_user_id)
+    _ensure_can_cast_plan_vote(db, event_row, current_user_id)
+    if _is_organizer_controlled(event_row):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Organizer-controlled events don't use plan assessments",
+        )
 
     plan_row = (
         db.execute(

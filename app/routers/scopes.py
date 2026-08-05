@@ -28,16 +28,16 @@ router = APIRouter(prefix="/scopes", tags=["scopes"])
 class ChannelCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    slug: str = Field(min_length=3, max_length=80)
-    name: str = Field(min_length=1, max_length=120)
+    slug: str = Field(min_length=3, max_length=32)
+    name: str = Field(min_length=3, max_length=32)
     description: str = Field(min_length=1, max_length=2000)
 
 
 class CommunityCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    slug: str = Field(min_length=3, max_length=80)
-    name: str = Field(min_length=1, max_length=120)
+    slug: str = Field(min_length=3, max_length=32)
+    name: str = Field(min_length=3, max_length=32)
     description: str = Field(min_length=1, max_length=2000)
     join_policy: str = Field(default="open", min_length=1, max_length=16)
 

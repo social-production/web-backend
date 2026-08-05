@@ -11,17 +11,20 @@ from app.models import (
     project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
-    project_updates,
     projects,
 )
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
+from app.services.projects.helpers import PROJECT_MODES, PROJECT_SUBTYPES
 from app.services.projects.phases.constants import VALID_PHASE_IDS, VALID_VOTES
+from app.services.projects.phases.conversion import close_and_maybe_convert
 from app.services.projects.phases.gates import (
     _compute_vote_summary,
+    _ensure_can_cast_governance_vote,
     _ensure_member,
     _ensure_phase_requests_allowed,
     _ensure_project_phase_plan_gate,
+    _ensure_project_proposal_signal_gate,
     _get_project_by_slug,
     _phase_change_kind_for_project,
     _project_vote_population,
@@ -39,10 +42,18 @@ def create_phase_change_request(
     close_outcome: str | None = None,
     conversion_target_mode: str | None = None,
     conversion_target_subtype: str | None = None,
+    conversion_successor_title: str | None = None,
+    conversion_successor_description: str | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_phase_requests_allowed(project_row["project_mode"])
     _ensure_member(db, project_row["id"], current_user_id)
+
+    if project_row["is_closed"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Closed projects cannot accept phase change requests",
+        )
 
     normalized_target = target_phase_id.strip().lower()
     if normalized_target not in VALID_PHASE_IDS:
@@ -68,6 +79,52 @@ def create_phase_change_request(
     _ensure_project_phase_plan_gate(db, project_row, normalized_target)
 
     change_kind = _phase_change_kind_for_project(normalized_target, current_phase_id)
+    _ensure_project_proposal_signal_gate(
+        db,
+        project_row,
+        current_phase_id=current_phase_id,
+        change_kind=change_kind,
+    )
+
+    normalized_close_outcome = (close_outcome or "").strip().lower() or None
+    if normalized_target == "phase-7":
+        if normalized_close_outcome not in {None, "close", "convert"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="close_outcome must be close or convert",
+            )
+        if not normalized_close_outcome:
+            normalized_close_outcome = "close"
+    else:
+        normalized_close_outcome = None
+
+    normalized_mode = (conversion_target_mode or "").strip().lower() or None
+    normalized_subtype = (
+        (conversion_target_subtype or "").strip().lower() or None
+        if conversion_target_subtype is not None
+        else None
+    )
+    successor_title = (conversion_successor_title or "").strip() or None
+    successor_description = (conversion_successor_description or "").strip() or None
+
+    if normalized_close_outcome == "convert":
+        if not normalized_mode or normalized_mode not in PROJECT_MODES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"conversion_target_mode must be one of: {sorted(PROJECT_MODES)}",
+            )
+        if normalized_mode == "personal-service":
+            normalized_subtype = None
+        elif normalized_subtype is not None and normalized_subtype not in PROJECT_SUBTYPES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"conversion_target_subtype must be one of: {sorted(PROJECT_SUBTYPES)}",
+            )
+    else:
+        normalized_mode = None
+        normalized_subtype = None
+        successor_title = None
+        successor_description = None
 
     open_request = db.execute(
         select(project_phase_change_requests.c.id).where(
@@ -91,9 +148,11 @@ def create_phase_change_request(
                     from_phase_id=current_phase_id,
                     target_phase_id=normalized_target,
                     change_kind=change_kind,
-                    close_outcome=close_outcome,
-                    conversion_target_mode=conversion_target_mode,
-                    conversion_target_subtype=conversion_target_subtype,
+                    close_outcome=normalized_close_outcome,
+                    conversion_target_mode=normalized_mode,
+                    conversion_target_subtype=normalized_subtype,
+                    conversion_successor_title=successor_title,
+                    conversion_successor_description=successor_description,
                     reason=reason.strip(),
                     author_id=current_user_id,
                     status="open",
@@ -107,6 +166,8 @@ def create_phase_change_request(
                     project_phase_change_requests.c.close_outcome,
                     project_phase_change_requests.c.conversion_target_mode,
                     project_phase_change_requests.c.conversion_target_subtype,
+                    project_phase_change_requests.c.conversion_successor_title,
+                    project_phase_change_requests.c.conversion_successor_description,
                     project_phase_change_requests.c.reason,
                     project_phase_change_requests.c.author_id,
                     project_phase_change_requests.c.status,
@@ -197,7 +258,7 @@ def vote_phase_change_request(
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_phase_requests_allowed(project_row["project_mode"])
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_governance_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:
@@ -256,6 +317,12 @@ def vote_phase_change_request(
         executed = False
         if summary["is_passing"]:
             target_phase_id = request_row["target_phase_id"]
+            _ensure_project_proposal_signal_gate(
+                db,
+                project_row,
+                current_phase_id=str(request_row["from_phase_id"]),
+                change_kind=str(request_row["change_kind"]),
+            )
             db.execute(
                 update(project_phase_change_requests)
                 .where(project_phase_change_requests.c.id == request_id)
@@ -270,31 +337,28 @@ def vote_phase_change_request(
                 )
                 .values(status="closed")
             )
-            db.execute(
-                update(projects)
-                .where(projects.c.id == project_row["id"])
-                .values(
-                    current_phase_id=target_phase_id,
-                    stage_label=display_stage_label(
-                        str(project_row["project_mode"]),
-                        str(project_row["project_subtype"])
-                        if project_row["project_subtype"]
-                        else None,
-                        target_phase_id,
-                    ),
-                )
-            )
             if target_phase_id == "phase-7":
-                close_note = (request_row["reason"] or "").strip()
-                if close_note:
-                    db.execute(
-                        insert(project_updates).values(
-                            project_id=project_row["id"],
-                            title="Closure note",
-                            body=close_note,
-                            author_id=request_row["author_id"] or current_user_id,
-                        )
+                close_and_maybe_convert(
+                    db,
+                    project_row=project_row,
+                    request_row=request_row,
+                    acting_user_id=current_user_id,
+                )
+            else:
+                db.execute(
+                    update(projects)
+                    .where(projects.c.id == project_row["id"])
+                    .values(
+                        current_phase_id=target_phase_id,
+                        stage_label=display_stage_label(
+                            str(project_row["project_mode"]),
+                            str(project_row["project_subtype"])
+                            if project_row["project_subtype"]
+                            else None,
+                            target_phase_id,
+                        ),
                     )
+                )
             executed = True
         elif not summary.get("can_still_pass", True):
             db.execute(

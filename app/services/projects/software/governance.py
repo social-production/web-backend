@@ -57,6 +57,11 @@ def _governance_payload(
     viewer_is_member = (
         current_user_id is not None and _get_membership(db, project_id, current_user_id) is not None
     )
+    viewer_can_cast_governance = (
+        current_user_id is not None
+        if bool(project_row.get("is_platform_tagged"))
+        else viewer_is_member
+    )
     viewer_can_request_merge = (
         viewer_is_member
         and current_user_id is not None
@@ -75,7 +80,11 @@ def _governance_payload(
 
     repository_url = str(leading_plan["repository_url"] or "") if leading_plan else ""
     plan_payload = dict(leading_plan["plan_payload"] or {}) if leading_plan else {}
-    license_label = str(plan_payload.get("licenseLabel") or "Unspecified")
+    plan_subtype = str(plan_payload.get("projectSubtype") or "").strip().lower()
+    default_license = (
+        "AGPL v3" if plan_subtype == "software" or bool(repository_url) else "Unspecified"
+    )
+    license_label = str(plan_payload.get("licenseLabel") or default_license)
 
     merge_member_rows = (
         db.execute(
@@ -150,6 +159,7 @@ def _governance_payload(
                 "stage": row["stage"],
                 "stageLabel": _stage_label(row["stage"]),
                 "mergeId": row["merge_id"],
+                "mergeUrl": row["merge_url"],
                 "mergedByUsername": merged_by_name,
                 "approvalThresholdPercent": float(row["approval_threshold_percent"]),
                 "voteSummary": vote_summary,
@@ -157,7 +167,8 @@ def _governance_payload(
                 "canStillPass": can_still_pass,
                 "viewerCanRecordMerge": viewer_can_request_merge
                 and row["stage"] == "awaiting-merge",
-                "viewerCanVote": viewer_is_member and row["stage"] in {"approval", "confirmation"},
+                "viewerCanVote": viewer_can_cast_governance
+                and row["stage"] in {"approval", "confirmation"},
             }
         )
 
@@ -210,7 +221,9 @@ def _governance_payload(
                 "voteSummary": vote_summary,
                 "passesApprovalThreshold": passes,
                 "canStillPass": can_still_pass,
-                "viewerCanVote": viewer_is_member and row["status"] == "open" and not passes,
+                "viewerCanVote": viewer_can_cast_governance
+                and row["status"] == "open"
+                and not passes,
             }
         )
 
@@ -248,7 +261,9 @@ def _governance_payload(
                 "voteSummary": vote_summary,
                 "passesApprovalThreshold": passes,
                 "canStillPass": can_still_pass,
-                "viewerCanVote": viewer_is_member and row["status"] == "open" and not passes,
+                "viewerCanVote": viewer_can_cast_governance
+                and row["status"] == "open"
+                and not passes,
             }
         )
 

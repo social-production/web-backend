@@ -25,6 +25,8 @@ EVENT_PAGE_DATA_KEYS = {
     "createdByUsername",
     "timeLabel",
     "locationLabel",
+    "location",
+    "mapEligible",
     "voteCount",
     "activeVote",
     "commentCount",
@@ -57,6 +59,15 @@ EVENT_PAGE_DATA_KEYS = {
     "isRemovedByReport",
     "discussionNote",
     "discussion",
+    "audience",
+    "governance",
+    "homeCommunity",
+    "viewerCanEditDirectly",
+    "viewerIsOrganizer",
+    "isUnderReview",
+    "linksFrame",
+    "moderationReason",
+    "moderationState",
 }
 
 
@@ -121,6 +132,7 @@ def run() -> None:
             },
         )
         assert create_resp.status_code == 200, create_resp.text
+        event_slug = create_resp.json()["event"]["slug"]
 
         detail_resp = client.get(f"/events/{event_slug}", headers=headers)
         assert detail_resp.status_code == 200, detail_resp.text

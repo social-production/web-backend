@@ -77,5 +77,33 @@ def run() -> None:
         )
 
 
+def test_bootstrap_summary_returns_nested_unread_counts() -> None:
+    token = _seed_user_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(app) as client:
+        response = client.get("/bootstrap/summary", headers=headers)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert set(payload.keys()) == {"unreadCounts"}
+    assert set(payload["unreadCounts"].keys()) == {"notifications", "messages"}
+    assert isinstance(payload["unreadCounts"]["notifications"], int)
+    assert isinstance(payload["unreadCounts"]["messages"], int)
+
+
+def test_bootstrap_summary_guest_returns_zero_counts() -> None:
+    with TestClient(app) as client:
+        response = client.get("/bootstrap/summary")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "unreadCounts": {
+            "notifications": 0,
+            "messages": 0,
+        },
+    }
+
+
 if __name__ == "__main__":
     run()

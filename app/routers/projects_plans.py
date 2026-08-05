@@ -28,6 +28,7 @@ class ProjectPlanSubmitRequest(BaseModel):
     demand_consideration_note: str = Field(default="")
     total_cost_label: str | None = Field(default=None, max_length=80)
     repository_url: str | None = None
+    location_id: UUID | None = None
     plan_payload: dict[str, object] = Field(default_factory=dict)
 
 
@@ -117,6 +118,7 @@ def submit_plan(
         demand_consideration_note=payload.demand_consideration_note,
         total_cost_label=payload.total_cost_label,
         repository_url=payload.repository_url,
+        location_id=payload.location_id,
         plan_payload=payload.plan_payload,
     )
 

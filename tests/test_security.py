@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -21,7 +21,7 @@ def client():
 @pytest.fixture
 def unique_ip():
     """Avoid auth rate-limit collisions across tests."""
-    return f"10.99.{os.getpid() % 250}.{id(object()) % 250}"
+    return f"10.{uuid4().int % 250}.{uuid4().int % 250}.{uuid4().int % 250}"
 
 
 def _register_and_login(client: TestClient, username: str, *, unique_ip: str) -> dict[str, str]:
@@ -170,6 +170,82 @@ def test_refresh_rotates_tokens(client: TestClient, unique_ip: str):
         "/auth/refresh", cookies={REFRESH_COOKIE: old_refresh}, headers=session["headers"]
     )
     assert stale.status_code == 401
+
+
+def test_refresh_token_uses_thirty_day_sliding_lifetime(client: TestClient, unique_ip: str):
+    from datetime import UTC, datetime
+
+    from app.auth.jwt import verify_refresh_token
+    from app.config import get_settings
+
+    settings = get_settings()
+    assert settings.jwt_refresh_expire_days == 30
+
+    username = "sec-refresh-30d"
+    session = _register_and_login(client, username, unique_ip=unique_ip)
+    before = datetime.now(UTC).timestamp()
+    payload = verify_refresh_token(session["refresh"])
+    lifetime_seconds = int(payload["exp"]) - before
+    expected = 30 * 24 * 60 * 60
+    assert expected - 120 <= lifetime_seconds <= expected + 120
+
+    login_response = client.post(
+        "/auth/login",
+        json={"username": username, "password": "password-123"},
+        headers=session["headers"],
+    )
+    assert login_response.status_code == 200
+    refresh_cookie_header = next(
+        h
+        for h in login_response.headers.get_list("set-cookie")
+        if h.startswith(f"{REFRESH_COOKIE}=")
+    )
+    assert "max-age=2592000" in refresh_cookie_header.lower()
+
+    refresh_response = client.post("/auth/refresh", headers=session["headers"])
+    assert refresh_response.status_code == 200
+    rotated = client.cookies.get(REFRESH_COOKIE)
+    assert rotated
+    rotated_payload = verify_refresh_token(rotated)
+    rotated_before = datetime.now(UTC).timestamp()
+    rotated_lifetime = int(rotated_payload["exp"]) - rotated_before
+    assert expected - 120 <= rotated_lifetime <= expected + 120
+
+
+def test_logout_revokes_current_device_refresh(client: TestClient, unique_ip: str):
+    username = "sec-logout-refresh"
+    session = _register_and_login(client, username, unique_ip=unique_ip)
+    refresh_before = session["refresh"]
+
+    logout_response = client.post(
+        "/auth/logout",
+        headers={**session["headers"], "X-CSRF-Token": session["csrf"]},
+    )
+    assert logout_response.status_code == 200
+
+    stale = client.post(
+        "/auth/refresh",
+        cookies={REFRESH_COOKIE: refresh_before},
+        headers=session["headers"],
+    )
+    assert stale.status_code == 401
+
+
+def test_expired_refresh_token_is_rejected(client: TestClient, unique_ip: str):
+    from datetime import timedelta
+
+    from app.auth.jwt import create_refresh_token
+
+    username = "sec-expired-refresh"
+    session = _register_and_login(client, username, unique_ip=unique_ip)
+    expired = create_refresh_token("unused-subject", expires_delta=timedelta(seconds=-5))
+
+    response = client.post(
+        "/auth/refresh",
+        cookies={REFRESH_COOKIE: expired},
+        headers=session["headers"],
+    )
+    assert response.status_code == 401
 
 
 def test_auth_rate_limit_fail_closed_in_production(monkeypatch):

@@ -22,7 +22,9 @@ from app.cache import get_redis_client
 from app.config import get_settings
 from app.models import user_settings, users
 from app.services.search import index_document
+from app.utils.handles import canonicalize_handle, validate_handle
 from app.utils.request import get_client_ip
+from app.utils.usernames import username_matches
 
 AUTH_RATE_LIMIT = 10
 AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -31,7 +33,7 @@ TOKEN_BLACKLIST_PREFIX = "token-blacklist"
 
 
 def _normalize_username(username: str) -> str:
-    return username.strip().lower()
+    return canonicalize_handle(username)
 
 
 def _serialize_user(user_row: Mapping[str, object]) -> dict[str, object]:
@@ -118,18 +120,15 @@ async def enforce_auth_rate_limit(request: Request) -> None:
 def register_user(
     db: Session, username: str, password: str, profile_bio: str | None = None
 ) -> dict[str, object]:
-    normalized_username = _normalize_username(username)
-    if not normalized_username:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Username is required"
-        )
+    display_username = validate_handle(username, field_label="Username")
+    canonical_username = canonicalize_handle(display_username)
     if not password:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Password is required"
         )
 
     existing_user = db.execute(
-        select(users.c.id).where(users.c.username == normalized_username)
+        select(users.c.id).where(username_matches(canonical_username))
     ).first()
     if existing_user is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
@@ -139,7 +138,7 @@ def register_user(
             db.execute(
                 insert(users)
                 .values(
-                    username=normalized_username,
+                    username=display_username,
                     password_hash=hash_password(password),
                     bio=profile_bio,
                 )
@@ -169,7 +168,7 @@ def register_user(
         title=created_user["username"],
         summary=created_user["bio"] if created_user["bio"] else created_user["username"],
         meta="user",
-        href=f"/profile/{created_user['username']}",
+        href=f"/profile/{canonical_username}",
     )
     return _issue_auth_bundle(created_user)
 
@@ -190,7 +189,7 @@ def authenticate_user(db: Session, username: str, password: str) -> dict[str, ob
                 users.c.profile_image_url,
                 users.c.is_active,
                 users.c.password_hash,
-            ).where(users.c.username == normalized_username)
+            ).where(username_matches(normalized_username))
         )
         .mappings()
         .first()

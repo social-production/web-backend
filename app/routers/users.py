@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
+from app.services.people_suggestions import get_ranked_people_suggestions
 from app.services.users import (
     accept_follow_request,
     follow_user,
@@ -32,6 +33,17 @@ class UserSummary(BaseModel):
     is_active: bool
 
 
+class PeopleSuggestionOut(BaseModel):
+    id: UUID
+    username: str
+    bio: str | None = None
+    profileImageUrl: str | None = None
+
+
+class PeopleSuggestionsResponse(BaseModel):
+    items: list[PeopleSuggestionOut]
+
+
 class UserSettings(BaseModel):
     appearance_theme_mode: str
     default_feed: str
@@ -49,6 +61,7 @@ class UserSettings(BaseModel):
     require_follow_approval: bool
     preferred_language: str
     display_timezone: str | None = None
+    default_location_id: UUID | None = None
 
 
 class PublicProfileResponse(BaseModel):
@@ -86,6 +99,7 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     require_follow_approval: bool | None = None
     preferred_language: str | None = None
     display_timezone: str | None = None
+    default_location_id: UUID | None = None
 
 
 class FollowResponse(BaseModel):
@@ -175,6 +189,23 @@ def unfollow(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return unfollow_user(db, current_user_id, username)
+
+
+@router.get("/suggestions", response_model=PeopleSuggestionsResponse)
+def people_suggestions(
+    q: str = Query(default="", max_length=64),
+    limit: int = Query(default=12, ge=1, le=40),
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return {
+        "items": get_ranked_people_suggestions(
+            db,
+            current_user_id,
+            query=q,
+            limit=limit,
+        )
+    }
 
 
 @router.get("/{username}", response_model=PublicProfileResponse)

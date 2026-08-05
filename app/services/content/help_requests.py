@@ -31,6 +31,8 @@ from app.services.content.scopes import (
 from app.services.content.threads import _attach_usernames_to_comments
 from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.moderation.serialize import load_active_report
+from app.services.moderation.visibility import assert_not_removed
 from app.services.notifications import create_notification
 
 VALID_AUDIENCE = frozenset({"public", "followers"})
@@ -43,7 +45,10 @@ def _serialize_help_request(
     discussion: list[dict[str, object]] | None = None,
     channel_tags: list[dict[str, object]] | None = None,
     community_tags: list[dict[str, object]] | None = None,
+    report: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    moderation_state = row.get("moderation_state") or "visible"
+    moderation_reason = row.get("moderation_reason")
     return {
         "id": row["id"],
         "author_id": row["author_id"],
@@ -53,6 +58,7 @@ def _serialize_help_request(
         "location_label": row["location_label"],
         "schedule_label": row["schedule_label"],
         "needed_at": row["needed_at"],
+        "ends_at": row.get("ends_at"),
         "roles": roles if roles is not None else row.get("roles", []),
         "vote_count": int(row.get("vote_count") or 0),
         "comment_count": int(row.get("comment_count") or 0),
@@ -61,11 +67,23 @@ def _serialize_help_request(
         "channel_tags": channel_tags or [],
         "community_tags": community_tags or [],
         "created_at": row["created_at"],
+        "report": report,
+        "moderationState": moderation_state,
+        "moderationReason": moderation_reason,
+        "isRemovedByReport": moderation_state == "removed",
+        "isUnderReview": moderation_state == "under_review",
     }
 
 
-def _format_needed_at_label(needed_at: datetime) -> str:
-    return needed_at.strftime("%a %b %d, %Y at %H:%M")
+def _format_needed_at_label(needed_at: datetime, ends_at: datetime | None = None) -> str:
+    start_label = needed_at.strftime("%a %b %d, %Y at %H:%M")
+    if ends_at is None:
+        return start_label
+    if ends_at.tzinfo is None:
+        ends_at = ends_at.replace(tzinfo=UTC)
+    if ends_at.date() == needed_at.date():
+        return f"{start_label} – {ends_at.strftime('%H:%M')}"
+    return f"{start_label} – {ends_at.strftime('%a %b %d, %Y at %H:%M')}"
 
 
 def activity_status_tone(committed_count: int, minimum_participants: int) -> str:
@@ -136,6 +154,8 @@ def create_help_request(
     roles: list[object],
     channel_slugs: list[str],
     community_slugs: list[str] | None = None,
+    location_id: UUID | None = None,
+    ends_at: datetime | None = None,
 ) -> dict[str, object]:
     community_slugs = community_slugs or []
     if not channel_slugs and not community_slugs:
@@ -146,11 +166,26 @@ def create_help_request(
 
     if needed_at.tzinfo is None:
         needed_at = needed_at.replace(tzinfo=UTC)
+    if ends_at is not None and ends_at.tzinfo is None:
+        ends_at = ends_at.replace(tzinfo=UTC)
+    if ends_at is not None and ends_at <= needed_at:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="End time must be after the start time",
+        )
 
     channel_ids = _resolve_channel_ids(db, channel_slugs)
     community_ids = _resolve_community_ids(db, community_slugs, current_user_id)
     validated_roles = _validate_help_request_roles(roles)
-    schedule_label = _format_needed_at_label(needed_at)
+    schedule_label = _format_needed_at_label(needed_at, ends_at)
+
+    from app.services.locations.resolve import resolve_entity_location_fields
+
+    resolved_location_id, resolved_location_label = resolve_entity_location_fields(
+        db,
+        location_id=location_id,
+        location_label=location_label,
+    )
     try:
         created = (
             db.execute(
@@ -159,9 +194,11 @@ def create_help_request(
                     author_id=current_user_id,
                     title=title.strip(),
                     body=body.strip(),
-                    location_label=location_label.strip(),
+                    location_label=resolved_location_label,
+                    location_id=resolved_location_id,
                     schedule_label=schedule_label,
                     needed_at=needed_at,
+                    ends_at=ends_at,
                     roles=validated_roles,
                 )
                 .returning(
@@ -172,6 +209,7 @@ def create_help_request(
                     help_requests.c.location_label,
                     help_requests.c.schedule_label,
                     help_requests.c.needed_at,
+                    help_requests.c.ends_at,
                     help_requests.c.roles,
                     help_requests.c.created_at,
                 )
@@ -272,9 +310,12 @@ def get_help_request_by_id(
                 help_requests.c.location_label,
                 help_requests.c.schedule_label,
                 help_requests.c.needed_at,
+                help_requests.c.ends_at,
                 help_requests.c.vote_count,
                 help_requests.c.comment_count,
                 help_requests.c.created_at,
+                help_requests.c.moderation_state,
+                help_requests.c.moderation_reason,
                 users.c.username.label("author_username"),
             )
             .select_from(help_requests.outerjoin(users, users.c.id == help_requests.c.author_id))
@@ -286,6 +327,7 @@ def get_help_request_by_id(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Help request not found")
 
+    assert_not_removed(db, "help_request", row["id"])
     assert_can_view_entity(db, current_user_id, "help_request", row["id"])
 
     roles = _load_help_request_roles(db, [help_request_id], current_user_id).get(
@@ -312,6 +354,13 @@ def get_help_request_by_id(
     )
     discussion = _attach_usernames_to_comments(db, comments_result["items"])
     channel_tags, community_tags = _get_help_request_tags_enriched(db, help_request_id)
+    report = load_active_report(
+        db,
+        target_type="help_request",
+        target_id=row["id"],
+        current_user_id=current_user_id,
+        created_at=row["created_at"],
+    )
 
     return {
         "help_request": _serialize_help_request(
@@ -321,6 +370,7 @@ def get_help_request_by_id(
             discussion=discussion,
             channel_tags=channel_tags,
             community_tags=community_tags,
+            report=report,
         )
     }
 

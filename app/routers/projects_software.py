@@ -58,6 +58,7 @@ class ProjectSoftwarePullRequestOut(BaseModel):
     stage: str
     stageLabel: str
     mergeId: str | None = None
+    mergeUrl: str | None = None
     mergedByUsername: str | None = None
     approvalThresholdPercent: float
     voteSummary: ProjectPlanVoteSummaryOut | None = None
@@ -167,6 +168,7 @@ class MergeRecordIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     mergeId: str = Field(min_length=1)
+    mergeUrl: str = Field(min_length=1)
 
 
 @router.get("/{slug}/software", response_model=ProjectSoftwareGovernanceDataOut)
@@ -233,6 +235,7 @@ def merge_pull_request(
         project_slug=slug,
         request_id=request_id,
         merge_id=payload.mergeId,
+        merge_url=payload.mergeUrl,
     )
 
 

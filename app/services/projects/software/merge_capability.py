@@ -20,6 +20,7 @@ from app.services.meaningful_actions import record_meaningful_action
 from app.services.projects.software.constants import VALID_ACTIONS, VALID_VOTES
 from app.services.projects.software.governance import _compute_vote_summary, _governance_payload
 from app.services.projects.software.helpers import (
+    _ensure_can_cast_software_vote,
     _ensure_member,
     _ensure_software_tables,
     _get_project_by_slug,
@@ -80,7 +81,7 @@ def vote_merge_capability_change(
 ) -> dict[str, object]:
     _ensure_software_tables(db)
     project_row = _get_project_by_slug(db, project_slug)
-    _ensure_member(db, project_row["id"], current_user_id)
+    _ensure_can_cast_software_vote(db, project_row, current_user_id)
 
     normalized_vote = vote.strip().lower()
     if normalized_vote not in VALID_VOTES:

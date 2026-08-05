@@ -150,6 +150,25 @@ def _event_is_private(db: Session, event_id: UUID) -> bool:
     return bool(row[0]) if row is not None else False
 
 
+def can_view_private_event(
+    db: Session,
+    viewer_id: UUID | None,
+    audience: str,
+    home_community_id: UUID | None,
+    event_id: UUID,
+) -> bool:
+    """Visibility for non-public events, given their audience."""
+    if audience == "private_community":
+        if home_community_id is not None and (
+            viewer_id is not None
+            and is_scope_member(db, COMMUNITY_SCOPE_KIND, home_community_id, viewer_id)
+        ):
+            return True
+        return viewer_id is not None and _viewer_is_event_member(db, viewer_id, event_id)
+    # invite_only (and any other non-public audience) is only visible to members.
+    return viewer_id is not None and _viewer_is_event_member(db, viewer_id, event_id)
+
+
 def _viewer_is_event_member(db: Session, viewer_id: UUID, event_id: UUID) -> bool:
     row = db.execute(
         select(event_memberships.c.user_id).where(
@@ -188,14 +207,23 @@ def can_view_entity(db: Session, viewer_id: UUID | None, entity_type: str, entit
 
     if normalized == "event":
         row = (
-            db.execute(select(events.c.id, events.c.is_private).where(events.c.id == entity_id))
+            db.execute(
+                select(
+                    events.c.id,
+                    events.c.is_private,
+                    events.c.audience,
+                    events.c.home_community_id,
+                ).where(events.c.id == entity_id)
+            )
             .mappings()
             .first()
         )
         if row is None:
             return False
         if row["is_private"]:
-            return viewer_id is not None and _viewer_is_event_member(db, viewer_id, entity_id)
+            return can_view_private_event(
+                db, viewer_id, row["audience"], row["home_community_id"], entity_id
+            )
         return can_view_by_tags(db, viewer_id, normalized, entity_id)
 
     if normalized in TAGGED_ENTITY_TYPES:
@@ -327,11 +355,25 @@ def filter_search_results(
     items: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     filtered: list[dict[str, object]] = []
+    moderation_tables = {
+        "post": posts,
+        "thread": threads,
+        "project": projects,
+        "event": events,
+        "help_request": help_requests,
+    }
     for item in items:
         entity_type = str(item.get("entity_type") or "").lower()
         entity_id = item.get("entity_id")
         if not isinstance(entity_id, UUID):
             continue
+        table = moderation_tables.get(entity_type)
+        if table is not None:
+            moderation_row = db.execute(
+                select(table.c.moderation_state).where(table.c.id == entity_id)
+            ).first()
+            if moderation_row is None or str(moderation_row[0] or "visible") == "removed":
+                continue
         if entity_type == "community":
             row = (
                 db.execute(

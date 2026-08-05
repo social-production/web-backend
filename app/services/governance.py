@@ -14,25 +14,33 @@ from app.models import (
     content_votes,
     events,
     help_requests,
-    platform_board_memberships,
     posts,
     projects,
-    report_votes,
-    reports,
     threads,
     users,
 )
 from app.services.access_control import assert_can_view_subject, assert_can_view_vote_target
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.moderation import submit_report as moderation_submit_report
+from app.services.moderation import vote_report as moderation_vote_report
+from app.services.moderation.serialize import (
+    load_active_reports_for_targets,
+    moderation_body_for_comment,
+)
+from app.services.moderation.thresholds import (
+    REPORT_REASONS as MODERATION_REPORT_REASONS,
+)
+from app.services.moderation.thresholds import (
+    REPORTABLE_TARGET_TYPES as MODERATION_REPORTABLE_TARGET_TYPES,
+)
 from app.services.notifications import create_notification
-from app.utils.votes import required_votes
 
 logger = logging.getLogger(__name__)
 
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project", "help_request"})
-VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "event", "project", "help_request"})
-REPORTABLE_TARGET_TYPES = frozenset({"project", "thread", "post", "comment"})
-REPORT_REASONS = frozenset({"spam", "serious-harm"})
+VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "help_request"})
+REPORTABLE_TARGET_TYPES = MODERATION_REPORTABLE_TARGET_TYPES
+REPORT_REASONS = MODERATION_REPORT_REASONS
 REPORT_VOTES = frozenset({"yes", "no"})
 VOTE_DIRECTIONS = {"up": 1, "down": -1, "neutral": 0}
 
@@ -89,45 +97,19 @@ def _ensure_report_target_exists(db: Session, target_type: str, target_id: UUID)
         )
 
 
-def _report_vote_summary(
-    db: Session, report_id: UUID, current_user_id: UUID | None = None
-) -> dict[str, object]:
-    rows = db.execute(
-        select(report_votes.c.vote, report_votes.c.voter_id).where(
-            report_votes.c.report_id == report_id
-        )
-    ).all()
-
-    yes_count = 0
-    no_count = 0
-    active_vote = None
-    for vote, voter_id in rows:
-        if vote == "yes":
-            yes_count += 1
-        elif vote == "no":
-            no_count += 1
-        if current_user_id is not None and voter_id == current_user_id:
-            active_vote = vote
-
-    member_count = db.execute(
-        select(platform_board_memberships.c.user_id).where(
-            platform_board_memberships.c.standing_state == "member"
-        )
-    ).all()
-    eligible = len(member_count) if len(member_count) > 0 else 1
-
-    return {
-        "yes_count": yes_count,
-        "no_count": no_count,
-        "active_vote": active_vote,
-        "eligible_voter_count": eligible,
-        "votes_required": required_votes(eligible),
-    }
-
-
 def _serialize_comment(
-    row: Mapping[str, object], replies: list[dict[str, object]] | None = None, active_vote: int = 0
+    row: Mapping[str, object],
+    replies: list[dict[str, object]] | None = None,
+    active_vote: int = 0,
+    report: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    moderation_state = str(row.get("moderation_state") or "visible")
+    moderation_reason = row.get("moderation_reason")
+    body = moderation_body_for_comment(
+        body=str(row["body"]),
+        moderation_state=moderation_state,
+        moderation_reason=str(moderation_reason) if moderation_reason else None,
+    )
     return {
         "id": row["id"],
         "subject_type": row["subject_type"],
@@ -135,11 +117,17 @@ def _serialize_comment(
         "parent_id": row["parent_id"],
         "author_id": row["author_id"],
         "author_username": row.get("author_username", "") or "",
-        "body": row["body"],
+        "body": body,
         "vote_count": row["vote_count"],
         "active_vote": active_vote,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "moderation_state": moderation_state,
+        "moderation_reason": moderation_reason,
+        "moderationState": moderation_state,
+        "isUnderReview": moderation_state == "under_review"
+        or (report is not None and str(report.get("resolution") or "") in {"open", "under_review"}),
+        "report": report,
         "replies": replies or [],
     }
 
@@ -601,13 +589,25 @@ def get_comments(
         ).all()
         active_votes = {target_id: int(direction) for target_id, direction in vote_rows}
 
+    reports_by_id = load_active_reports_for_targets(
+        db,
+        target_type="comment",
+        target_ids=[row["id"] for row in rows],
+        current_user_id=current_user_id,
+    )
+
     top_level: dict[UUID, dict[str, object]] = {}
     all_comments: dict[UUID, dict[str, object]] = {}
     children: dict[UUID | None, list[UUID]] = {}
     ordered_ids: list[UUID] = []
 
     for row in rows:
-        item = _serialize_comment(row, replies=[], active_vote=active_votes.get(row["id"], 0))
+        item = _serialize_comment(
+            row,
+            replies=[],
+            active_vote=active_votes.get(row["id"], 0),
+            report=reports_by_id.get(row["id"]),
+        )
         all_comments[row["id"]] = item
         parent_key = row["parent_id"]
         if parent_key not in children:
@@ -734,78 +734,14 @@ def submit_report(
     reason: str,
     description: str,
 ) -> dict[str, object]:
-    normalized_target = target_type.strip().lower()
-    normalized_reason = reason.strip().lower()
-    if normalized_target not in REPORTABLE_TARGET_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"target_type must be one of: {sorted(REPORTABLE_TARGET_TYPES)}",
-        )
-    if normalized_reason not in REPORT_REASONS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"reason must be one of: {sorted(REPORT_REASONS)}",
-        )
-
-    _ensure_report_target_exists(db, normalized_target, target_id)
-    reported_author_id = _resolve_target_author_id(db, normalized_target, target_id)
-
-    existing = (
-        db.execute(
-            select(reports).where(
-                reports.c.target_type == normalized_target, reports.c.target_id == target_id
-            )
-        )
-        .mappings()
-        .first()
+    return moderation_submit_report(
+        db=db,
+        current_user_id=current_user_id,
+        target_type=target_type,
+        target_id=target_id,
+        reason=reason,
+        description=description,
     )
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="Report already exists for target"
-        )
-
-    try:
-        created = (
-            db.execute(
-                insert(reports)
-                .values(
-                    subject_type=normalized_target,
-                    subject_id=target_id,
-                    target_type=normalized_target,
-                    target_id=target_id,
-                    reason=normalized_reason,
-                    description=description.strip(),
-                    reporter_id=current_user_id,
-                    reported_author_id=reported_author_id,
-                    resolution="open",
-                )
-                .returning(
-                    reports.c.id,
-                    reports.c.subject_type,
-                    reports.c.subject_id,
-                    reports.c.target_type,
-                    reports.c.target_id,
-                    reports.c.reason,
-                    reports.c.description,
-                    reports.c.reporter_id,
-                    reports.c.reported_author_id,
-                    reports.c.resolution,
-                    reports.c.created_at,
-                    reports.c.updated_at,
-                )
-            )
-            .mappings()
-            .one()
-        )
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not submit report"
-        ) from exc
-
-    summary = _report_vote_summary(db, created["id"], current_user_id)
-    return {"report": _serialize_report(created, summary)}
 
 
 def vote_report(
@@ -814,70 +750,9 @@ def vote_report(
     report_id: UUID,
     vote: str,
 ) -> dict[str, object]:
-    normalized_vote = vote.strip().lower()
-    if normalized_vote not in REPORT_VOTES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"vote must be one of: {sorted(REPORT_VOTES)}",
-        )
-
-    row = db.execute(select(reports).where(reports.c.id == report_id)).mappings().first()
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
-
-    existing = db.execute(
-        select(report_votes.c.vote).where(
-            report_votes.c.report_id == report_id, report_votes.c.voter_id == current_user_id
-        )
-    ).first()
-
-    try:
-        if existing is None:
-            db.execute(
-                insert(report_votes).values(
-                    report_id=report_id, voter_id=current_user_id, vote=normalized_vote
-                )
-            )
-        else:
-            db.execute(
-                update(report_votes)
-                .where(
-                    report_votes.c.report_id == report_id,
-                    report_votes.c.voter_id == current_user_id,
-                )
-                .values(vote=normalized_vote)
-            )
-
-        summary = _report_vote_summary(db, report_id, current_user_id)
-        yes_count = int(summary["yes_count"])
-        no_count = int(summary["no_count"])
-        total = yes_count + no_count
-        approval = (yes_count / total) if total > 0 else 0.0
-
-        new_resolution = row["resolution"]
-        if total >= summary["votes_required"] and approval >= 0.66:
-            new_resolution = "hidden"
-
-        db.execute(
-            update(reports).where(reports.c.id == report_id).values(resolution=new_resolution)
-        )
-        record_meaningful_action(
-            db=db,
-            user_id=current_user_id,
-            action_type="cast-vote",
-            metadata={
-                "target_type": "report",
-                "target_id": str(report_id),
-                "vote": normalized_vote,
-            },
-        )
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not vote on report"
-        ) from exc
-
-    refreshed = db.execute(select(reports).where(reports.c.id == report_id)).mappings().one()
-    final_summary = _report_vote_summary(db, report_id, current_user_id)
-    return {"report": _serialize_report(refreshed, final_summary), "vote": normalized_vote}
+    return moderation_vote_report(
+        db=db,
+        current_user_id=current_user_id,
+        report_id=report_id,
+        vote=vote,
+    )
