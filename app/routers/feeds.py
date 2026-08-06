@@ -7,12 +7,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
-from app.dependencies import get_db
+from app.dependencies import get_db, get_feed_provider
+from app.ports import FeedProvider
 from app.services.feeds import (
-    get_home_feed,
     get_map_markers,
-    get_personal_feed,
-    get_public_feed,
     get_region_feed,
     get_scope_feed,
     get_user_feed,
@@ -140,11 +138,10 @@ def public_feed(
     filter: str = Query(default="all", pattern=_FILTER_PATTERN),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
+    feeds: FeedProvider = Depends(get_feed_provider),
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
-    return get_public_feed(
-        db=db,
+    return feeds.get_public_feed(
         sort=sort,
         limit=limit,
         offset=offset,
@@ -162,11 +159,10 @@ def home_feed(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    feeds: FeedProvider = Depends(get_feed_provider),
 ) -> dict[str, object]:
-    return get_home_feed(
-        db=db,
-        current_user_id=current_user_id,
+    return feeds.get_home_feed(
+        current_user_id,
         sort=sort,
         limit=limit,
         offset=offset,
@@ -184,11 +180,10 @@ def personal_feed(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    feeds: FeedProvider = Depends(get_feed_provider),
 ) -> dict[str, object]:
-    return get_personal_feed(
-        db=db,
-        current_user_id=current_user_id,
+    return feeds.get_personal_feed(
+        current_user_id,
         sort=sort,
         limit=limit,
         offset=offset,

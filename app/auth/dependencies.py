@@ -5,13 +5,12 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from app.adapters.redis.token_revocation import get_token_revocation_store
 from app.auth.cookies import ACCESS_COOKIE, REFRESH_COOKIE
 from app.auth.jwt import JWTError, get_access_token_payload
-from app.cache import get_redis_client
+from app.errors import ServiceUnavailableAppError, UnauthorizedAppError
 
 bearer_scheme = HTTPBearer(auto_error=False)
-
-TOKEN_BLACKLIST_PREFIX = "token-blacklist"
 
 
 def resolve_access_token(
@@ -25,14 +24,14 @@ def resolve_access_token(
     if cookie_token:
         return cookie_token
 
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    raise UnauthorizedAppError("Not authenticated")
 
 
 def resolve_refresh_token(request: Request) -> str:
     cookie_token = request.cookies.get(REFRESH_COOKIE)
     if cookie_token:
         return cookie_token
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    raise UnauthorizedAppError("Not authenticated")
 
 
 def get_current_user_token(
@@ -45,19 +44,14 @@ def get_current_user_token(
 async def _is_blacklisted_jti(jti: str | None) -> bool:
     if not jti:
         return False
-
-    redis_client = get_redis_client()
+    store = get_token_revocation_store()
     try:
-        return await redis_client.exists(f"{TOKEN_BLACKLIST_PREFIX}:{jti}") > 0
-    except Exception:
-        from app.config import get_settings
-
-        if get_settings().rate_limit_fail_closed:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Authentication service temporarily unavailable",
-            )
-        return False
+        return await store.is_revoked(jti)
+    except ServiceUnavailableAppError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable",
+        )
 
 
 async def get_current_user_token_payload(
@@ -68,18 +62,14 @@ async def get_current_user_token_payload(
     try:
         payload = get_access_token_payload(token)
     except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        ) from exc
+        raise UnauthorizedAppError("Invalid token") from exc
 
     jti = payload.get("jti")
     if not isinstance(jti, str) or not jti:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise UnauthorizedAppError("Invalid token")
 
     if await _is_blacklisted_jti(jti):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
-        )
+        raise UnauthorizedAppError("Token has been revoked")
 
     return payload
 
@@ -89,16 +79,12 @@ async def get_current_user_id(
 ) -> UUID:
     subject = payload.get("sub")
     if not isinstance(subject, str) or not subject:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject"
-        )
+        raise UnauthorizedAppError("Invalid token subject")
 
     try:
         return UUID(subject)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject"
-        ) from exc
+        raise UnauthorizedAppError("Invalid token subject") from exc
 
 
 async def get_optional_current_user_id(

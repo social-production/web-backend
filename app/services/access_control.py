@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
-from fastapi import HTTPException, status
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
+from app.domain.access_policy import EntityTagScope, can_view_by_tag_scope
+from app.errors import NotFoundAppError, ValidationAppError
 from app.models import (
     comments,
     communities,
@@ -46,9 +47,9 @@ _ENTITY_ID_COLUMN = {
 }
 
 
-def _not_found(entity_type: str) -> HTTPException:
+def _not_found(entity_type: str) -> NotFoundAppError:
     label = entity_type.replace("_", " ").capitalize()
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{label} not found")
+    return NotFoundAppError(f"{label} not found")
 
 
 def is_scope_member(db: Session, scope_kind: str, scope_id: UUID, user_id: UUID) -> bool:
@@ -138,11 +139,26 @@ def can_view_by_tags(
     has_channel_tag, has_open_community_tag, closed_community_ids = _entity_tag_scope(
         db, entity_type, entity_id
     )
-    if not closed_community_ids or has_channel_tag or has_open_community_tag:
-        return True
-    if viewer_id is None:
-        return False
-    return _viewer_is_member_of_communities(db, viewer_id, closed_community_ids)
+    memberships: list[UUID] = []
+    if viewer_id is not None and closed_community_ids:
+        membership_rows = db.execute(
+            select(scope_memberships.c.scope_id).where(
+                scope_memberships.c.scope_kind == COMMUNITY_SCOPE_KIND,
+                scope_memberships.c.scope_id.in_(list(closed_community_ids)),
+                scope_memberships.c.user_id == viewer_id,
+            )
+        ).all()
+        memberships = [row[0] for row in membership_rows]
+
+    return can_view_by_tag_scope(
+        viewer_id=viewer_id,
+        scope=EntityTagScope(
+            has_channel_tag=has_channel_tag,
+            has_open_community_tag=has_open_community_tag,
+            closed_community_ids=tuple(closed_community_ids),
+        ),
+        viewer_closed_community_memberships=memberships,
+    )
 
 
 def _event_is_private(db: Session, event_id: UUID) -> bool:
@@ -258,9 +274,8 @@ def assert_can_view_subject(
 ) -> None:
     normalized = subject_type.strip().lower()
     if normalized not in COMMENTABLE_SUBJECT_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"subject_type must be one of: {sorted(COMMENTABLE_SUBJECT_TYPES)}",
+        raise ValidationAppError(
+            f"subject_type must be one of: {sorted(COMMENTABLE_SUBJECT_TYPES)}",
         )
     assert_can_view_entity(db, viewer_id, normalized, subject_id)
 
@@ -273,9 +288,8 @@ def assert_can_view_vote_target(
 ) -> None:
     normalized = target_type.strip().lower()
     if normalized not in VOTE_TARGET_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"target_type must be one of: {sorted(VOTE_TARGET_TYPES)}",
+        raise ValidationAppError(
+            f"target_type must be one of: {sorted(VOTE_TARGET_TYPES)}",
         )
     if normalized == "comment":
         row = (
@@ -288,7 +302,7 @@ def assert_can_view_vote_target(
             .first()
         )
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found")
+            raise NotFoundAppError("Comment not found")
         assert_can_view_subject(db, viewer_id, str(row["subject_type"]), row["subject_id"])
         return
     assert_can_view_entity(db, viewer_id, normalized, target_id)
@@ -305,19 +319,17 @@ def assert_can_view_scope(
         return
 
     if normalized_kind != COMMUNITY_SCOPE_KIND:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid scope kind"
-        )
+        raise ValidationAppError("Invalid scope kind")
 
     row = db.execute(select(communities.c.join_policy).where(communities.c.id == scope_id)).first()
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Community not found")
+        raise NotFoundAppError("Community not found")
 
     if row[0] != "closed":
         return
 
     if viewer_id is None or not is_scope_member(db, COMMUNITY_SCOPE_KIND, scope_id, viewer_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Community not found")
+        raise NotFoundAppError("Community not found")
 
 
 def closed_community_only_tag_condition(tag_table, entity_id_column, entity_fk_name: str):

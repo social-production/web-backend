@@ -7,7 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
-from app.dependencies import get_db
+from app.dependencies import get_db, get_messaging_provider
+from app.ports import MessagingProvider
 from app.services.messages import (
     add_group_member,
     create_group_conversation,
@@ -18,7 +19,6 @@ from app.services.messages import (
     mark_linked_chat_read,
     remove_group_member,
     rename_group_conversation,
-    search_message_contacts,
     send_message,
     start_direct_conversation,
 )
@@ -144,11 +144,10 @@ def list_message_contacts(
     q: str = Query(default="", max_length=32),
     limit: int = Query(default=8, ge=1, le=25),
     current_user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    messaging: MessagingProvider = Depends(get_messaging_provider),
 ) -> dict[str, object]:
-    return search_message_contacts(
-        db=db,
-        current_user_id=current_user_id,
+    return messaging.search_contacts(
+        current_user_id,
         query=q,
         limit=limit,
     )

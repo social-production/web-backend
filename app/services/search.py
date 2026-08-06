@@ -3,14 +3,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
-from fastapi import HTTPException, status
 from sqlalchemy import func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.errors import InternalAppError, ValidationAppError
 from app.models import searchable_documents
 from app.services.access_control import filter_search_results
+from app.unit_of_work import commit, rollback
 
 SEARCHABLE_ENTITY_TYPES = frozenset({"project", "thread", "event", "channel", "community", "user"})
 
@@ -41,9 +42,8 @@ def _normalize_entity_types(entity_types: Sequence[str] | None) -> list[str]:
         if not value or value in seen:
             continue
         if value not in SEARCHABLE_ENTITY_TYPES:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"entity_types must be within: {sorted(SEARCHABLE_ENTITY_TYPES)}",
+            raise ValidationAppError(
+                f"entity_types must be within: {sorted(SEARCHABLE_ENTITY_TYPES)}"
             )
         seen.add(value)
         normalized.append(value)
@@ -62,10 +62,7 @@ def index_document(
     """Internal helper to upsert a searchable document when content changes."""
     normalized_entity_type = entity_type.strip().lower()
     if normalized_entity_type not in SEARCHABLE_ENTITY_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"entity_type must be one of: {sorted(SEARCHABLE_ENTITY_TYPES)}",
-        )
+        raise ValidationAppError(f"entity_type must be one of: {sorted(SEARCHABLE_ENTITY_TYPES)}")
 
     cleaned_title = title.strip()
     cleaned_summary = summary.strip()
@@ -73,21 +70,13 @@ def index_document(
     cleaned_href = href.strip()
 
     if not cleaned_title:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required"
-        )
+        raise ValidationAppError("title is required")
     if not cleaned_summary:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="summary is required"
-        )
+        raise ValidationAppError("summary is required")
     if not cleaned_meta:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="meta is required"
-        )
+        raise ValidationAppError("meta is required")
     if not cleaned_href:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="href is required"
-        )
+        raise ValidationAppError("href is required")
 
     search_text = " ".join([cleaned_title, cleaned_summary, cleaned_meta])
 
@@ -125,13 +114,10 @@ def index_document(
 
     try:
         row = db.execute(upsert_stmt).mappings().one()
-        db.commit()
+        commit(db)
     except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not index searchable document",
-        ) from exc
+        rollback(db)
+        raise InternalAppError("Could not index searchable document") from exc
 
     payload = dict(row)
     payload["rank"] = 0.0
@@ -147,9 +133,7 @@ def search_documents(
 ) -> dict[str, object]:
     cleaned_query = query.strip()
     if not cleaned_query:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="query is required"
-        )
+        raise ValidationAppError("query is required")
 
     normalized_types = _normalize_entity_types(entity_types)
     safe_limit = max(1, min(limit, 100))

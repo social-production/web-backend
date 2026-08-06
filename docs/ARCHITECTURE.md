@@ -38,10 +38,12 @@ Thin barrels such as `app/services/projects_phases.py` and `app/services/project
 
 1. **Routers = transport only.** No SQL, no vote math, no membership loops in routers.
 2. **Services own business rules.** Routers call services; services call models, `access_control`, and shared utils.
-3. **No cross-package `_private` imports.** If another package needs a helper, promote it to a public name (or put it in a shared module). Underscore aliases may remain in barrels for compatibility.
-4. **Governance votes** go through `app/services/governance_votes.py` (and `app.utils.votes` for population counts).
-5. **Access checks** go through `app/services/access_control.py` — fail closed for private entities.
-6. **File-size guideline:** aim for ~400 lines per module. When a file grows past that and mixes concerns (gates vs serializers vs request handlers), split by concern like `phases/` and `software/`.
+3. **Infra behind ports.** Redis, JWT blacklist, search indexing, and auth lifecycle go through `app/ports` + `app/adapters` (see [`PROVIDER_SEAMS.md`](PROVIDER_SEAMS.md)).
+4. **Domain errors, not HTTPException**, in migrated services (`app/errors.py`).
+5. **No cross-package `_private` imports.** If another package needs a helper, promote it to a public name (or put it in a shared module). Underscore aliases may remain in barrels for compatibility.
+6. **Governance votes** go through `app/services/governance_votes.py` (and `app.utils.votes` for population counts).
+7. **Access checks** go through `app/services/access_control.py` / `AccessPolicy` — fail closed for private entities. Pure tag rules live in `app/domain/access_policy.py`.
+8. **File-size guideline:** aim for ~400 lines per module. When a file grows past that and mixes concerns (gates vs serializers vs request handlers), split by concern like `phases/` and `software/`.
 
 ## Adding a feature (recipe)
 

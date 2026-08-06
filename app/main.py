@@ -79,6 +79,10 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RateLimitMiddleware)
 
+    from app.http_errors import register_exception_handlers
+
+    register_exception_handlers(app)
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}

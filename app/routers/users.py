@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
-from app.dependencies import get_db
-from app.services.people_suggestions import get_ranked_people_suggestions
+from app.dependencies import get_db, get_people_suggestions_provider
+from app.ports import PeopleSuggestionsProvider
 from app.services.users import (
     accept_follow_request,
     follow_user,
@@ -196,11 +196,10 @@ def people_suggestions(
     q: str = Query(default="", max_length=64),
     limit: int = Query(default=12, ge=1, le=40),
     current_user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    people: PeopleSuggestionsProvider = Depends(get_people_suggestions_provider),
 ) -> dict[str, object]:
     return {
-        "items": get_ranked_people_suggestions(
-            db,
+        "items": people.suggest(
             current_user_id,
             query=q,
             limit=limit,

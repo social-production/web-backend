@@ -4,11 +4,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user_id
-from app.dependencies import get_db
-from app.services.search import search_documents
+from app.dependencies import get_search_provider
+from app.ports import SearchProvider
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -37,10 +36,9 @@ def search(
     entity_types: list[str] | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
     current_user_id: UUID = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    search_provider: SearchProvider = Depends(get_search_provider),
 ) -> dict[str, object]:
-    return search_documents(
-        db=db,
+    return search_provider.search(
         query=q,
         entity_types=entity_types,
         limit=limit,
