@@ -28,7 +28,6 @@ ROUTE_RATE_LIMITS: dict[str, tuple[int, int]] = {
     "/feeds/scope": (60, 60),
     "/bootstrap": (30, 60),
     "/bootstrap/summary": (120, 60),
-    "/feedback": (5, 60),
 }
 
 USER_LIMITED_PREFIXES = (

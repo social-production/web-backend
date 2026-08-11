@@ -21,7 +21,6 @@ from app.routers.events import router as events_router
 from app.routers.events_links import router as events_links_router
 from app.routers.events_phases import router as events_phases_router
 from app.routers.events_plans import router as events_plans_router
-from app.routers.feedback import router as feedback_router
 from app.routers.feeds import router as feeds_router
 from app.routers.governance import router as governance_router
 from app.routers.locations import router as locations_router
@@ -115,7 +114,6 @@ def create_app() -> FastAPI:
     app.include_router(events_phases_router)
     app.include_router(search_router)
     app.include_router(feeds_router)
-    app.include_router(feedback_router)
     app.include_router(locations_router)
     app.include_router(platform_router)
     app.include_router(projects_router)
