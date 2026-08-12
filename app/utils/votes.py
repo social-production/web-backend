@@ -154,10 +154,11 @@ def resolve_project_vote_population(
     project_id: UUID,
     is_platform_tagged: bool,
 ) -> int:
-    """Platform tag overrides local membership when sizing quorum.
+    """Return audience N for quorum. Quorum itself is required_votes(N).
 
-    If a project is tagged to ``platform`` (alone or with other channels/communities),
-    quorum N is always platform weekly actives.
+    Per governance-rules.md:
+    - platform-tagged → weekly unique active platform users
+    - otherwise → weekly unique active users within project membership
     """
     if is_platform_tagged:
         return weekly_active_users_global(db)
@@ -165,7 +166,12 @@ def resolve_project_vote_population(
 
 
 def resolve_event_vote_population(db: Session, event_id: UUID) -> int:
-    """Platform tag overrides local membership when sizing quorum."""
+    """Return audience N for quorum. Quorum itself is required_votes(N).
+
+    Per governance-rules.md:
+    - platform-tagged → weekly unique active platform users
+    - otherwise → weekly unique active users within event membership
+    """
     if is_platform_event(db, event_id):
         return weekly_active_users_global(db)
     return weekly_active_event_members(db, event_id)
