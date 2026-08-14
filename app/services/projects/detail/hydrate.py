@@ -49,7 +49,7 @@ from app.services.activity_history import (
     utc_now,
 )
 from app.services.content import activity_status_tone
-from app.services.detail_links import build_links_frame
+from app.services.detail_links import build_links_frame, empty_links_frame
 from app.services.projects.detail.plans import load_project_plans
 from app.services.projects.helpers import (
     _build_project_history,
@@ -93,6 +93,7 @@ async def get_project_detail(
     slug: str,
     current_user_id: UUID | None = None,
     cache: Redis | None = None,
+    include_tab_payloads: bool = False,
 ) -> dict[str, object]:
     row = _get_project_by_slug_row(db, slug)
     project_id = row["id"]
@@ -475,15 +476,19 @@ async def get_project_detail(
             .mappings()
             .all()
         )
-        out = []
-        for req in rows:
-            if req["status"] != "open":
-                continue
-            vote_rows = db.execute(
-                select(vote_table.c.vote, vote_table.c.voter_id).where(
-                    vote_table.c.request_id == req["id"]
+        open_rows = [req for req in rows if req["status"] == "open"]
+        request_ids = [req["id"] for req in open_rows]
+        votes_by_request: dict[object, list[tuple[object, object]]] = {}
+        if request_ids:
+            for request_id, vote, voter_id in db.execute(
+                select(vote_table.c.request_id, vote_table.c.vote, vote_table.c.voter_id).where(
+                    vote_table.c.request_id.in_(request_ids)
                 )
-            ).all()
+            ).all():
+                votes_by_request.setdefault(request_id, []).append((vote, voter_id))
+        out = []
+        for req in open_rows:
+            vote_rows = votes_by_request.get(req["id"], [])
             summary, passes, can_still = _vote_summary(
                 vote_rows, vote_context_population, current_user_id
             )
@@ -520,6 +525,8 @@ async def get_project_detail(
     phase_title_map = {item[0]: item[3] for item in PROJECT_PHASES}
     phase_change_requests = []
     for req in phase_change_rows:
+        if req["status"] != "open":
+            continue
         vote_rows = db.execute(
             select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id).where(
                 project_phase_change_votes.c.request_id == req["id"]
@@ -542,8 +549,6 @@ async def get_project_detail(
                 "entryPhaseId": "phase-1",
                 "entryPhaseLabel": phase_title_map.get("phase-1", "Proposal"),
             }
-        if req["status"] != "open":
-            continue
         phase_change_requests.append(
             {
                 "id": str(req["id"]),
@@ -1104,23 +1109,27 @@ async def get_project_detail(
 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    discussion_rows = db.execute(
-        select(
-            comments.c.id,
-            comments.c.author_id,
-            comments.c.body,
-            comments.c.created_at,
-            comments.c.vote_count,
-            comments.c.moderation_state,
-            comments.c.moderation_reason,
-        )
-        .where(
-            comments.c.subject_type == "project",
-            comments.c.subject_id == project_id,
-            comments.c.parent_id.is_(None),
-        )
-        .order_by(comments.c.created_at.asc())
-    ).all()
+    discussion_rows = (
+        db.execute(
+            select(
+                comments.c.id,
+                comments.c.author_id,
+                comments.c.body,
+                comments.c.created_at,
+                comments.c.vote_count,
+                comments.c.moderation_state,
+                comments.c.moderation_reason,
+            )
+            .where(
+                comments.c.subject_type == "project",
+                comments.c.subject_id == project_id,
+                comments.c.parent_id.is_(None),
+            )
+            .order_by(comments.c.created_at.asc())
+        ).all()
+        if include_tab_payloads
+        else []
+    )
     discussion_author_ids = {
         author_id for _, author_id, _, _, _, _, _ in discussion_rows if author_id
     }
@@ -1177,31 +1186,34 @@ async def get_project_detail(
         ) in discussion_rows
     ]
 
-    links_frame = build_links_frame(
-        db,
-        owner_kind="project",
-        owner_slug=str(row["slug"]),
-        current_user_id=current_user_id,
-    )
-    links_frame["conversionNote"] = (
-        "Conversion lineage is permanent. Manual links stay visible alongside it."
-        if conversion_lineage
-        else ""
-    )
-    links_frame["conversionWorkflow"] = conversion_workflow
-    links_frame["conversionLineage"] = conversion_lineage
-    links_frame["projectSlug"] = row["slug"]
-    links_frame["autoLinks"] = conversion_auto_links + auto_links
-    links_frame["manualLinks"] = links_frame["activeLinks"]
-    links_frame["manualLinkRequests"] = manual_link_requests
-    links_frame["linkableProjects"] = linkable_projects
-    links_frame["viewerCanProposeLinks"] = viewer_can_propose_links
-    links_frame["requestFrames"] = [
-        {"id": "borrowing", "title": "Borrowing", "body": ""},
-        {"id": "delivery", "title": "Delivery", "body": ""},
-        {"id": "asset-use", "title": "Asset use", "body": ""},
-    ]
-    links_frame["placeholderSections"] = []
+    if include_tab_payloads:
+        links_frame = build_links_frame(
+            db,
+            owner_kind="project",
+            owner_slug=str(row["slug"]),
+            current_user_id=current_user_id,
+        )
+        links_frame["conversionNote"] = (
+            "Conversion lineage is permanent. Manual links stay visible alongside it."
+            if conversion_lineage
+            else ""
+        )
+        links_frame["conversionWorkflow"] = conversion_workflow
+        links_frame["conversionLineage"] = conversion_lineage
+        links_frame["projectSlug"] = row["slug"]
+        links_frame["autoLinks"] = conversion_auto_links + auto_links
+        links_frame["manualLinks"] = links_frame["activeLinks"]
+        links_frame["manualLinkRequests"] = manual_link_requests
+        links_frame["linkableProjects"] = linkable_projects
+        links_frame["viewerCanProposeLinks"] = viewer_can_propose_links
+        links_frame["requestFrames"] = [
+            {"id": "borrowing", "title": "Borrowing", "body": ""},
+            {"id": "delivery", "title": "Delivery", "body": ""},
+            {"id": "asset-use", "title": "Asset use", "body": ""},
+        ]
+        links_frame["placeholderSections"] = []
+    else:
+        links_frame = empty_links_frame("project", str(row["slug"]))
 
     return {
         "id": str(project_id),
@@ -1237,7 +1249,11 @@ async def get_project_detail(
         "viewerCanVoteOnEditRequests": viewer_can_vote_on_edit_requests,
         "linksFrame": links_frame,
         "inventoryFrame": None,
-        "history": _build_project_history(db, project_id, current_user_id, vote_context_population),
+        "history": (
+            _build_project_history(db, project_id, current_user_id, vote_context_population)
+            if include_tab_payloads
+            else []
+        ),
         "members": members,
         "viewerIsMember": viewer_is_member,
         "viewerCanToggleMembership": current_user_id is not None,
@@ -1251,3 +1267,40 @@ async def get_project_detail(
         "discussionNote": "",
         "discussion": discussion,
     }
+
+
+async def get_project_history(
+    db: Session,
+    slug: str,
+    current_user_id: UUID | None = None,
+) -> dict[str, object]:
+    row = _get_project_by_slug_row(db, slug)
+    project_id = row["id"]
+    assert_can_view_entity(db, current_user_id, "project", project_id)
+    vote_context_population = resolve_project_vote_population(
+        db,
+        project_id,
+        bool(row["is_platform_tagged"]),
+    )
+    return {
+        "history": _build_project_history(
+            db, project_id, current_user_id, vote_context_population
+        )
+    }
+
+
+async def get_project_links(
+    db: Session,
+    slug: str,
+    current_user_id: UUID | None = None,
+    cache: Redis | None = None,
+) -> dict[str, object]:
+    detail = await get_project_detail(
+        db,
+        slug=slug,
+        current_user_id=current_user_id,
+        cache=cache,
+        include_tab_payloads=True,
+    )
+    return {"linksFrame": detail["linksFrame"]}
+

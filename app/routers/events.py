@@ -31,6 +31,7 @@ from app.services.events import (
     uncommit_event_activity_role,
     vote_event_value_importance,
 )
+from app.services.events.detail import get_event_history, get_event_links
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -278,6 +279,27 @@ async def get_event(
     cache: Redis = Depends(get_cache),
 ) -> dict[str, object]:
     return await get_event_detail(db=db, cache=cache, slug=slug, current_user_id=viewer_user_id)
+
+
+@router.get("/{slug}/history")
+async def get_event_history_route(
+    slug: str,
+    viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+    cache: Redis = Depends(get_cache),
+) -> dict[str, object]:
+    return await get_event_history(
+        db=db, cache=cache, slug=slug, current_user_id=viewer_user_id
+    )
+
+
+@router.get("/{slug}/links")
+async def get_event_links_route(
+    slug: str,
+    viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return await get_event_links(db=db, slug=slug, current_user_id=viewer_user_id)
 
 
 @router.post("/{slug}/join", response_model=EventMembershipResponse)

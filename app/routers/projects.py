@@ -33,6 +33,7 @@ from app.services.projects import (
     update_project_details,
     vote_project_value_importance,
 )
+from app.services.projects.detail.hydrate import get_project_history, get_project_links
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -252,6 +253,27 @@ async def get_project(
     cache: Redis = Depends(get_cache),
 ) -> dict[str, object]:
     return await get_project_detail(db=db, cache=cache, slug=slug, current_user_id=viewer_user_id)
+
+
+@router.get("/{slug}/history")
+async def get_project_history_route(
+    slug: str,
+    viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return await get_project_history(db=db, slug=slug, current_user_id=viewer_user_id)
+
+
+@router.get("/{slug}/links")
+async def get_project_links_route(
+    slug: str,
+    viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+    cache: Redis = Depends(get_cache),
+) -> dict[str, object]:
+    return await get_project_links(
+        db=db, cache=cache, slug=slug, current_user_id=viewer_user_id
+    )
 
 
 @router.post("/{slug}/join", response_model=ProjectMembershipResponse)

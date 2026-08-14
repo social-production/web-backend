@@ -869,6 +869,29 @@ def vote_detail_link_request(
     return {"ok": True}
 
 
+def empty_links_frame(owner_kind: str, owner_slug: str) -> dict[str, object]:
+    return {
+        "ownerKind": owner_kind,
+        "ownerSlug": owner_slug,
+        "intro": "",
+        "activeLinks": [],
+        "pendingLinkRequests": [],
+        "historicalLinks": [],
+        "historicalLinkRequests": [],
+        "linkableRecords": [],
+        "viewerCanProposeLinks": False,
+        "conversionNote": "",
+        "conversionWorkflow": [],
+        "conversionLineage": None,
+        "autoLinks": [],
+        "manualLinks": [],
+        "manualLinkRequests": [],
+        "linkableProjects": [],
+        "requestFrames": [],
+        "placeholderSections": [],
+    }
+
+
 def build_links_frame(
     db: Session,
     *,

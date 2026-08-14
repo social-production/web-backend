@@ -291,15 +291,15 @@ def test_conversion_creates_successor_lineage_and_inherited_history():
         assert all(item["predecessor_slug"] == seeded["project_slug"] for item in inherited)
         db.close()
 
-        pred_detail = client.get(f"/projects/{seeded['project_slug']}")
-        assert pred_detail.status_code == 200, pred_detail.text
-        lineage = pred_detail.json()["linksFrame"]["conversionLineage"]
+        pred_links = client.get(f"/projects/{seeded['project_slug']}/links")
+        assert pred_links.status_code == 200, pred_links.text
+        lineage = pred_links.json()["linksFrame"]["conversionLineage"]
         assert lineage is not None
         assert lineage["successor"]["href"] == f"/projects/{successor['slug']}"
 
-        succ_detail = client.get(f"/projects/{successor['slug']}")
-        assert succ_detail.status_code == 200, succ_detail.text
-        history = succ_detail.json()["history"]
+        succ_history = client.get(f"/projects/{successor['slug']}/history")
+        assert succ_history.status_code == 200, succ_history.text
+        history = succ_history.json()["history"]
         inherited_entries = [item for item in history if item.get("isInherited")]
         assert inherited_entries
         assert inherited_entries[0]["originPredecessorSlug"] == seeded["project_slug"]

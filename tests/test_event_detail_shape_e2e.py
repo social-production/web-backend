@@ -147,6 +147,20 @@ def run() -> None:
         assert actual_keys == EVENT_PAGE_DATA_KEYS, (
             f"Top-level keys mismatch. Missing={missing}; Extra={extras}"
         )
+        assert payload["discussion"] == []
+        assert payload["history"] == []
+        assert payload["linksFrame"]["activeLinks"] == []
+
+        history_resp = client.get(f"/events/{event_slug}/history", headers=headers)
+        assert history_resp.status_code == 200, history_resp.text
+        history_payload = history_resp.json()
+        assert isinstance(history_payload.get("history"), list)
+
+        links_resp = client.get(f"/events/{event_slug}/links", headers=headers)
+        assert links_resp.status_code == 200, links_resp.text
+        links_payload = links_resp.json()
+        assert "linksFrame" in links_payload
+        assert "activeLinks" in links_payload["linksFrame"]
 
         print(
             json.dumps(

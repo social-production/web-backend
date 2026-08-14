@@ -46,7 +46,7 @@ from app.services.activity_history import (
     utc_now,
 )
 from app.services.content import activity_status_tone
-from app.services.detail_links import build_link_decision_history_entries, build_links_frame
+from app.services.detail_links import build_link_decision_history_entries, build_links_frame, empty_links_frame
 from app.services.events.helpers import (
     _can_propose_event_activity,
     _event_lifecycle_phases,
@@ -82,6 +82,7 @@ async def get_event_detail(
     slug: str,
     current_user_id: UUID | None = None,
     cache: Redis | None = None,
+    include_tab_payloads: bool = False,
 ) -> dict[str, object]:
     row = _get_event_by_slug_row(db, slug)
     event_id = row["id"]
@@ -585,6 +586,8 @@ async def get_event_detail(
     update_requests = []
     history_entries: list[tuple[object, dict[str, object]]] = []
     for req in update_request_rows:
+        if not include_tab_payloads and req["status"] != "open":
+            continue
         vote_rows = db.execute(
             select(event_update_request_votes.c.vote, event_update_request_votes.c.voter_id).where(
                 event_update_request_votes.c.request_id == req["id"]
@@ -647,6 +650,8 @@ async def get_event_detail(
     )
     edit_requests = []
     for req in edit_request_rows:
+        if not include_tab_payloads and req["status"] != "open":
+            continue
         vote_rows = db.execute(
             select(event_edit_request_votes.c.vote, event_edit_request_votes.c.voter_id).where(
                 event_edit_request_votes.c.request_id == req["id"]
@@ -721,6 +726,8 @@ async def get_event_detail(
     phase_title_map = {item[0]: item[3] for item in EVENT_PHASES}
     phase_change_requests = []
     for req in phase_change_rows:
+        if not include_tab_payloads and req["status"] != "open":
+            continue
         vote_rows = db.execute(
             select(event_phase_change_votes.c.vote, event_phase_change_votes.c.voter_id).where(
                 event_phase_change_votes.c.request_id == req["id"]
@@ -869,23 +876,27 @@ async def get_event_detail(
     )
     is_removed = False
 
-    discussion_rows = db.execute(
-        select(
-            comments.c.id,
-            comments.c.author_id,
-            comments.c.body,
-            comments.c.created_at,
-            comments.c.vote_count,
-            comments.c.moderation_state,
-            comments.c.moderation_reason,
-        )
-        .where(
-            comments.c.subject_type == "event",
-            comments.c.subject_id == event_id,
-            comments.c.parent_id.is_(None),
-        )
-        .order_by(comments.c.created_at.asc())
-    ).all()
+    discussion_rows = (
+        db.execute(
+            select(
+                comments.c.id,
+                comments.c.author_id,
+                comments.c.body,
+                comments.c.created_at,
+                comments.c.vote_count,
+                comments.c.moderation_state,
+                comments.c.moderation_reason,
+            )
+            .where(
+                comments.c.subject_type == "event",
+                comments.c.subject_id == event_id,
+                comments.c.parent_id.is_(None),
+            )
+            .order_by(comments.c.created_at.asc())
+        ).all()
+        if include_tab_payloads
+        else []
+    )
     discussion_author_ids = {
         author_id for _, author_id, _, _, _, _, _ in discussion_rows if author_id
     }
@@ -1026,22 +1037,27 @@ async def get_event_detail(
         location=location_row if location_payload is not None else None,
     )
 
-    links_frame = build_links_frame(
-        db,
-        owner_kind="event",
-        owner_slug=str(row["slug"]),
-        current_user_id=current_user_id,
-    )
-    history_entries.extend(
-        build_link_decision_history_entries(
+    links_frame = (
+        build_links_frame(
             db,
             owner_kind="event",
-            owner_id=event_id,
             owner_slug=str(row["slug"]),
-            owner_title=str(row["title"]),
             current_user_id=current_user_id,
         )
+        if include_tab_payloads
+        else empty_links_frame("event", str(row["slug"]))
     )
+    if include_tab_payloads:
+        history_entries.extend(
+            build_link_decision_history_entries(
+                db,
+                owner_kind="event",
+                owner_id=event_id,
+                owner_slug=str(row["slug"]),
+                owner_title=str(row["title"]),
+                current_user_id=current_user_id,
+            )
+        )
 
     return {
         "id": str(event_id),
@@ -1081,7 +1097,9 @@ async def get_event_detail(
         "linksFrame": links_frame,
         "history": [
             entry for _, entry in sorted(history_entries, key=lambda item: item[0], reverse=True)
-        ],
+        ]
+        if include_tab_payloads
+        else [],
         "attendees": attendees,
         "invitedUsernames": invited_usernames,
         "eventEditors": event_editors_payload,
@@ -1102,4 +1120,37 @@ async def get_event_detail(
         "isUnderReview": moderation_state == "under_review",
         "discussionNote": "",
         "discussion": discussion,
+    }
+
+
+async def get_event_history(
+    db: Session,
+    slug: str,
+    current_user_id: UUID | None = None,
+    cache: Redis | None = None,
+) -> dict[str, object]:
+    detail = await get_event_detail(
+        db,
+        slug=slug,
+        current_user_id=current_user_id,
+        cache=cache,
+        include_tab_payloads=True,
+    )
+    return {"history": detail["history"]}
+
+
+async def get_event_links(
+    db: Session,
+    slug: str,
+    current_user_id: UUID | None = None,
+) -> dict[str, object]:
+    row = _get_event_by_slug_row(db, slug)
+    assert_can_view_entity(db, current_user_id, "event", row["id"])
+    return {
+        "linksFrame": build_links_frame(
+            db,
+            owner_kind="event",
+            owner_slug=str(row["slug"]),
+            current_user_id=current_user_id,
+        )
     }
