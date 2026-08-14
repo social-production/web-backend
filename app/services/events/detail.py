@@ -46,7 +46,11 @@ from app.services.activity_history import (
     utc_now,
 )
 from app.services.content import activity_status_tone
-from app.services.detail_links import build_link_decision_history_entries, build_links_frame, empty_links_frame
+from app.services.detail_links import (
+    build_link_decision_history_entries,
+    build_links_frame,
+    empty_links_frame,
+)
 from app.services.events.helpers import (
     _can_propose_event_activity,
     _event_lifecycle_phases,
