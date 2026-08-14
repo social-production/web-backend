@@ -240,7 +240,10 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
             )
             .where(
                 help_requests.c.author_id == current_user_id,
-                help_requests.c.needed_at > datetime.now(UTC),
+                or_(
+                    help_requests.c.ends_at.is_(None),
+                    help_requests.c.ends_at > now,
+                ),
             )
             .order_by(help_requests.c.needed_at.asc())
             .limit(6)
@@ -290,7 +293,13 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                     help_request_roles.c.id == help_request_role_assignments.c.role_id,
                 ).join(help_requests, help_requests.c.id == help_request_roles.c.help_request_id)
             )
-            .where(help_request_role_assignments.c.user_id == current_user_id)
+            .where(
+                help_request_role_assignments.c.user_id == current_user_id,
+                or_(
+                    help_requests.c.ends_at.is_(None),
+                    help_requests.c.ends_at > now,
+                ),
+            )
             .distinct()
             .order_by(help_requests.c.needed_at.asc())
             .limit(6)
@@ -358,7 +367,10 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 )
             )
             .where(
-                help_requests.c.needed_at > datetime.now(UTC),
+                or_(
+                    help_requests.c.ends_at.is_(None),
+                    help_requests.c.ends_at > now,
+                ),
                 or_(*tag_conditions),
             )
             .distinct()

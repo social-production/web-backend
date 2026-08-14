@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -138,7 +138,10 @@ def _build_activity_rail_history(db: Session, current_user_id: UUID) -> list[dic
             )
             .where(
                 help_requests.c.author_id == current_user_id,
-                help_requests.c.needed_at <= now,
+                and_(
+                    help_requests.c.ends_at.is_not(None),
+                    help_requests.c.ends_at <= now,
+                ),
             )
             .order_by(help_requests.c.needed_at.desc())
             .limit(10)
@@ -184,7 +187,10 @@ def _build_activity_rail_history(db: Session, current_user_id: UUID) -> list[dic
             )
             .where(
                 help_request_role_assignments.c.user_id == current_user_id,
-                help_requests.c.needed_at <= now,
+                and_(
+                    help_requests.c.ends_at.is_not(None),
+                    help_requests.c.ends_at <= now,
+                ),
             )
             .distinct()
             .order_by(help_requests.c.needed_at.desc())
