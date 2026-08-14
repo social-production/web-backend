@@ -286,11 +286,8 @@ async def get_event_history_route(
     slug: str,
     viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
-    cache: Redis = Depends(get_cache),
 ) -> dict[str, object]:
-    return await get_event_history(
-        db=db, cache=cache, slug=slug, current_user_id=viewer_user_id
-    )
+    return await get_event_history(db=db, slug=slug, current_user_id=viewer_user_id)
 
 
 @router.get("/{slug}/links")

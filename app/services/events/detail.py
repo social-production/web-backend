@@ -589,45 +589,48 @@ async def get_event_detail(
     )
     update_requests = []
     history_entries: list[tuple[object, dict[str, object]]] = []
-    for req in update_request_rows:
-        if not include_tab_payloads and req["status"] != "open":
-            continue
-        vote_rows = db.execute(
-            select(event_update_request_votes.c.vote, event_update_request_votes.c.voter_id).where(
-                event_update_request_votes.c.request_id == req["id"]
-            )
-        ).all()
+    visible_update_rows = [
+        req for req in update_request_rows if include_tab_payloads or req["status"] == "open"
+    ]
+    update_votes = _votes_by_request(
+        db, event_update_request_votes, [req["id"] for req in visible_update_rows]
+    )
+    for req in visible_update_rows:
+        vote_rows = update_votes.get(req["id"], [])
         summary, passes, can_still = _vote_summary(
             vote_rows, vote_context_population, current_user_id
         )
-        history_entries.append(
-            (
-                req["created_at"],
-                {
-                    "id": str(req["id"]),
-                    "entityKind": "event",
-                    "kind": "event-update",
-                    "kindLabel": "Update decision",
-                    "createdAt": _iso(req["created_at"]),
-                    "authorUsername": usernames.get(req["author_id"], {}).get(
-                        "username", "unknown"
-                    ),
-                    "status": req["status"],
-                    "approvalThresholdPercent": 66,
-                    "voteSummary": summary,
-                    "passesApprovalThreshold": passes,
-                    "canStillPass": can_still,
-                    "canVote": (
-                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
-                    ),
-                    "payload": {
-                        "type": "update",
-                        "body": req["body"],
-                        "appliedUpdateId": None,
+        if include_tab_payloads:
+            history_entries.append(
+                (
+                    req["created_at"],
+                    {
+                        "id": str(req["id"]),
+                        "entityKind": "event",
+                        "kind": "event-update",
+                        "kindLabel": "Update decision",
+                        "createdAt": _iso(req["created_at"]),
+                        "authorUsername": usernames.get(req["author_id"], {}).get(
+                            "username", "unknown"
+                        ),
+                        "status": req["status"],
+                        "approvalThresholdPercent": 66,
+                        "voteSummary": summary,
+                        "passesApprovalThreshold": passes,
+                        "canStillPass": can_still,
+                        "canVote": (
+                            viewer_is_member
+                            and req["status"] == "open"
+                            and not is_organizer_controlled
+                        ),
+                        "payload": {
+                            "type": "update",
+                            "body": req["body"],
+                            "appliedUpdateId": None,
+                        },
                     },
-                },
+                )
             )
-        )
         if req["status"] != "open":
             continue
         update_requests.append(
@@ -653,55 +656,58 @@ async def get_event_detail(
         .all()
     )
     edit_requests = []
-    for req in edit_request_rows:
-        if not include_tab_payloads and req["status"] != "open":
-            continue
-        vote_rows = db.execute(
-            select(event_edit_request_votes.c.vote, event_edit_request_votes.c.voter_id).where(
-                event_edit_request_votes.c.request_id == req["id"]
-            )
-        ).all()
+    visible_edit_rows = [
+        req for req in edit_request_rows if include_tab_payloads or req["status"] == "open"
+    ]
+    edit_votes = _votes_by_request(
+        db, event_edit_request_votes, [req["id"] for req in visible_edit_rows]
+    )
+    for req in visible_edit_rows:
+        vote_rows = edit_votes.get(req["id"], [])
         summary, passes, can_still = _vote_summary(
             vote_rows, vote_context_population, current_user_id
         )
-        history_entries.append(
-            (
-                req["created_at"],
-                {
-                    "id": str(req["id"]),
-                    "entityKind": "event",
-                    "kind": "event-edit",
-                    "kindLabel": "Edit decision",
-                    "createdAt": _iso(req["created_at"]),
-                    "authorUsername": usernames.get(req["author_id"], {}).get(
-                        "username", "unknown"
-                    ),
-                    "status": req["status"],
-                    "approvalThresholdPercent": 66,
-                    "voteSummary": summary,
-                    "passesApprovalThreshold": passes,
-                    "canStillPass": can_still,
-                    "canVote": (
-                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
-                    ),
-                    "payload": {
-                        "type": "edit",
-                        "changes": [
-                            {
-                                "label": "Title",
-                                "before": str(row["title"]),
-                                "after": str(req["title"]),
-                            },
-                            {
-                                "label": "Description",
-                                "before": str(row["description"]),
-                                "after": str(req["description"]),
-                            },
-                        ],
+        if include_tab_payloads:
+            history_entries.append(
+                (
+                    req["created_at"],
+                    {
+                        "id": str(req["id"]),
+                        "entityKind": "event",
+                        "kind": "event-edit",
+                        "kindLabel": "Edit decision",
+                        "createdAt": _iso(req["created_at"]),
+                        "authorUsername": usernames.get(req["author_id"], {}).get(
+                            "username", "unknown"
+                        ),
+                        "status": req["status"],
+                        "approvalThresholdPercent": 66,
+                        "voteSummary": summary,
+                        "passesApprovalThreshold": passes,
+                        "canStillPass": can_still,
+                        "canVote": (
+                            viewer_is_member
+                            and req["status"] == "open"
+                            and not is_organizer_controlled
+                        ),
+                        "payload": {
+                            "type": "edit",
+                            "changes": [
+                                {
+                                    "label": "Title",
+                                    "before": str(row["title"]),
+                                    "after": str(req["title"]),
+                                },
+                                {
+                                    "label": "Description",
+                                    "before": str(row["description"]),
+                                    "after": str(req["description"]),
+                                },
+                            ],
+                        },
                     },
-                },
+                )
             )
-        )
         if req["status"] != "open":
             continue
         edit_requests.append(
@@ -729,53 +735,56 @@ async def get_event_detail(
     )
     phase_title_map = {item[0]: item[3] for item in EVENT_PHASES}
     phase_change_requests = []
-    for req in phase_change_rows:
-        if not include_tab_payloads and req["status"] != "open":
-            continue
-        vote_rows = db.execute(
-            select(event_phase_change_votes.c.vote, event_phase_change_votes.c.voter_id).where(
-                event_phase_change_votes.c.request_id == req["id"]
-            )
-        ).all()
+    visible_phase_rows = [
+        req for req in phase_change_rows if include_tab_payloads or req["status"] == "open"
+    ]
+    phase_votes = _votes_by_request(
+        db, event_phase_change_votes, [req["id"] for req in visible_phase_rows]
+    )
+    for req in visible_phase_rows:
+        vote_rows = phase_votes.get(req["id"], [])
         summary, passes, can_still = _vote_summary(
             vote_rows, vote_context_population, current_user_id
         )
-        history_entries.append(
-            (
-                req["created_at"],
-                {
-                    "id": str(req["id"]),
-                    "entityKind": "event",
-                    "kind": "event-phase-change",
-                    "kindLabel": "Phase decision",
-                    "createdAt": _iso(req["created_at"]),
-                    "authorUsername": usernames.get(req["author_id"], {}).get(
-                        "username", "unknown"
-                    ),
-                    "status": req["status"],
-                    "approvalThresholdPercent": 66,
-                    "voteSummary": summary,
-                    "passesApprovalThreshold": passes,
-                    "canStillPass": can_still,
-                    "canVote": (
-                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
-                    ),
-                    "payload": {
-                        "type": "phase-change",
-                        "changeKind": req["change_kind"],
-                        "fromPhaseId": req["from_phase_id"],
-                        "fromPhaseLabel": phase_title_map.get(
-                            req["from_phase_id"], req["from_phase_id"]
+        if include_tab_payloads:
+            history_entries.append(
+                (
+                    req["created_at"],
+                    {
+                        "id": str(req["id"]),
+                        "entityKind": "event",
+                        "kind": "event-phase-change",
+                        "kindLabel": "Phase decision",
+                        "createdAt": _iso(req["created_at"]),
+                        "authorUsername": usernames.get(req["author_id"], {}).get(
+                            "username", "unknown"
                         ),
-                        "toPhaseId": req["target_phase_id"],
-                        "toPhaseLabel": phase_title_map.get(
-                            req["target_phase_id"], req["target_phase_id"]
+                        "status": req["status"],
+                        "approvalThresholdPercent": 66,
+                        "voteSummary": summary,
+                        "passesApprovalThreshold": passes,
+                        "canStillPass": can_still,
+                        "canVote": (
+                            viewer_is_member
+                            and req["status"] == "open"
+                            and not is_organizer_controlled
                         ),
-                        "reason": req["reason"],
+                        "payload": {
+                            "type": "phase-change",
+                            "changeKind": req["change_kind"],
+                            "fromPhaseId": req["from_phase_id"],
+                            "fromPhaseLabel": phase_title_map.get(
+                                req["from_phase_id"], req["from_phase_id"]
+                            ),
+                            "toPhaseId": req["target_phase_id"],
+                            "toPhaseLabel": phase_title_map.get(
+                                req["target_phase_id"], req["target_phase_id"]
+                            ),
+                            "reason": req["reason"],
+                        },
                     },
-                },
+                )
             )
-        )
         if req["status"] != "open":
             continue
         phase_change_requests.append(
@@ -1127,20 +1136,233 @@ async def get_event_detail(
     }
 
 
+def _votes_by_request(
+    db: Session, vote_table, request_ids: list
+) -> dict[object, list[tuple[object, object]]]:
+    votes_by_request: dict[object, list[tuple[object, object]]] = {}
+    if not request_ids:
+        return votes_by_request
+    for request_id, vote, voter_id in db.execute(
+        select(vote_table.c.request_id, vote_table.c.vote, vote_table.c.voter_id).where(
+            vote_table.c.request_id.in_(request_ids)
+        )
+    ).all():
+        votes_by_request.setdefault(request_id, []).append((vote, voter_id))
+    return votes_by_request
+
+
+def _build_event_decision_history(
+    db: Session,
+    row: Mapping[str, object],
+    *,
+    current_user_id: UUID | None,
+    vote_context_population: int,
+    usernames: Mapping[object, Mapping[str, object]],
+    viewer_is_member: bool,
+    is_organizer_controlled: bool,
+) -> list[tuple[object, dict[str, object]]]:
+    event_id = row["id"]
+    history_entries: list[tuple[object, dict[str, object]]] = []
+    phase_title_map = {item[0]: item[3] for item in EVENT_PHASES}
+
+    update_request_rows = (
+        db.execute(
+            select(event_update_requests)
+            .where(event_update_requests.c.event_id == event_id)
+            .order_by(event_update_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
+    update_votes = _votes_by_request(
+        db, event_update_request_votes, [req["id"] for req in update_request_rows]
+    )
+    for req in update_request_rows:
+        summary, passes, can_still = _vote_summary(
+            update_votes.get(req["id"], []), vote_context_population, current_user_id
+        )
+        history_entries.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "event",
+                    "kind": "event-update",
+                    "kindLabel": "Update decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": usernames.get(req["author_id"], {}).get(
+                        "username", "unknown"
+                    ),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": (
+                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
+                    ),
+                    "payload": {
+                        "type": "update",
+                        "body": req["body"],
+                        "appliedUpdateId": None,
+                    },
+                },
+            )
+        )
+
+    edit_request_rows = (
+        db.execute(
+            select(event_edit_requests)
+            .where(event_edit_requests.c.event_id == event_id)
+            .order_by(event_edit_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
+    edit_votes = _votes_by_request(
+        db, event_edit_request_votes, [req["id"] for req in edit_request_rows]
+    )
+    for req in edit_request_rows:
+        summary, passes, can_still = _vote_summary(
+            edit_votes.get(req["id"], []), vote_context_population, current_user_id
+        )
+        history_entries.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "event",
+                    "kind": "event-edit",
+                    "kindLabel": "Edit decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": usernames.get(req["author_id"], {}).get(
+                        "username", "unknown"
+                    ),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": (
+                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
+                    ),
+                    "payload": {
+                        "type": "edit",
+                        "changes": [
+                            {
+                                "label": "Title",
+                                "before": str(row["title"]),
+                                "after": str(req["title"]),
+                            },
+                            {
+                                "label": "Description",
+                                "before": str(row["description"]),
+                                "after": str(req["description"]),
+                            },
+                        ],
+                    },
+                },
+            )
+        )
+
+    phase_change_rows = (
+        db.execute(
+            select(event_phase_change_requests)
+            .where(event_phase_change_requests.c.event_id == event_id)
+            .order_by(event_phase_change_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
+    phase_votes = _votes_by_request(
+        db, event_phase_change_votes, [req["id"] for req in phase_change_rows]
+    )
+    for req in phase_change_rows:
+        summary, passes, can_still = _vote_summary(
+            phase_votes.get(req["id"], []), vote_context_population, current_user_id
+        )
+        history_entries.append(
+            (
+                req["created_at"],
+                {
+                    "id": str(req["id"]),
+                    "entityKind": "event",
+                    "kind": "event-phase-change",
+                    "kindLabel": "Phase decision",
+                    "createdAt": _iso(req["created_at"]),
+                    "authorUsername": usernames.get(req["author_id"], {}).get(
+                        "username", "unknown"
+                    ),
+                    "status": req["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": (
+                        viewer_is_member and req["status"] == "open" and not is_organizer_controlled
+                    ),
+                    "payload": {
+                        "type": "phase-change",
+                        "changeKind": req["change_kind"],
+                        "fromPhaseId": req["from_phase_id"],
+                        "fromPhaseLabel": phase_title_map.get(
+                            req["from_phase_id"], req["from_phase_id"]
+                        ),
+                        "toPhaseId": req["target_phase_id"],
+                        "toPhaseLabel": phase_title_map.get(
+                            req["target_phase_id"], req["target_phase_id"]
+                        ),
+                        "reason": req["reason"],
+                    },
+                },
+            )
+        )
+
+    history_entries.extend(
+        build_link_decision_history_entries(
+            db,
+            owner_kind="event",
+            owner_id=event_id,
+            owner_slug=str(row["slug"]),
+            owner_title=str(row["title"]),
+            current_user_id=current_user_id,
+        )
+    )
+    return history_entries
+
+
 async def get_event_history(
     db: Session,
     slug: str,
     current_user_id: UUID | None = None,
-    cache: Redis | None = None,
 ) -> dict[str, object]:
-    detail = await get_event_detail(
-        db,
-        slug=slug,
-        current_user_id=current_user_id,
-        cache=cache,
-        include_tab_payloads=True,
+    row = _get_event_by_slug_row(db, slug)
+    event_id = row["id"]
+    assert_can_view_entity(db, current_user_id, "event", event_id)
+    vote_context_population = resolve_event_vote_population(db, event_id)
+    membership_rows = db.execute(
+        select(event_memberships.c.user_id).where(event_memberships.c.event_id == event_id)
+    ).all()
+    member_ids = {user_id for (user_id,) in membership_rows}
+    usernames = _username_lookup(
+        db, member_ids | ({row["created_by"]} if row["created_by"] else set())
     )
-    return {"history": detail["history"]}
+    viewer_is_member = current_user_id is not None and current_user_id in member_ids
+    is_organizer_controlled = str(row["governance"] or "collaborative") == "organizer_controlled"
+    history_entries = _build_event_decision_history(
+        db,
+        row,
+        current_user_id=current_user_id,
+        vote_context_population=vote_context_population,
+        usernames=usernames,
+        viewer_is_member=viewer_is_member,
+        is_organizer_controlled=is_organizer_controlled,
+    )
+    return {
+        "history": [
+            entry for _, entry in sorted(history_entries, key=lambda item: item[0], reverse=True)
+        ]
+    }
 
 
 async def get_event_links(

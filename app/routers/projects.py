@@ -269,11 +269,8 @@ async def get_project_links_route(
     slug: str,
     viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
-    cache: Redis = Depends(get_cache),
 ) -> dict[str, object]:
-    return await get_project_links(
-        db=db, cache=cache, slug=slug, current_user_id=viewer_user_id
-    )
+    return await get_project_links(db=db, slug=slug, current_user_id=viewer_user_id)
 
 
 @router.post("/{slug}/join", response_model=ProjectMembershipResponse)

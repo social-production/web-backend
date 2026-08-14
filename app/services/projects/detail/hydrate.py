@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from uuid import UUID
 
 from redis.asyncio import Redis
@@ -524,14 +524,21 @@ async def get_project_detail(
     )
     phase_title_map = {item[0]: item[3] for item in PROJECT_PHASES}
     phase_change_requests = []
-    for req in phase_change_rows:
-        if req["status"] != "open":
-            continue
-        vote_rows = db.execute(
-            select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id).where(
-                project_phase_change_votes.c.request_id == req["id"]
+    open_phase_rows = [req for req in phase_change_rows if req["status"] == "open"]
+    phase_votes_by_request: dict[object, list[tuple[object, object]]] = {}
+    if open_phase_rows:
+        for request_id, vote, voter_id in db.execute(
+            select(
+                project_phase_change_votes.c.request_id,
+                project_phase_change_votes.c.vote,
+                project_phase_change_votes.c.voter_id,
+            ).where(
+                project_phase_change_votes.c.request_id.in_([req["id"] for req in open_phase_rows])
             )
-        ).all()
+        ).all():
+            phase_votes_by_request.setdefault(request_id, []).append((vote, voter_id))
+    for req in open_phase_rows:
+        vote_rows = phase_votes_by_request.get(req["id"], [])
         summary, passes, can_still = _vote_summary(
             vote_rows, vote_context_population, current_user_id
         )
@@ -680,219 +687,6 @@ async def get_project_detail(
                 "canStillPass": can_still,
             }
         )
-
-    link_rows = (
-        db.execute(select(project_links).where(project_links.c.source_project_id == project_id))
-        .mappings()
-        .all()
-    )
-    target_ids = {item["target_project_id"] for item in link_rows}
-    target_projects = {}
-    if target_ids:
-        for target in (
-            db.execute(
-                select(projects.c.id, projects.c.slug, projects.c.title).where(
-                    projects.c.id.in_(list(target_ids))
-                )
-            )
-            .mappings()
-            .all()
-        ):
-            target_projects[target["id"]] = target
-
-    auto_links = []
-    conversion_auto_links = []
-    for item in link_rows:
-        target = target_projects.get(item["target_project_id"])
-        frame_item = {
-            "id": str(item["id"]),
-            "title": target["title"] if target else item["relationship_label"],
-            "relationshipLabel": item["relationship_label"],
-            "summary": item["summary"],
-            "href": f"/projects/{target['slug']}" if target else None,
-            "publicItem": None,
-        }
-        if item["link_kind"] == CONVERSION_LINK_KIND:
-            conversion_auto_links.append(frame_item)
-        else:
-            auto_links.append(frame_item)
-
-    conversion_row = (
-        db.execute(
-            select(project_conversions)
-            .where(
-                (project_conversions.c.predecessor_project_id == project_id)
-                | (project_conversions.c.successor_project_id == project_id)
-            )
-            .limit(1)
-        )
-        .mappings()
-        .first()
-    )
-    conversion_lineage = None
-    if conversion_row is not None:
-        pred = (
-            db.execute(
-                select(projects.c.id, projects.c.slug, projects.c.title).where(
-                    projects.c.id == conversion_row["predecessor_project_id"]
-                )
-            )
-            .mappings()
-            .one()
-        )
-        succ = (
-            db.execute(
-                select(projects.c.id, projects.c.slug, projects.c.title).where(
-                    projects.c.id == conversion_row["successor_project_id"]
-                )
-            )
-            .mappings()
-            .one()
-        )
-        conversion_lineage = {
-            "title": "Conversion lineage",
-            "statusLabel": "Permanent",
-            "summary": conversion_row["summary"],
-            "permanenceNote": conversion_row["permanence_note"] or PERMANENCE_NOTE,
-            "inventoryNote": conversion_row["inventory_note"] or INVENTORY_NOTE,
-            "predecessor": {
-                "id": str(pred["id"]),
-                "title": pred["title"],
-                "relationshipLabel": CONVERSION_FROM_LABEL,
-                "summary": conversion_row["summary"],
-                "href": f"/projects/{pred['slug']}",
-                "publicItem": None,
-            },
-            "successor": {
-                "id": str(succ["id"]),
-                "title": succ["title"],
-                "relationshipLabel": CONVERSION_TO_LABEL,
-                "summary": conversion_row["summary"],
-                "href": f"/projects/{succ['slug']}",
-                "publicItem": None,
-            },
-        }
-
-    conversion_workflow = []
-    for req in phase_change_rows:
-        if req["status"] != "open" or req["close_outcome"] != "convert":
-            continue
-        vote_rows = db.execute(
-            select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id).where(
-                project_phase_change_votes.c.request_id == req["id"]
-            )
-        ).all()
-        summary, _passes, _can_still = _vote_summary(
-            vote_rows, vote_context_population, current_user_id
-        )
-        mode = str(req["conversion_target_mode"] or "collective-service")
-        subtype = (
-            str(req["conversion_target_subtype"]) if req["conversion_target_subtype"] else None
-        )
-        conversion_workflow.append(
-            {
-                "id": str(req["id"]),
-                "title": req["conversion_successor_title"] or "Convert project",
-                "statusLabel": "Open conversion vote",
-                "requestedByUsername": usernames.get(req["author_id"], {}).get(
-                    "username", "unknown"
-                ),
-                "createdAtLabel": _iso(req["created_at"]),
-                "outcomeLabel": "Pending electorate approval",
-                "summary": req["reason"],
-                "inventoryNote": INVENTORY_NOTE,
-                "canVote": viewer_can_cast_governance,
-                "voteSummary": summary,
-                "approvalThresholdPercent": 66,
-                "target": {
-                    "projectMode": mode,
-                    "projectSubtype": subtype,
-                    "projectModeLabel": mode.replace("-", " ").title(),
-                    "projectSubtypeLabel": (subtype or "n/a").replace("-", " ").title(),
-                    "entryPhaseId": "phase-1",
-                    "entryPhaseLabel": phase_title_map.get("phase-1", "Proposal"),
-                },
-                "predecessor": {
-                    "id": str(project_id),
-                    "title": row["title"],
-                    "relationshipLabel": CONVERSION_FROM_LABEL,
-                    "summary": req["reason"],
-                    "href": f"/projects/{row['slug']}",
-                    "publicItem": None,
-                },
-                "successor": None,
-            }
-        )
-
-    link_request_rows = (
-        db.execute(
-            select(project_link_requests)
-            .where(project_link_requests.c.source_project_id == project_id)
-            .order_by(project_link_requests.c.created_at.desc())
-        )
-        .mappings()
-        .all()
-    )
-    manual_link_requests = []
-    for req in link_request_rows:
-        this_votes = db.execute(
-            select(project_link_request_votes.c.vote).where(
-                project_link_request_votes.c.request_id == req["id"],
-                project_link_request_votes.c.vote_scope == "source",
-            )
-        ).all()
-        yes = sum(1 for (vote,) in this_votes if vote == "yes")
-        no = sum(1 for (vote,) in this_votes if vote == "no")
-        manual_link_requests.append(
-            {
-                "id": str(req["id"]),
-                "title": req["relationship_label"],
-                "relationshipLabel": req["relationship_label"],
-                "summary": req["summary"],
-                "statusLabel": req["status"],
-                "proposedByUsername": usernames.get(req["proposed_by"], {}).get(
-                    "username", "unknown"
-                ),
-                "createdAtLabel": _iso(req["created_at"]),
-                "targetProjectHref": None,
-                "thisProjectVote": {
-                    "projectTitle": row["title"],
-                    "yesCount": yes,
-                    "noCount": no,
-                    "memberCount": member_count,
-                    "approvalsRequired": required_votes(vote_context_population),
-                    "approvalsRemaining": max(0, required_votes(vote_context_population) - yes),
-                    "approvalPercent": (yes / (yes + no) * 100.0) if (yes + no) > 0 else 0.0,
-                    "statusLabel": req["status"],
-                    "resultNote": "",
-                    "viewerCanVote": viewer_can_cast_governance,
-                    "viewerVote": None,
-                },
-                "otherProjectVote": {
-                    "projectTitle": "Linked project",
-                    "yesCount": 0,
-                    "noCount": 0,
-                    "memberCount": 0,
-                    "approvalsRequired": 0,
-                    "approvalsRemaining": 0,
-                    "approvalPercent": 0,
-                    "statusLabel": "pending",
-                    "resultNote": "",
-                    "viewerCanVote": False,
-                    "viewerVote": None,
-                },
-            }
-        )
-
-    linkable_rows = db.execute(
-        select(projects.c.slug, projects.c.title)
-        .where(projects.c.id != project_id)
-        .order_by(projects.c.title.asc())
-        .limit(20)
-    ).all()
-    linkable_projects = [
-        {"slug": s, "title": t, "href": f"/projects/{s}"} for s, t in linkable_rows
-    ]
 
     phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
     current_order = phase_order.get(row["current_phase_id"], 1)
@@ -1187,31 +981,18 @@ async def get_project_detail(
     ]
 
     if include_tab_payloads:
-        links_frame = build_links_frame(
+        links_frame = _build_enriched_project_links_frame(
             db,
-            owner_kind="project",
-            owner_slug=str(row["slug"]),
+            row,
             current_user_id=current_user_id,
+            vote_context_population=vote_context_population,
+            usernames=usernames,
+            member_count=member_count,
+            viewer_can_cast_governance=viewer_can_cast_governance,
+            viewer_can_propose_links=viewer_can_propose_links,
+            phase_title_map=phase_title_map,
+            phase_change_rows=phase_change_rows,
         )
-        links_frame["conversionNote"] = (
-            "Conversion lineage is permanent. Manual links stay visible alongside it."
-            if conversion_lineage
-            else ""
-        )
-        links_frame["conversionWorkflow"] = conversion_workflow
-        links_frame["conversionLineage"] = conversion_lineage
-        links_frame["projectSlug"] = row["slug"]
-        links_frame["autoLinks"] = conversion_auto_links + auto_links
-        links_frame["manualLinks"] = links_frame["activeLinks"]
-        links_frame["manualLinkRequests"] = manual_link_requests
-        links_frame["linkableProjects"] = linkable_projects
-        links_frame["viewerCanProposeLinks"] = viewer_can_propose_links
-        links_frame["requestFrames"] = [
-            {"id": "borrowing", "title": "Borrowing", "body": ""},
-            {"id": "delivery", "title": "Delivery", "body": ""},
-            {"id": "asset-use", "title": "Asset use", "body": ""},
-        ]
-        links_frame["placeholderSections"] = []
     else:
         links_frame = empty_links_frame("project", str(row["slug"]))
 
@@ -1283,24 +1064,319 @@ async def get_project_history(
         bool(row["is_platform_tagged"]),
     )
     return {
-        "history": _build_project_history(
-            db, project_id, current_user_id, vote_context_population
-        )
+        "history": _build_project_history(db, project_id, current_user_id, vote_context_population)
     }
+
+
+def _build_enriched_project_links_frame(
+    db: Session,
+    row: Mapping[str, object],
+    *,
+    current_user_id: UUID | None,
+    vote_context_population: int,
+    usernames: Mapping[object, Mapping[str, object]],
+    member_count: int,
+    viewer_can_cast_governance: bool,
+    viewer_can_propose_links: bool,
+    phase_title_map: Mapping[str, str],
+    phase_change_rows: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    project_id = row["id"]
+    links_frame = build_links_frame(
+        db,
+        owner_kind="project",
+        owner_slug=str(row["slug"]),
+        current_user_id=current_user_id,
+    )
+
+    link_rows = (
+        db.execute(select(project_links).where(project_links.c.source_project_id == project_id))
+        .mappings()
+        .all()
+    )
+    target_ids = {item["target_project_id"] for item in link_rows}
+    target_projects = {}
+    if target_ids:
+        for target in (
+            db.execute(
+                select(projects.c.id, projects.c.slug, projects.c.title).where(
+                    projects.c.id.in_(list(target_ids))
+                )
+            )
+            .mappings()
+            .all()
+        ):
+            target_projects[target["id"]] = target
+
+    auto_links = []
+    conversion_auto_links = []
+    for item in link_rows:
+        target = target_projects.get(item["target_project_id"])
+        frame_item = {
+            "id": str(item["id"]),
+            "title": target["title"] if target else item["relationship_label"],
+            "relationshipLabel": item["relationship_label"],
+            "summary": item["summary"],
+            "href": f"/projects/{target['slug']}" if target else None,
+            "publicItem": None,
+        }
+        if item["link_kind"] == CONVERSION_LINK_KIND:
+            conversion_auto_links.append(frame_item)
+        else:
+            auto_links.append(frame_item)
+
+    conversion_row = (
+        db.execute(
+            select(project_conversions)
+            .where(
+                (project_conversions.c.predecessor_project_id == project_id)
+                | (project_conversions.c.successor_project_id == project_id)
+            )
+            .limit(1)
+        )
+        .mappings()
+        .first()
+    )
+    conversion_lineage = None
+    if conversion_row is not None:
+        pred = (
+            db.execute(
+                select(projects.c.id, projects.c.slug, projects.c.title).where(
+                    projects.c.id == conversion_row["predecessor_project_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        succ = (
+            db.execute(
+                select(projects.c.id, projects.c.slug, projects.c.title).where(
+                    projects.c.id == conversion_row["successor_project_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+        conversion_lineage = {
+            "title": "Conversion lineage",
+            "statusLabel": "Permanent",
+            "summary": conversion_row["summary"],
+            "permanenceNote": conversion_row["permanence_note"] or PERMANENCE_NOTE,
+            "inventoryNote": conversion_row["inventory_note"] or INVENTORY_NOTE,
+            "predecessor": {
+                "id": str(pred["id"]),
+                "title": pred["title"],
+                "relationshipLabel": CONVERSION_FROM_LABEL,
+                "summary": conversion_row["summary"],
+                "href": f"/projects/{pred['slug']}",
+                "publicItem": None,
+            },
+            "successor": {
+                "id": str(succ["id"]),
+                "title": succ["title"],
+                "relationshipLabel": CONVERSION_TO_LABEL,
+                "summary": conversion_row["summary"],
+                "href": f"/projects/{succ['slug']}",
+                "publicItem": None,
+            },
+        }
+
+    conversion_workflow = []
+    for req in phase_change_rows:
+        if req["status"] != "open" or req["close_outcome"] != "convert":
+            continue
+        vote_rows = db.execute(
+            select(project_phase_change_votes.c.vote, project_phase_change_votes.c.voter_id).where(
+                project_phase_change_votes.c.request_id == req["id"]
+            )
+        ).all()
+        summary, _passes, _can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
+        mode = str(req["conversion_target_mode"] or "collective-service")
+        subtype = (
+            str(req["conversion_target_subtype"]) if req["conversion_target_subtype"] else None
+        )
+        conversion_workflow.append(
+            {
+                "id": str(req["id"]),
+                "title": req["conversion_successor_title"] or "Convert project",
+                "statusLabel": "Open conversion vote",
+                "requestedByUsername": usernames.get(req["author_id"], {}).get(
+                    "username", "unknown"
+                ),
+                "createdAtLabel": _iso(req["created_at"]),
+                "outcomeLabel": "Pending electorate approval",
+                "summary": req["reason"],
+                "inventoryNote": INVENTORY_NOTE,
+                "canVote": viewer_can_cast_governance,
+                "voteSummary": summary,
+                "approvalThresholdPercent": 66,
+                "target": {
+                    "projectMode": mode,
+                    "projectSubtype": subtype,
+                    "projectModeLabel": mode.replace("-", " ").title(),
+                    "projectSubtypeLabel": (subtype or "n/a").replace("-", " ").title(),
+                    "entryPhaseId": "phase-1",
+                    "entryPhaseLabel": phase_title_map.get("phase-1", "Proposal"),
+                },
+                "predecessor": {
+                    "id": str(project_id),
+                    "title": row["title"],
+                    "relationshipLabel": CONVERSION_FROM_LABEL,
+                    "summary": req["reason"],
+                    "href": f"/projects/{row['slug']}",
+                    "publicItem": None,
+                },
+                "successor": None,
+            }
+        )
+
+    link_request_rows = (
+        db.execute(
+            select(project_link_requests)
+            .where(project_link_requests.c.source_project_id == project_id)
+            .order_by(project_link_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
+    request_ids = [req["id"] for req in link_request_rows]
+    votes_by_request: dict[object, list[object]] = {}
+    if request_ids:
+        for request_id, vote in db.execute(
+            select(
+                project_link_request_votes.c.request_id, project_link_request_votes.c.vote
+            ).where(
+                project_link_request_votes.c.request_id.in_(request_ids),
+                project_link_request_votes.c.vote_scope == "source",
+            )
+        ).all():
+            votes_by_request.setdefault(request_id, []).append(vote)
+    manual_link_requests = []
+    for req in link_request_rows:
+        this_votes = votes_by_request.get(req["id"], [])
+        yes = sum(1 for vote in this_votes if vote == "yes")
+        no = sum(1 for vote in this_votes if vote == "no")
+        manual_link_requests.append(
+            {
+                "id": str(req["id"]),
+                "title": req["relationship_label"],
+                "relationshipLabel": req["relationship_label"],
+                "summary": req["summary"],
+                "statusLabel": req["status"],
+                "proposedByUsername": usernames.get(req["proposed_by"], {}).get(
+                    "username", "unknown"
+                ),
+                "createdAtLabel": _iso(req["created_at"]),
+                "targetProjectHref": None,
+                "thisProjectVote": {
+                    "projectTitle": row["title"],
+                    "yesCount": yes,
+                    "noCount": no,
+                    "memberCount": member_count,
+                    "approvalsRequired": required_votes(vote_context_population),
+                    "approvalsRemaining": max(0, required_votes(vote_context_population) - yes),
+                    "approvalPercent": (yes / (yes + no) * 100.0) if (yes + no) else 0.0,
+                    "statusLabel": req["status"],
+                    "resultNote": "",
+                    "viewerCanVote": viewer_can_cast_governance,
+                    "viewerVote": None,
+                },
+                "otherProjectVote": {
+                    "projectTitle": "Linked project",
+                    "yesCount": 0,
+                    "noCount": 0,
+                    "memberCount": 0,
+                    "approvalsRequired": 0,
+                    "approvalsRemaining": 0,
+                    "approvalPercent": 0,
+                    "statusLabel": "pending",
+                    "resultNote": "",
+                    "viewerCanVote": False,
+                    "viewerVote": None,
+                },
+            }
+        )
+
+    linkable_rows = db.execute(
+        select(projects.c.slug, projects.c.title)
+        .where(projects.c.id != project_id)
+        .order_by(projects.c.title.asc())
+        .limit(20)
+    ).all()
+    linkable_projects = [
+        {"slug": s, "title": t, "href": f"/projects/{s}"} for s, t in linkable_rows
+    ]
+
+    links_frame["conversionNote"] = (
+        "Conversion lineage is permanent. Manual links stay visible alongside it."
+        if conversion_lineage
+        else ""
+    )
+    links_frame["conversionWorkflow"] = conversion_workflow
+    links_frame["conversionLineage"] = conversion_lineage
+    links_frame["projectSlug"] = row["slug"]
+    links_frame["autoLinks"] = conversion_auto_links + auto_links
+    links_frame["manualLinks"] = links_frame["activeLinks"]
+    links_frame["manualLinkRequests"] = manual_link_requests
+    links_frame["linkableProjects"] = linkable_projects
+    links_frame["viewerCanProposeLinks"] = viewer_can_propose_links
+    links_frame["requestFrames"] = [
+        {"id": "borrowing", "title": "Borrowing", "body": ""},
+        {"id": "delivery", "title": "Delivery", "body": ""},
+        {"id": "asset-use", "title": "Asset use", "body": ""},
+    ]
+    links_frame["placeholderSections"] = []
+    return links_frame
 
 
 async def get_project_links(
     db: Session,
     slug: str,
     current_user_id: UUID | None = None,
-    cache: Redis | None = None,
 ) -> dict[str, object]:
-    detail = await get_project_detail(
+    row = _get_project_by_slug_row(db, slug)
+    project_id = row["id"]
+    assert_can_view_entity(db, current_user_id, "project", project_id)
+    vote_context_population = resolve_project_vote_population(
         db,
-        slug=slug,
-        current_user_id=current_user_id,
-        cache=cache,
-        include_tab_payloads=True,
+        project_id,
+        bool(row["is_platform_tagged"]),
     )
-    return {"linksFrame": detail["linksFrame"]}
-
+    membership_rows = db.execute(
+        select(project_memberships.c.user_id).where(project_memberships.c.project_id == project_id)
+    ).all()
+    member_ids = {user_id for (user_id,) in membership_rows}
+    usernames = _username_lookup(
+        db, member_ids | ({row["author_id"]} if row["author_id"] else set())
+    )
+    member_count = int(row["member_count"] or 0)
+    viewer_is_member = current_user_id is not None and current_user_id in member_ids
+    is_personal_service = str(row["project_mode"]) == "personal-service"
+    viewer_can_cast_governance = False if is_personal_service else viewer_is_member
+    viewer_can_propose_links = False if is_personal_service else viewer_is_member
+    phase_title_map = {item[0]: item[3] for item in PROJECT_PHASES}
+    phase_change_rows = (
+        db.execute(
+            select(project_phase_change_requests)
+            .where(project_phase_change_requests.c.project_id == project_id)
+            .order_by(project_phase_change_requests.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
+    return {
+        "linksFrame": _build_enriched_project_links_frame(
+            db,
+            row,
+            current_user_id=current_user_id,
+            vote_context_population=vote_context_population,
+            usernames=usernames,
+            member_count=member_count,
+            viewer_can_cast_governance=viewer_can_cast_governance,
+            viewer_can_propose_links=viewer_can_propose_links,
+            phase_title_map=phase_title_map,
+            phase_change_rows=phase_change_rows,
+        )
+    }
