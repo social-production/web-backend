@@ -67,6 +67,9 @@ def create_app() -> FastAPI:
         openapi_url=openapi_url,
     )
 
+    app.add_middleware(CsrfMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
@@ -74,9 +77,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(CsrfMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware)
-    app.add_middleware(RateLimitMiddleware)
 
     from app.http_errors import register_exception_handlers
 

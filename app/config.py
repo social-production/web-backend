@@ -1,4 +1,5 @@
 from functools import lru_cache
+from os import getenv
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
     redis_max_connections: int = 50
     redis_cache_ttl_seconds: int = 3600
     cors_origins: str = "http://localhost:5173"
+    auth_cookie_samesite: str = "lax"
     github_token: str = ""
     github_repo: str = "social-production/web"
     disable_openapi_in_production: bool = True
@@ -44,7 +46,9 @@ class Settings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.app_env.strip().lower() in {"prod", "production"}
+        app_env = self.app_env.strip().lower()
+        railway_env = getenv("RAILWAY_ENVIRONMENT", "").strip().lower()
+        return app_env in {"prod", "production"} or railway_env == "production"
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -53,6 +57,11 @@ class Settings(BaseSettings):
     @property
     def allow_cors_credentials(self) -> bool:
         return "*" not in self.cors_origin_list
+
+    @property
+    def auth_cookie_samesite_normalized(self) -> str:
+        value = self.auth_cookie_samesite.strip().lower()
+        return value if value in {"lax", "strict", "none"} else "lax"
 
     def validate_runtime_settings(self) -> None:
         if not self.is_production:

@@ -86,11 +86,20 @@ def public_auth_payload(request: Request, payload: dict[str, object]) -> dict[st
     if _include_tokens_in_response(request):
         return payload
     if "user" in payload:
-        return {
+        public_payload = {
             "token_type": payload.get("token_type", "bearer"),
             "user": payload["user"],
         }
-    return {"token_type": payload.get("token_type", "bearer")}
+        csrf_token = payload.get("csrf_token")
+        if isinstance(csrf_token, str):
+            public_payload["csrf_token"] = csrf_token
+        return public_payload
+
+    public_payload = {"token_type": payload.get("token_type", "bearer")}
+    csrf_token = payload.get("csrf_token")
+    if isinstance(csrf_token, str):
+        public_payload["csrf_token"] = csrf_token
+    return public_payload
 
 
 async def enforce_auth_rate_limit(request: Request) -> None:

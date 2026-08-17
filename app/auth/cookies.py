@@ -15,6 +15,10 @@ def _cookie_secure() -> bool:
     return get_settings().is_production
 
 
+def _cookie_samesite() -> str:
+    return get_settings().auth_cookie_samesite_normalized
+
+
 def set_auth_cookies(
     response: Response,
     *,
@@ -25,12 +29,13 @@ def set_auth_cookies(
     refresh_max_age_seconds: int,
 ) -> None:
     secure = _cookie_secure()
+    samesite = _cookie_samesite()
     response.set_cookie(
         key=ACCESS_COOKIE,
         value=access_token,
         httponly=True,
         secure=secure,
-        samesite="lax",
+        samesite=samesite,
         max_age=access_max_age_seconds,
         path="/",
     )
@@ -39,7 +44,7 @@ def set_auth_cookies(
         value=refresh_token,
         httponly=True,
         secure=secure,
-        samesite="lax",
+        samesite=samesite,
         max_age=refresh_max_age_seconds,
         path="/auth",
     )
@@ -48,7 +53,7 @@ def set_auth_cookies(
         value=csrf_token,
         httponly=False,
         secure=secure,
-        samesite="lax",
+        samesite=samesite,
         max_age=refresh_max_age_seconds,
         path="/",
     )
@@ -56,13 +61,14 @@ def set_auth_cookies(
 
 def clear_auth_cookies(response: Response) -> None:
     secure = _cookie_secure()
+    samesite = _cookie_samesite()
     for key, path in ((ACCESS_COOKIE, "/"), (REFRESH_COOKIE, "/auth"), (CSRF_COOKIE, "/")):
         response.set_cookie(
             key=key,
             value="",
             httponly=key != CSRF_COOKIE,
             secure=secure,
-            samesite="lax",
+            samesite=samesite,
             max_age=0,
             path=path,
         )
