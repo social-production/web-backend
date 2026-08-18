@@ -482,6 +482,8 @@ def test_map_markers_include_project_activity_and_exclude_undated_project_entity
     assert "Melbourne Project Activity" in titles
     project_items = [item for item in items if item["title"] == "Melbourne Map Project"]
     assert len(project_items) == 1
+    assert project_items[0]["id"] == project.json()["project"]["id"]
+    assert project_items[0]["id"] != seeded["melbourne_location_id"]
     assert project_items[0]["entity_type"] == "project"
     assert project_items[0]["project_mode"] == "productive"
     assert project_items[0]["activity_source"] is None
@@ -489,7 +491,10 @@ def test_map_markers_include_project_activity_and_exclude_undated_project_entity
 
     activity_items = [item for item in items if item["title"] == "Melbourne Project Activity"]
     assert len(activity_items) == 1
-    assert activity_items[0]["href"] == f"/projects/{project_slug}"
+    assert activity_items[0]["id"] == activity.json()["activity"]["id"]
+    assert activity_items[0]["parent_id"] == project.json()["project"]["id"]
+    activity_href = f"/projects/{project_slug}?activity={activity_items[0]['id']}"
+    assert activity_items[0]["href"] == activity_href
     assert activity_items[0]["parent_title"] == "Melbourne Map Project"
     assert activity_items[0]["activity_source"] == "project"
     assert activity_items[0]["project_mode"] == "productive"
@@ -824,7 +829,7 @@ def test_map_markers_collective_service_project_pin_when_accepting_requests(
     assert project_items[0]["subtitle"] == "Accepting requests"
 
 
-def test_map_markers_collective_service_hidden_without_requests_or_open_spots(
+def test_map_markers_collective_service_shown_with_physical_location(
     db_transaction, isolated_client
 ):
     seeded = _seed_region_fixtures(db_transaction, isolated_client)
@@ -834,8 +839,8 @@ def test_map_markers_collective_service_hidden_without_requests_or_open_spots(
         "/projects",
         headers=headers,
         json={
-            "title": "Hidden Collective Service",
-            "description": "No requests and no open spots",
+            "title": "Visible Collective Service",
+            "description": "Physical location should pin without requests",
             "project_mode": "collective-service",
             "location_label": "Melbourne CBD, Victoria, Australia",
             "location_id": seeded["melbourne_location_id"],
@@ -857,7 +862,137 @@ def test_map_markers_collective_service_hidden_without_requests_or_open_spots(
     )
     assert response.status_code == 200, response.text
     titles = {item["title"] for item in response.json()["items"]}
-    assert "Hidden Collective Service" not in titles
+    assert "Visible Collective Service" in titles
+
+
+def test_map_markers_include_event_activity_and_inherit_parent_location(
+    db_transaction, isolated_client
+):
+    seeded = _seed_region_fixtures(db_transaction, isolated_client)
+    headers = _auth_header(seeded["owner_token"])
+    scheduled_at = (datetime.now(UTC) + timedelta(hours=4)).isoformat()
+    ends_at = (datetime.now(UTC) + timedelta(hours=6)).isoformat()
+
+    shared_activity = isolated_client.post(
+        f"/events/{seeded['near_slug']}/activities",
+        headers=headers,
+        json={
+            "title": "Melbourne Event Activity",
+            "scheduled_at": scheduled_at,
+            "ends_at": ends_at,
+            "location_label": "Melbourne CBD, Victoria, Australia",
+            "location_id": seeded["melbourne_location_id"],
+            "note": "Same place as the event",
+            "role_requirements": [{"label": "Helper", "required_count": 1}],
+        },
+    )
+    assert shared_activity.status_code == 200, shared_activity.text
+
+    inherited_activity = isolated_client.post(
+        f"/events/{seeded['near_slug']}/activities",
+        headers=headers,
+        json={
+            "title": "Inherited Location Activity",
+            "scheduled_at": scheduled_at,
+            "ends_at": ends_at,
+            "location_label": "Melbourne CBD, Victoria, Australia",
+            "note": "Uses the parent event location",
+            "role_requirements": [{"label": "Helper", "required_count": 1}],
+        },
+    )
+    assert inherited_activity.status_code == 200, inherited_activity.text
+
+    response = isolated_client.get(
+        "/feeds/map-markers",
+        params={
+            "lat": -37.8136,
+            "lon": 144.9631,
+            "radius_km": 50,
+            "filter": "events",
+            "window": "all",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    event_items = [item for item in items if item["title"] == "Melbourne Region Event"]
+    assert len(event_items) == 1
+    event_id = event_items[0]["id"]
+    assert event_id != seeded["melbourne_location_id"]
+
+    shared_items = [item for item in items if item["title"] == "Melbourne Event Activity"]
+    assert len(shared_items) == 1
+    assert shared_items[0]["id"] == shared_activity.json()["activity"]["id"]
+    assert shared_items[0]["parent_id"] == event_id
+    shared_href = f"/events/{seeded['near_slug']}?activity={shared_items[0]['id']}"
+    assert shared_items[0]["href"] == shared_href
+
+    inherited_items = [item for item in items if item["title"] == "Inherited Location Activity"]
+    assert len(inherited_items) == 1
+    assert inherited_items[0]["id"] == inherited_activity.json()["activity"]["id"]
+    assert inherited_items[0]["parent_id"] == event_id
+    assert inherited_items[0]["latitude"] == event_items[0]["latitude"]
+    assert inherited_items[0]["longitude"] == event_items[0]["longitude"]
+
+
+def test_map_markers_project_activity_inherits_parent_location(db_transaction, isolated_client):
+    seeded = _seed_region_fixtures(db_transaction, isolated_client)
+    headers = _auth_header(seeded["owner_token"])
+    scheduled_at = (datetime.now(UTC) + timedelta(hours=4)).isoformat()
+    ends_at = (datetime.now(UTC) + timedelta(hours=6)).isoformat()
+
+    project = isolated_client.post(
+        "/projects",
+        headers=headers,
+        json={
+            "title": "Inherit Location Project",
+            "description": "Parent location should nest child activities",
+            "project_mode": "productive",
+            "location_label": "Melbourne CBD, Victoria, Australia",
+            "location_id": seeded["melbourne_location_id"],
+            "channel_slugs": [seeded["channel_slug"]],
+        },
+    )
+    assert project.status_code == 200, project.text
+    project_slug = project.json()["project"]["slug"]
+    project_id = project.json()["project"]["id"]
+
+    activity = isolated_client.post(
+        f"/projects/{project_slug}/activities",
+        headers=headers,
+        json={
+            "title": "Inherited Project Activity",
+            "scheduled_at": scheduled_at,
+            "ends_at": ends_at,
+            "location_label": "Melbourne CBD, Victoria, Australia",
+            "note": "No location_id, inherit parent",
+            "role_requirements": [{"label": "Helper", "required_count": 1}],
+        },
+    )
+    assert activity.status_code == 200, activity.text
+
+    response = isolated_client.get(
+        "/feeds/map-markers",
+        params={
+            "lat": -37.8136,
+            "lon": 144.9631,
+            "radius_km": 50,
+            "filter": "projects",
+            "window": "all",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    parent_items = [item for item in items if item["title"] == "Inherit Location Project"]
+    child_items = [item for item in items if item["title"] == "Inherited Project Activity"]
+    assert len(parent_items) == 1
+    assert parent_items[0]["id"] == project_id
+    assert len(child_items) == 1
+    assert child_items[0]["id"] == activity.json()["activity"]["id"]
+    assert child_items[0]["parent_id"] == project_id
+    assert child_items[0]["latitude"] == parent_items[0]["latitude"]
+    assert child_items[0]["longitude"] == parent_items[0]["longitude"]
 
 
 def test_map_markers_hide_full_collective_service_activity(db_transaction, isolated_client):

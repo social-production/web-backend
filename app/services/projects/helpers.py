@@ -278,6 +278,13 @@ def create_project(
     community_slugs: list[str] | None = None,
     request_mode: str | None = None,
     location_id: UUID | None = None,
+    is_online: bool = False,
+    provider_place_id: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    region: str | None = None,
+    country: str | None = None,
+    precision: str = "approximate",
 ) -> dict[str, object]:
     normalized_slug = allocate_unique_slug(db, projects, title)
     normalized_mode = project_mode.strip().lower()
@@ -321,16 +328,24 @@ def create_project(
     phase_id, stage_label = _phase_for_mode(normalized_mode)
     now = datetime.now(UTC)
 
-    from app.services.locations.resolve import resolve_entity_location_fields
+    from app.services.locations.resolve import ensure_location_id
 
     label = (location_label or "").strip()
-    if not label and location_id is None:
+    online = is_online or label.lower() == "online"
+    if not label and location_id is None and latitude is None:
         resolved_location_id, resolved_location_label = None, ""
     else:
-        resolved_location_id, resolved_location_label = resolve_entity_location_fields(
+        resolved_location_id, resolved_location_label = ensure_location_id(
             db,
             location_id=location_id,
             location_label=location_label,
+            provider_place_id=provider_place_id,
+            latitude=latitude,
+            longitude=longitude,
+            region=region,
+            country=country,
+            precision=precision,
+            is_online=online,
         )
 
     try:

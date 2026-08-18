@@ -139,6 +139,47 @@ def _physical_location_join(entity_location_id):
     )
 
 
+def _labeled_location_columns():
+    """Select location fields with labels so they never overwrite entity `id`."""
+    return (
+        locations.c.id.label("location_id"),
+        locations.c.provider_place_id,
+        locations.c.display_label,
+        locations.c.latitude,
+        locations.c.longitude,
+        locations.c.region,
+        locations.c.country,
+        locations.c.precision,
+        locations.c.is_online,
+    )
+
+
+def _serialize_joined_location(
+    row: Any,
+    *,
+    viewer_authorized: bool = True,
+    is_private_entity: bool = False,
+):
+    location_id = row.get("location_id") if hasattr(row, "get") else None
+    if location_id is None:
+        return None
+    return serialize_location(
+        {
+            "id": location_id,
+            "provider_place_id": row["provider_place_id"],
+            "display_label": row["display_label"],
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "region": row["region"],
+            "country": row["country"],
+            "precision": row["precision"],
+            "is_online": row["is_online"],
+        },
+        viewer_authorized=viewer_authorized,
+        is_private_entity=is_private_entity,
+    )
+
+
 def get_region_feed(
     db: Session,
     *,
@@ -755,12 +796,11 @@ def _project_pin_eligible(
     request_enabled: bool,
     has_open_spots: bool,
 ) -> bool:
-    if project_mode == "productive":
+    _ = has_open_spots
+    if project_mode in {"productive", "collective-service"}:
         return True
     if project_mode == "personal-service":
         return request_enabled
-    if project_mode == "collective-service":
-        return request_enabled or has_open_spots
     return False
 
 
@@ -908,14 +948,14 @@ def get_map_markers(
         event_rows = (
             db.execute(
                 select(
-                    events.c.id,
+                    events.c.id.label("id"),
                     events.c.slug,
                     events.c.title,
                     events.c.scheduled_at,
                     events.c.ends_at,
                     events.c.last_activity_at,
                     events.c.is_private,
-                    locations,
+                    *_labeled_location_columns(),
                 )
                 .select_from(events.join(locations, _physical_location_join(events.c.location_id)))
                 .where(
@@ -934,7 +974,7 @@ def get_map_markers(
                 continue
             if not _include_item(row["scheduled_at"], enforce_upcoming=True):
                 continue
-            serialized = serialize_location(
+            serialized = _serialize_joined_location(
                 row,
                 viewer_authorized=True,
                 is_private_entity=bool(row["is_private"]),
@@ -969,12 +1009,12 @@ def get_map_markers(
         help_rows = (
             db.execute(
                 select(
-                    help_requests.c.id,
+                    help_requests.c.id.label("id"),
                     help_requests.c.title,
                     help_requests.c.needed_at,
                     help_requests.c.ends_at,
                     help_requests.c.created_at,
-                    locations,
+                    *_labeled_location_columns(),
                 )
                 .select_from(
                     help_requests.join(
@@ -996,7 +1036,9 @@ def get_map_markers(
                 continue
             if not _include_item(row["needed_at"], enforce_upcoming=True):
                 continue
-            serialized = serialize_location(row, viewer_authorized=True, is_private_entity=False)
+            serialized = _serialize_joined_location(
+                row, viewer_authorized=True, is_private_entity=False
+            )
             if serialized is None or serialized["latitude"] is None:
                 continue
             distance = _distance_from_anchor(
@@ -1038,7 +1080,7 @@ def get_map_markers(
         activity_rows = (
             db.execute(
                 select(
-                    event_activities.c.id,
+                    event_activities.c.id.label("id"),
                     event_activities.c.title,
                     event_activities.c.scheduled_at,
                     event_activities.c.ends_at,
@@ -1046,11 +1088,14 @@ def get_map_markers(
                     events.c.slug.label("event_slug"),
                     events.c.title.label("parent_title"),
                     events.c.is_private,
-                    locations,
+                    *_labeled_location_columns(),
                 )
                 .select_from(
                     event_activities.join(events, events.c.id == event_activities.c.event_id).join(
-                        locations, _physical_location_join(event_activities.c.location_id)
+                        locations,
+                        _physical_location_join(
+                            func.coalesce(event_activities.c.location_id, events.c.location_id)
+                        ),
                     )
                 )
                 .where(
@@ -1067,7 +1112,7 @@ def get_map_markers(
         for row in activity_rows:
             if not _include_item(row["scheduled_at"], enforce_upcoming=True):
                 continue
-            serialized = serialize_location(
+            serialized = _serialize_joined_location(
                 row,
                 viewer_authorized=True,
                 is_private_entity=bool(row["is_private"]),
@@ -1112,7 +1157,7 @@ def get_map_markers(
                     "parent_id": str(row["parent_id"]),
                     "parent_title": row["parent_title"],
                     "subtitle": row["title"],
-                    "href": f"/events/{row['event_slug']}",
+                    "href": f"/events/{row['event_slug']}?activity={activity_id}",
                     "latitude": serialized["latitude"],
                     "longitude": serialized["longitude"],
                     "precision": serialized["precision"],
@@ -1131,12 +1176,12 @@ def get_map_markers(
         project_rows = (
             db.execute(
                 select(
-                    projects.c.id,
+                    projects.c.id.label("id"),
                     projects.c.slug,
                     projects.c.title,
                     projects.c.project_mode,
                     projects.c.stage_label,
-                    locations,
+                    *_labeled_location_columns(),
                 )
                 .select_from(
                     projects.join(locations, _physical_location_join(projects.c.location_id))
@@ -1170,7 +1215,9 @@ def get_map_markers(
                 has_open_spots=has_open_spots,
             ):
                 continue
-            serialized = serialize_location(row, viewer_authorized=True, is_private_entity=False)
+            serialized = _serialize_joined_location(
+                row, viewer_authorized=True, is_private_entity=False
+            )
             if serialized is None or serialized["latitude"] is None:
                 continue
             distance = _distance_from_anchor(
@@ -1211,7 +1258,7 @@ def get_map_markers(
         project_activity_rows = (
             db.execute(
                 select(
-                    project_activities.c.id,
+                    project_activities.c.id.label("id"),
                     project_activities.c.title,
                     project_activities.c.scheduled_at,
                     project_activities.c.ends_at,
@@ -1219,12 +1266,17 @@ def get_map_markers(
                     projects.c.slug.label("project_slug"),
                     projects.c.title.label("parent_title"),
                     projects.c.project_mode,
-                    locations,
+                    *_labeled_location_columns(),
                 )
                 .select_from(
                     project_activities.join(
                         projects, projects.c.id == project_activities.c.project_id
-                    ).join(locations, _physical_location_join(project_activities.c.location_id))
+                    ).join(
+                        locations,
+                        _physical_location_join(
+                            func.coalesce(project_activities.c.location_id, projects.c.location_id)
+                        ),
+                    )
                 )
                 .where(
                     projects.c.is_closed.is_(False),
@@ -1241,7 +1293,9 @@ def get_map_markers(
         for row in project_activity_rows:
             if not _include_item(row["scheduled_at"], enforce_upcoming=True):
                 continue
-            serialized = serialize_location(row, viewer_authorized=True, is_private_entity=False)
+            serialized = _serialize_joined_location(
+                row, viewer_authorized=True, is_private_entity=False
+            )
             if serialized is None or serialized["latitude"] is None:
                 continue
             distance = _distance_from_anchor(
@@ -1274,7 +1328,7 @@ def get_map_markers(
                     "parent_id": str(row["parent_id"]),
                     "parent_title": row["parent_title"],
                     "subtitle": row["title"],
-                    "href": f"/projects/{row['project_slug']}",
+                    "href": f"/projects/{row['project_slug']}?activity={activity_id}",
                     "latitude": serialized["latitude"],
                     "longitude": serialized["longitude"],
                     "precision": serialized["precision"],

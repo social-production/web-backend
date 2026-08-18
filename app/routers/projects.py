@@ -48,6 +48,13 @@ class ProjectCreateRequest(BaseModel):
     project_subtype: str | None = Field(default=None, pattern="^(standard|software)$")
     location_label: str = Field(default="", max_length=160)
     location_id: UUID | None = None
+    is_online: bool = False
+    provider_place_id: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    region: str | None = None
+    country: str | None = None
+    precision: str = "approximate"
     channel_slugs: list[str] = Field(default_factory=list)
     community_slugs: list[str] = Field(default_factory=list)
     request_mode: str | None = Field(default=None, pattern="^(calendar|direct|both)$")
@@ -242,6 +249,13 @@ async def create_new_project(
         community_slugs=payload.community_slugs,
         request_mode=payload.request_mode,
         location_id=payload.location_id,
+        is_online=payload.is_online,
+        provider_place_id=payload.provider_place_id,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        region=payload.region,
+        country=payload.country,
+        precision=payload.precision,
     )
 
 
