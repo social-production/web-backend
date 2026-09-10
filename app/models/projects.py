@@ -314,6 +314,9 @@ project_activity_roles = table(
     sa.Column("label", sa.String(100), nullable=False),
     sa.Column("required_count", sa.Integer, nullable=False),
     sa.Column("maximum_count", sa.Integer, nullable=True),
+    user_fk("suggested_user_id", nullable=True, ondelete="SET NULL"),
+    user_fk("suggested_by_user_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("suggestion_status", sa.String(16), nullable=True),
     created_at(),
 )
 
@@ -373,8 +376,44 @@ project_service_requests = table(
         sa.ForeignKey("project_activities.id", ondelete="SET NULL"),
         nullable=True,
     ),
+    sa.Column(
+        "conversation_id",
+        UUID,
+        sa.ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     created_at(),
     updated_at(),
+)
+
+project_service_availability_rules = table(
+    "project_service_availability_rules",
+    uuid_pk(),
+    project_fk("project_id", nullable=False),
+    sa.Column("weekday", sa.Integer, nullable=False),
+    sa.Column("start_time", sa.Time, nullable=False),
+    sa.Column("end_time", sa.Time, nullable=False),
+    sa.Column("timezone", sa.String(64), nullable=False, server_default="UTC"),
+    sa.Column("starts_on", sa.Date, nullable=True),
+    sa.Column("ends_on", sa.Date, nullable=True),
+    sa.Column("note", sa.Text, nullable=False, server_default=""),
+    created_at(),
+    updated_at(),
+)
+
+project_service_slot_holds = table(
+    "project_service_slot_holds",
+    uuid_pk(),
+    project_fk("project_id", nullable=False),
+    sa.Column(
+        "request_id",
+        UUID,
+        sa.ForeignKey("project_service_requests.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("starts_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("ends_at", sa.DateTime(timezone=True), nullable=False),
+    created_at(),
 )
 
 project_service_request_setting_changes = table(

@@ -18,6 +18,10 @@ from app.services.activity_history import (
     delete_project_activity_rating,
     upsert_project_activity_rating,
 )
+from app.services.activity_role_suggestions import (
+    decline_project_activity_role_suggestion,
+    suggest_project_activity_role,
+)
 from app.services.projects import (
     add_project_update,
     add_project_value,
@@ -180,6 +184,7 @@ class ProjectActivityRoleRequirementIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     label: str = Field(min_length=1, max_length=100)
+    suggested_user_id: UUID | None = None
     required_count: int = Field(ge=1)
     maximum_count: int | None = Field(default=None, ge=1)
 
@@ -376,6 +381,40 @@ async def create_activity_route(
         linked_plan_phase_id=payload.linked_plan_phase_id,
         location_id=payload.location_id,
     )
+
+
+class ProjectActivityRoleSuggestIn(BaseModel):
+    suggested_user_id: UUID
+
+
+@router.post("/{slug}/activities/{activity_id}/roles/{role_id}/suggest")
+def suggest_project_activity_role_route(
+    slug: str,
+    activity_id: UUID,
+    role_id: UUID,
+    payload: ProjectActivityRoleSuggestIn,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return suggest_project_activity_role(
+        db,
+        current_user_id,
+        slug,
+        activity_id,
+        role_id,
+        payload.suggested_user_id,
+    )
+
+
+@router.post("/{slug}/activities/{activity_id}/roles/{role_id}/suggestion/decline")
+def decline_project_activity_role_suggestion_route(
+    slug: str,
+    activity_id: UUID,
+    role_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return decline_project_activity_role_suggestion(db, current_user_id, slug, activity_id, role_id)
 
 
 @router.post("/{slug}/activities/{activity_id}/commit")

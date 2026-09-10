@@ -212,6 +212,9 @@ event_activity_roles = table(
     sa.Column("label", sa.String(100), nullable=False),
     sa.Column("required_count", sa.Integer, nullable=False),
     sa.Column("maximum_count", sa.Integer, nullable=True),
+    user_fk("suggested_user_id", nullable=True, ondelete="SET NULL"),
+    user_fk("suggested_by_user_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("suggestion_status", sa.String(16), nullable=True),
     created_at(),
 )
 

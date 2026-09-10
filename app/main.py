@@ -31,6 +31,9 @@ from app.routers.projects import router as projects_router
 from app.routers.projects_links import router as projects_links_router
 from app.routers.projects_phases import router as projects_phases_router
 from app.routers.projects_plans import router as projects_plans_router
+from app.routers.projects_service_availability import (
+    router as projects_service_availability_router,
+)
 from app.routers.projects_service_request_settings import (
     router as projects_service_request_settings_router,
 )
@@ -121,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(projects_plans_router)
     app.include_router(projects_phases_router)
     app.include_router(projects_service_requests_router)
+    app.include_router(projects_service_availability_router)
     app.include_router(projects_service_request_settings_router)
     app.include_router(projects_software_router)
 

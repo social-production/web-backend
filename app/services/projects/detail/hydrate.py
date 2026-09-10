@@ -70,6 +70,10 @@ from app.services.projects.phases.conversion import (
     PERMANENCE_NOTE,
 )
 from app.services.projects_plans import _subtype_label
+from app.services.projects_service_availability import (
+    expand_availability_slots,
+    list_availability_rules,
+)
 from app.services.projects_software import get_project_software_governance
 from app.services.signal_gates import build_proposal_signal_summary
 from app.utils.votes import required_votes, resolve_project_vote_population
@@ -304,18 +308,61 @@ async def get_project_detail(
     phase_two_winning = plans_payload["phase_two_winning"]
     phase_three_winning = plans_payload["phase_three_winning"]
 
+    def _stage_source_plan(
+        plans: list[dict[str, object]], winning_id: str | None
+    ) -> dict[str, object] | None:
+        if winning_id:
+            plan = next((entry for entry in plans if entry["id"] == winning_id), None)
+            if plan is not None:
+                return plan
+        leading = [entry for entry in plans if entry.get("isLeading")]
+        if len(leading) == 1:
+            return leading[0]
+        if len(plans) == 1:
+            return plans[0]
+        return None
+
+    collective_service = row["project_mode"] == "collective-service"
+    _stage_plan_sources: list[tuple[str, str, dict[str, object] | None]] = [
+        (
+            "production",
+            "Operations" if collective_service else "Production",
+            _stage_source_plan(phase_two_plans, phase_two_winning),
+        ),
+        (
+            "distribution",
+            "Access" if collective_service else "Distribution",
+            _stage_source_plan(phase_three_plans, phase_three_winning),
+        ),
+    ]
+
     def _selectable_plan_phases_from_winning_plan() -> list[dict[str, str]]:
-        winning_id = phase_three_winning or phase_two_winning
-        if not winning_id:
-            return []
-        all_plans = [*phase_two_plans, *phase_three_plans]
-        winning_plan = next((plan for plan in all_plans if plan["id"] == winning_id), None)
-        if winning_plan is None:
-            return []
-        return [
-            {"id": phase["id"], "label": phase["title"]}
-            for phase in winning_plan.get("planPhases", [])
-        ]
+        items: list[dict[str, str]] = []
+        for kind, kind_label, plan in _stage_plan_sources:
+            if plan is None:
+                continue
+            for phase in plan.get("planPhases", []):
+                items.append(
+                    {
+                        "id": f"{kind}:{phase['id']}",
+                        "label": f"{kind_label}: {phase['title']}",
+                        "planKind": kind,
+                        "planKindLabel": kind_label,
+                    }
+                )
+        return items
+
+    def _linked_plan_phase_label(raw: str | None) -> str | None:
+        """Resolve a stored stage id to a readable label; tolerate legacy unprefixed ids."""
+        if not raw:
+            return raw
+        for kind, kind_label, plan in _stage_plan_sources:
+            if plan is None:
+                continue
+            for phase in plan.get("planPhases", []):
+                if raw == f"{kind}:{phase['id']}" or raw == phase["id"]:
+                    return f"{kind_label}: {phase['title']}"
+        return raw
 
     activities_rows = (
         db.execute(
@@ -340,6 +387,11 @@ async def get_project_detail(
     )
 
     role_ids = [role["id"] for role in role_rows]
+    suggested_ids = {
+        role["suggested_user_id"] for role in role_rows if role.get("suggested_user_id")
+    }
+    if suggested_ids:
+        usernames.update(_username_lookup(db, suggested_ids))
     assignment_rows = (
         db.execute(
             select(
@@ -385,11 +437,26 @@ async def get_project_detail(
 
             activity_roles.append(
                 {
+                    "id": str(role["id"]),
                     "label": role["label"],
                     "filledCount": len(assigned_users),
                     "requiredCount": int(role["required_count"] or 0),
                     "maximumCount": role["maximum_count"],
                     "isViewerAssigned": is_viewer_assigned,
+                    "suggestedUser": (
+                        {
+                            "id": str(role["suggested_user_id"]),
+                            "username": usernames.get(role["suggested_user_id"], {}).get(
+                                "username", "unknown"
+                            ),
+                        }
+                        if role.get("suggested_user_id")
+                        and role.get("suggestion_status") != "declined"
+                        else None
+                    ),
+                    "suggestionStatus": role.get("suggestion_status"),
+                    "isViewerSuggested": current_user_id is not None
+                    and role.get("suggested_user_id") == current_user_id,
                     "assignees": [
                         {
                             "username": usernames.get(user_id, {}).get("username", "unknown"),
@@ -413,15 +480,23 @@ async def get_project_detail(
             "maximumParticipants": maximum_participants,
             "committedCount": len(committed_users),
             "viewerAssignedRoleLabel": viewer_assigned_label,
-            "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
+            "linkedPlanPhaseLabel": _linked_plan_phase_label(activity["linked_plan_phase_id"]),
             "statusTone": activity_status_tone(len(committed_users), minimum_participants),
             "roles": activity_roles,
             "note": activity["note"],
-            "isActive": not is_activity_ended(activity["ends_at"], now),
+            "isActive": not is_activity_ended(activity["ends_at"], now)
+            and len(committed_users) >= minimum_participants,
             "rolesLocked": is_activity_ended(activity["ends_at"], now),
         }
         activity_rows_by_id[activity["id"]] = activity
         assignments_by_activity[activity["id"]] = committed_users
+        hide_booking = (
+            row["project_mode"] == "personal-service"
+            and current_user_id != row["author_id"]
+            and activity.get("linked_request_id") is not None
+        )
+        if hide_booking:
+            continue
         if is_activity_ended(activity["ends_at"], now):
             ended_activity_payloads.append(activity_payload)
         else:
@@ -639,6 +714,7 @@ async def get_project_detail(
             "status": item["status"],
             "scheduledAt": _iso(item["scheduled_at"]) if item["scheduled_at"] else None,
             "endsAt": _iso(item["ends_at"]) if item["ends_at"] else None,
+            "conversationId": str(item["conversation_id"]) if item.get("conversation_id") else None,
             "linkedActivityId": str(item["linked_activity_id"])
             if item["linked_activity_id"]
             else None,
@@ -821,6 +897,12 @@ async def get_project_detail(
             "travelRadiusLabel": "",
             "usesCalendar": service_settings_payload["requestMode"] in {"calendar", "both"},
             "requestMode": service_settings_payload["requestMode"],
+            "availabilityRules": list_availability_rules(db, project_id),
+            "availabilitySlots": expand_availability_slots(
+                db,
+                project_id=project_id,
+                viewer_is_creator=bool(current_user_id and current_user_id == row["author_id"]),
+            ),
         }
         if row["project_mode"] == "personal-service"
         else None,

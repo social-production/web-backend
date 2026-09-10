@@ -42,7 +42,7 @@ Open `http://localhost:5173`.
 | `DATABASE_URL` | set in compose | PostgreSQL connection string |
 | `REDIS_URL` | set in compose | Redis connection string |
 | `JWT_SECRET` | local dev value | Secret for JWT tokens. Generate: `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `JWT_EXPIRE_MINUTES` | `60` | Token lifetime in minutes |
+| `JWT_ACCESS_EXPIRE_MINUTES` | `15` | Access token lifetime in minutes |
 | `MESSAGE_ENCRYPTION_KEY` | local dev value | Fernet key for message encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CORS_ORIGINS` | `http://localhost:5173` | Allowed origins, e.g. `https://socialproduction.example` |
 | `GITHUB_TOKEN` | _(empty)_ | Fine-grained GitHub PAT with **Issues: write** on `GITHUB_REPO`. Required for the in-app feedback form. |

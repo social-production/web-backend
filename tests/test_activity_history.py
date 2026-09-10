@@ -331,7 +331,7 @@ def test_zero_committed_activity_is_auto_uncompleted() -> None:
     db.close()
 
 
-def test_under_minimum_staffing_allows_completion() -> None:
+def test_under_minimum_staffing_is_auto_uncompleted() -> None:
     db = SessionLocal()
     now = datetime.now(UTC)
     owner_id, _ = _seed_user(db, now)
@@ -350,8 +350,8 @@ def test_under_minimum_staffing_allows_completion() -> None:
     token = create_access_token(str(owner_id))
     item = _project_history_item(slug, token, activity_id)
     participant_completion = item["participantCompletion"]
-    assert participant_completion.get("systemAutoUncompleted") is not True
-    assert participant_completion["viewerCanSet"] is True
+    assert participant_completion["systemAutoUncompleted"] is True
+    assert participant_completion["viewerCanSet"] is False
 
     with TestClient(app) as client:
         response = client.post(
@@ -359,7 +359,7 @@ def test_under_minimum_staffing_allows_completion() -> None:
             headers=_auth_header(token),
             json={"role": "participants", "selection": "completed"},
         )
-    assert response.status_code == 200
+    assert response.status_code == 403
 
 
 def test_completion_api_rejects_zero_committed() -> None:

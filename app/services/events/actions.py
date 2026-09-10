@@ -27,6 +27,10 @@ from app.services.activity_history import (
     ensure_activity_roles_unlocked,
     ensure_future_scheduled_start,
 )
+from app.services.activity_role_suggestions import (
+    notify_role_suggestion,
+    role_insert_suggestion_values,
+)
 from app.services.events.helpers import (
     _ensure_event_member,
     _get_event_by_slug_row,
@@ -613,6 +617,7 @@ def create_event_activity(
                     detail="maximum_count must be >= required_count",
                 )
 
+            suggestion = role_insert_suggestion_values(req, current_user_id)
             role = (
                 db.execute(
                     insert(event_activity_roles)
@@ -621,12 +626,15 @@ def create_event_activity(
                         label=label,
                         required_count=required_count,
                         maximum_count=maximum_count,
+                        **suggestion,
                     )
                     .returning(
                         event_activity_roles.c.id,
                         event_activity_roles.c.label,
                         event_activity_roles.c.required_count,
                         event_activity_roles.c.maximum_count,
+                        event_activity_roles.c.suggested_user_id,
+                        event_activity_roles.c.suggestion_status,
                     )
                 )
                 .mappings()
@@ -644,6 +652,22 @@ def create_event_activity(
     except HTTPException:
         db.rollback()
         raise
+    for role in role_items:
+        suggested_user_id = role.get("suggested_user_id")
+        if suggested_user_id is None:
+            continue
+        notify_role_suggestion(
+            db,
+            recipient_id=suggested_user_id,
+            actor_id=current_user_id,
+            kind="evt-role-suggest",
+            subject_type="event",
+            subject_id=event_row["id"],
+            activity_id=created["id"],
+            title=f"Suggested for {role['label']}",
+            body=f"You've been suggested for {role['label']} on {created['title']}.",
+            href=f"/events/{event_row['slug']}?activity={created['id']}",
+        )
     return {
         "activity": {
             **dict(created),

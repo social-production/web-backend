@@ -26,6 +26,10 @@ from app.services.activity_history import (
     ensure_activity_roles_unlocked,
     ensure_future_scheduled_start,
 )
+from app.services.activity_role_suggestions import (
+    notify_role_suggestion,
+    role_insert_suggestion_values,
+)
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.projects.helpers import (
@@ -372,6 +376,7 @@ def create_project_activity(
                     detail="maximum_count must be >= required_count",
                 )
 
+            suggestion = role_insert_suggestion_values(req, current_user_id)
             role = (
                 db.execute(
                     insert(project_activity_roles)
@@ -380,12 +385,15 @@ def create_project_activity(
                         label=label,
                         required_count=required_count,
                         maximum_count=maximum_count,
+                        **suggestion,
                     )
                     .returning(
                         project_activity_roles.c.id,
                         project_activity_roles.c.label,
                         project_activity_roles.c.required_count,
                         project_activity_roles.c.maximum_count,
+                        project_activity_roles.c.suggested_user_id,
+                        project_activity_roles.c.suggestion_status,
                     )
                 )
                 .mappings()
@@ -403,6 +411,22 @@ def create_project_activity(
     except HTTPException:
         db.rollback()
         raise
+    for role in role_items:
+        suggested_user_id = role.get("suggested_user_id")
+        if suggested_user_id is None:
+            continue
+        notify_role_suggestion(
+            db,
+            recipient_id=suggested_user_id,
+            actor_id=current_user_id,
+            kind="prj-role-suggest",
+            subject_type="project",
+            subject_id=project_row["id"],
+            activity_id=created["id"],
+            title=f"Suggested for {role['label']}",
+            body=f"You've been suggested for {role['label']} on {created['title']}.",
+            href=f"/projects/{project_row['slug']}?activity={created['id']}",
+        )
     return {
         "activity": {
             **dict(created),

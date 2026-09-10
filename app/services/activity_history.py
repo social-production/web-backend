@@ -71,8 +71,9 @@ def _rating_summary(ratings: list[dict[str, object]]) -> dict[str, object]:
 
 
 def _staffing_failed(committed_count: int, minimum_participants: int) -> bool:
-    del minimum_participants
-    return committed_count == 0
+    if committed_count <= 0:
+        return True
+    return committed_count < minimum_participants
 
 
 def _activity_staffing_counts(

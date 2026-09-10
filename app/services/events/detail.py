@@ -445,6 +445,11 @@ async def get_event_detail(
     )
 
     role_ids = [role["id"] for role in role_rows]
+    suggested_ids = {
+        role["suggested_user_id"] for role in role_rows if role.get("suggested_user_id")
+    }
+    if suggested_ids:
+        usernames.update(_username_lookup(db, suggested_ids))
     assignment_rows = (
         db.execute(
             select(
@@ -489,11 +494,26 @@ async def get_event_detail(
 
             activity_roles.append(
                 {
+                    "id": str(role["id"]),
                     "label": role["label"],
                     "filledCount": len(assigned_users),
                     "requiredCount": int(role["required_count"] or 0),
                     "maximumCount": role["maximum_count"],
                     "isViewerAssigned": is_viewer_assigned,
+                    "suggestedUser": (
+                        {
+                            "id": str(role["suggested_user_id"]),
+                            "username": usernames.get(role["suggested_user_id"], {}).get(
+                                "username", "unknown"
+                            ),
+                        }
+                        if role.get("suggested_user_id")
+                        and role.get("suggestion_status") != "declined"
+                        else None
+                    ),
+                    "suggestionStatus": role.get("suggestion_status"),
+                    "isViewerSuggested": current_user_id is not None
+                    and role.get("suggested_user_id") == current_user_id,
                     "assignees": [
                         {
                             "username": usernames.get(user_id, {}).get("username", "unknown"),
@@ -521,7 +541,8 @@ async def get_event_detail(
             "statusTone": activity_status_tone(len(committed_users), minimum_participants),
             "roles": activity_roles,
             "note": activity["note"],
-            "isActive": not is_activity_ended(activity["ends_at"], now),
+            "isActive": not is_activity_ended(activity["ends_at"], now)
+            and len(committed_users) >= minimum_participants,
             "rolesLocked": is_activity_ended(activity["ends_at"], now),
         }
         assignments_by_activity[activity["id"]] = committed_users

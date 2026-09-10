@@ -33,6 +33,7 @@ class ServiceRequestStatusUpdateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     status: str = Field(pattern="^(open|planned|accepted|declined)$")
+    hold_slot: bool = False
 
 
 class ServiceRequestOut(BaseModel):
@@ -45,6 +46,7 @@ class ServiceRequestOut(BaseModel):
     scheduled_at: object
     ends_at: object
     linked_activity_id: UUID | None = None
+    conversation_id: UUID | None = None
     created_at: object
     updated_at: object
 
@@ -108,6 +110,7 @@ def patch_project_service_request_status(
         project_slug=slug,
         request_id=request_id,
         status_value=payload.status,
+        hold_slot=payload.hold_slot,
     )
 
 

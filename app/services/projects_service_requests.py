@@ -27,6 +27,7 @@ from app.services.activity_history import (
     project_activity_staffing_counts,
 )
 from app.services.messages import send_message, start_direct_conversation
+from app.services.projects_service_availability import create_slot_hold, request_fits_open_slot
 
 VALID_SERVICE_REQUEST_STATUS = frozenset({"open", "planned", "accepted", "declined"})
 
@@ -42,6 +43,7 @@ def _serialize_service_request(row: Mapping[str, object]) -> dict[str, object]:
         "scheduled_at": row["scheduled_at"],
         "ends_at": row["ends_at"],
         "linked_activity_id": row["linked_activity_id"],
+        "conversation_id": row.get("conversation_id"),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -205,6 +207,24 @@ def _ensure_requests_enabled(
             detail="This service only accepts direct unscheduled requests",
         )
 
+    if (
+        scheduled_at is not None
+        and ends_at is not None
+        and request_mode == "calendar"
+        and project_row["project_mode"] == "personal-service"
+        and not allow_off_schedule
+        and not request_fits_open_slot(
+            db,
+            project_id=project_row["id"],
+            scheduled_at=scheduled_at,
+            ends_at=ends_at,
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="That time is not in an open availability slot",
+        )
+
 
 def create_service_request(
     db: Session,
@@ -244,6 +264,7 @@ def create_service_request(
                     project_service_requests.c.scheduled_at,
                     project_service_requests.c.ends_at,
                     project_service_requests.c.linked_activity_id,
+                    project_service_requests.c.conversation_id,
                     project_service_requests.c.created_at,
                     project_service_requests.c.updated_at,
                 )
@@ -275,6 +296,14 @@ def create_service_request(
             creator_id=project_row["author_id"],
             message_body=message_body,
         )
+        if conversation_id is not None:
+            db.execute(
+                update(project_service_requests)
+                .where(project_service_requests.c.id == created["id"])
+                .values(conversation_id=conversation_id)
+            )
+            db.commit()
+            created = {**dict(created), "conversation_id": conversation_id}
 
     return {
         "request": _serialize_service_request(created),
@@ -322,6 +351,7 @@ def update_service_request_status(
     project_slug: str,
     request_id: UUID,
     status_value: str,
+    hold_slot: bool = False,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_service_project(project_row["project_mode"])
@@ -355,6 +385,19 @@ def update_service_request_status(
             .where(project_service_requests.c.id == request_id)
             .values(status=normalized_status)
         )
+        if (
+            hold_slot
+            and normalized_status == "accepted"
+            and request_row["scheduled_at"] is not None
+            and request_row["ends_at"] is not None
+        ):
+            create_slot_hold(
+                db,
+                project_id=project_row["id"],
+                request_id=request_id,
+                starts_at=request_row["scheduled_at"],
+                ends_at=request_row["ends_at"],
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
