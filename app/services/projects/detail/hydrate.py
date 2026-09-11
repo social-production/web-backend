@@ -62,6 +62,7 @@ from app.services.projects.helpers import (
     _visible_lifecycle_phases,
     _vote_summary,
 )
+from app.services.projects.phases.constants import STAGE_LABEL_BY_PHASE_ID
 from app.services.projects.phases.conversion import (
     CONVERSION_FROM_LABEL,
     CONVERSION_LINK_KIND,
@@ -69,6 +70,7 @@ from app.services.projects.phases.conversion import (
     INVENTORY_NOTE,
     PERMANENCE_NOTE,
 )
+from app.services.projects.phases.labels import display_stage_label, next_phase_id_for_project
 from app.services.projects_plans import _subtype_label
 from app.services.projects_service_availability import (
     expand_availability_slots,
@@ -362,6 +364,12 @@ async def get_project_detail(
             for phase in plan.get("planPhases", []):
                 if raw == f"{kind}:{phase['id']}" or raw == phase["id"]:
                     return f"{kind_label}: {phase['title']}"
+        if raw in STAGE_LABEL_BY_PHASE_ID or raw.startswith("phase-"):
+            return display_stage_label(
+                str(row["project_mode"]),
+                str(row["project_subtype"]) if row.get("project_subtype") else None,
+                raw,
+            )
         return raw
 
     activities_rows = (
@@ -766,7 +774,6 @@ async def get_project_detail(
 
     phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
     current_order = phase_order.get(row["current_phase_id"], 1)
-    from app.services.projects_phases import display_stage_label, next_phase_id_for_project
 
     next_phase_id = next_phase_id_for_project(
         str(row["project_mode"]),

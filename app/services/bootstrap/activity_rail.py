@@ -56,9 +56,12 @@ from app.services.bootstrap.summary import _small_iso
 from app.services.content import _help_request_role_summaries, _load_help_request_roles
 from app.services.feeds import _truncate_update_body
 from app.services.messages import find_direct_conversation_between
+from app.services.projects.software.helpers import _ensure_software_tables
 
 
 def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
+    # Software PR tables are created lazily (not in Alembic); ensure before rail queries.
+    _ensure_software_tables(db)
     items: list[dict[str, object]] = []
     now = datetime.now(UTC)
 
@@ -224,6 +227,51 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                     "activityId": aid,
                 }
             )
+
+    # Hosted or joined events even when no nested activity exists yet.
+    listed_event_slugs = {
+        str(item.get("eventSlug")) for item in items if item.get("kind") == "event"
+    }
+    member_event_rows = (
+        db.execute(
+            select(
+                events.c.id,
+                events.c.slug,
+                events.c.title,
+                events.c.time_label,
+                events.c.created_by,
+            )
+            .select_from(
+                event_memberships.join(events, events.c.id == event_memberships.c.event_id)
+            )
+            .where(
+                event_memberships.c.user_id == current_user_id,
+                events.c.current_phase_id != "closed",
+            )
+            .order_by(events.c.updated_at.desc())
+            .limit(8)
+        )
+        .mappings()
+        .all()
+    )
+    for event_row in member_event_rows:
+        slug = str(event_row["slug"])
+        if slug in listed_event_slugs:
+            continue
+        hosting = event_row["created_by"] == current_user_id
+        items.append(
+            {
+                "kind": "event",
+                "id": f"event-{event_row['id']}",
+                "subjectId": slug,
+                "title": event_row["title"],
+                "href": f"/events/{slug}",
+                "meta": "You're hosting" if hosting else "You're going",
+                "createdAt": None,
+                "eventSlug": slug,
+            }
+        )
+        listed_event_slugs.add(slug)
 
     # ── Help requests: author-owned, viewer signups, and open requests in member scopes ──
     help_request_items: list[dict[str, object]] = []

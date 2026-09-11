@@ -3,28 +3,18 @@ from __future__ import annotations
 from uuid import UUID
 
 SHARED_RUBRIC: list[dict[str, str]] = [
-    {"id": "rubric:title-clarity", "label": "Is the title clear and specific?"},
     {
         "id": "rubric:description-clarity",
-        "label": "Does the description explain what will actually happen and why?",
-    },
-    {
-        "id": "rubric:demand-response",
-        "label": "Does this plan respond well to the current demand signal?",
+        "label": "Does the plan clearly explain what will happen and why?",
     },
     {
         "id": "rubric:achievability",
         "label": "Does this plan seem realistically achievable?",
     },
-    {
-        "id": "rubric:stages-coherent",
-        "label": "Are the stages coherent and in a sensible order?",
-    },
 ]
 
 EVENT_RUBRIC: list[dict[str, str]] = [
-    {"id": "rubric:timing-suitable", "label": "Is the timing suitable?"},
-    {"id": "rubric:duration-realistic", "label": "Is the duration/schedule realistic?"},
+    {"id": "rubric:timing-suitable", "label": "Is the timing and schedule realistic?"},
     {"id": "rubric:location-appropriate", "label": "Is the location appropriate and accessible?"},
 ]
 
@@ -32,10 +22,6 @@ PROJECT_PRODUCTION_RUBRIC: list[dict[str, str]] = [
     {
         "id": "rubric:production-approach",
         "label": "Is the proposed production approach appropriate?",
-    },
-    {
-        "id": "rubric:materials-realistic",
-        "label": "Are the listed materials/resources realistic?",
     },
 ]
 
@@ -49,12 +35,7 @@ PROJECT_SOFTWARE_RUBRIC: list[dict[str, str]] = [
 PROJECT_DISTRIBUTION_RUBRIC: list[dict[str, str]] = [
     {
         "id": "rubric:access-approach",
-        "label": "Is the access/distribution approach appropriate?",
-    },
-    {"id": "rubric:request-settings", "label": "Are the request settings sensible?"},
-    {
-        "id": "rubric:off-schedule",
-        "label": "Is off-schedule handling appropriate?",
+        "label": "Is the access and request approach appropriate?",
     },
 ]
 

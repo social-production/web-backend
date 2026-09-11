@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 def get_onboarding(db: Session) -> dict[str, object]:
     return {
-        "title": "Login",
+        "title": "Sign in or create an account",
         "intro": "Sign in to post, follow people, and create projects, threads, and events.",
         "accountModes": [
             {

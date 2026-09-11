@@ -28,6 +28,7 @@ from app.models import (
     project_service_request_settings,
     projects,
     scope_memberships,
+    user_settings,
     users,
 )
 from app.services.content.help_requests import create_help_request
@@ -109,6 +110,13 @@ def _ensure_demo_user(db: Session) -> UUID:
         .first()
     )
     if existing is not None:
+        settings_row = db.execute(
+            select(user_settings.c.user_id).where(user_settings.c.user_id == existing)
+        ).first()
+        if settings_row is None:
+            db.execute(sa.insert(user_settings).values(user_id=existing))
+            db.commit()
+            print(f"CREATED user_settings username={VICTORIA_DEMO_USERNAME}")
         print(f"SKIPPED users username={VICTORIA_DEMO_USERNAME}")
         return existing
 
@@ -125,6 +133,7 @@ def _ensure_demo_user(db: Session) -> UUID:
         )
         .returning(users.c.id)
     ).scalar_one()
+    db.execute(sa.insert(user_settings).values(user_id=user_id))
     db.commit()
     print(f"CREATED users username={VICTORIA_DEMO_USERNAME}")
     return user_id

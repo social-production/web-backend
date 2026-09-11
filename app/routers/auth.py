@@ -4,17 +4,19 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth.cookies import (
+    ACCESS_COOKIE,
     REFRESH_COOKIE,
     access_cookie_max_age_seconds,
     clear_auth_cookies,
     refresh_cookie_max_age_seconds,
     set_auth_cookies,
 )
-from app.auth.dependencies import get_current_user_token, resolve_refresh_token
+from app.auth.dependencies import bearer_scheme, resolve_refresh_token
 from app.dependencies import get_db
 from app.services.auth import (
     authenticate_user,
@@ -132,9 +134,16 @@ async def refresh(request: Request, response: Response) -> dict[str, object]:
 async def logout(
     request: Request,
     response: Response,
-    token: str = Depends(get_current_user_token),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, bool]:
-    result = await logout_user(token)
+    access_token = credentials.credentials if credentials and credentials.credentials else None
+    if not access_token:
+        access_token = request.cookies.get(ACCESS_COOKIE)
+    if access_token:
+        try:
+            await logout_user(access_token)
+        except Exception:
+            pass
     refresh_token = request.cookies.get(REFRESH_COOKIE)
     if refresh_token:
         try:
@@ -142,4 +151,4 @@ async def logout(
         except Exception:
             pass
     clear_auth_cookies(response)
-    return result
+    return {"ok": True}

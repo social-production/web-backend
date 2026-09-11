@@ -21,6 +21,7 @@ from app.services.governance import get_comments
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.moderation.serialize import load_active_report
 from app.services.moderation.visibility import assert_not_removed
+from app.services.search import index_document
 
 VALID_AUDIENCE = frozenset({"public", "followers"})
 
@@ -86,6 +87,17 @@ def create_post(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create post"
         ) from exc
+
+    snippet = str(post_row["body"]).strip()
+    index_document(
+        db=db,
+        entity_type="post",
+        entity_id=post_row["id"],
+        title=snippet[:80] or "Post",
+        summary=snippet[:280] or "Post",
+        meta="Post",
+        href=f"/posts/{post_row['id']}",
+    )
 
     return {"post": _serialize_post(post_row)}
 

@@ -34,6 +34,7 @@ from app.services.meaningful_actions import record_meaningful_action
 from app.services.moderation.serialize import load_active_report
 from app.services.moderation.visibility import assert_not_removed
 from app.services.notifications import create_notification
+from app.services.search import index_document
 
 VALID_AUDIENCE = frozenset({"public", "followers"})
 
@@ -275,6 +276,18 @@ def create_help_request(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not create help request",
         ) from exc
+
+    help_title = str(created["title"]).strip()
+    help_body = str(created["body"]).strip()
+    index_document(
+        db=db,
+        entity_type="help_request",
+        entity_id=created["id"],
+        title=help_title,
+        summary=help_body or help_title,
+        meta=str(created["schedule_label"] or "Help request"),
+        href=f"/help-requests/{created['id']}",
+    )
 
     author_row = db.execute(
         select(users.c.username).where(users.c.id == current_user_id).limit(1)

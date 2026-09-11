@@ -13,7 +13,9 @@ from app.models import searchable_documents
 from app.services.access_control import filter_search_results
 from app.unit_of_work import commit, rollback
 
-SEARCHABLE_ENTITY_TYPES = frozenset({"project", "thread", "event", "channel", "community", "user"})
+SEARCHABLE_ENTITY_TYPES = frozenset(
+    {"project", "thread", "event", "channel", "community", "user", "help_request", "post"}
+)
 
 
 def _serialize_search_document(row: Mapping[str, object]) -> dict[str, object]:
