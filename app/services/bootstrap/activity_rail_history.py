@@ -7,14 +7,20 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    detail_link_request_votes,
+    detail_link_requests,
     event_activities,
     event_activity_assignments,
     event_activity_roles,
+    event_edit_request_votes,
+    event_edit_requests,
     event_memberships,
     event_phase_change_requests,
     event_phase_change_votes,
     event_plan_votes,
     event_plans,
+    event_update_request_votes,
+    event_update_requests,
     events,
     help_request_role_assignments,
     help_request_roles,
@@ -22,11 +28,21 @@ from app.models import (
     project_activities,
     project_activity_assignments,
     project_activity_roles,
+    project_edit_request_votes,
+    project_edit_requests,
     project_memberships,
+    project_merge_capability_change_requests,
+    project_merge_capability_change_votes,
     project_phase_change_requests,
     project_phase_change_votes,
     project_plan_votes,
     project_plans,
+    project_pull_request_votes,
+    project_pull_requests,
+    project_repository_replacement_requests,
+    project_repository_replacement_votes,
+    project_update_request_votes,
+    project_update_requests,
     projects,
 )
 from app.services.bootstrap.activity_rail import _viewer_assigned_activity_ids
@@ -267,6 +283,177 @@ def _vote_history_item(
     }
 
 
+def _phase_label(phase_id: object) -> str:
+    return str(phase_id).replace("-", " ").title()
+
+
+def _vote_href(surface: str, slug: object, vote_kind: str, target_id: object) -> str:
+    return f"/{surface}/{slug}?open=vote&voteKind={vote_kind}&voteTarget={target_id}"
+
+
+def _remember_vote(
+    seen: set[str],
+    appended: list[dict[str, object]],
+    *,
+    item_id: str,
+    title: str,
+    href: str,
+    meta: str,
+    created_at: object,
+    vote: str,
+) -> None:
+    if item_id in seen:
+        return
+    seen.add(item_id)
+    appended.append(
+        _vote_history_item(
+            item_id=item_id,
+            title=title,
+            href=href,
+            meta=meta,
+            created_at=created_at,
+            vote=vote,
+        )
+    )
+
+
+def _append_request_votes(
+    db: Session,
+    current_user_id: UUID,
+    *,
+    vote_table,
+    request_table,
+    parent_table,
+    parent_fk,
+    item_id_prefix: str,
+    vote_kind: str,
+    surface: str,
+    seen: set[str],
+    appended: list[dict[str, object]],
+    title_column=None,
+    title_prefix: str | None = None,
+    truncate_title: bool = False,
+    limit: int = 12,
+) -> None:
+    title_expr = title_column if title_column is not None else parent_table.c.title
+    rows = (
+        db.execute(
+            select(
+                vote_table.c.request_id,
+                vote_table.c.vote,
+                vote_table.c.created_at,
+                parent_table.c.slug,
+                parent_table.c.title.label("parent_title"),
+                title_expr.label("title"),
+            )
+            .select_from(
+                vote_table.join(request_table, request_table.c.id == vote_table.c.request_id).join(
+                    parent_table, parent_fk == parent_table.c.id
+                )
+            )
+            .where(vote_table.c.voter_id == current_user_id)
+            .order_by(vote_table.c.created_at.desc())
+            .limit(limit)
+        )
+        .mappings()
+        .all()
+    )
+    for row in rows:
+        title = (
+            str(row["title"])
+            if title_column is not None
+            else f"{title_prefix} · {row['parent_title']}"
+        )
+        if truncate_title:
+            title = _truncate_update_body(title, 80)
+        meta = row["parent_title"] if title_column is not None else (title_prefix or vote_kind)
+        _remember_vote(
+            seen,
+            appended,
+            item_id=f"{item_id_prefix}{row['request_id']}",
+            title=title,
+            href=_vote_href(surface, row["slug"], vote_kind, row["request_id"]),
+            meta=str(meta),
+            created_at=row["created_at"],
+            vote=row["vote"],
+        )
+
+
+def _append_link_votes(
+    db: Session,
+    current_user_id: UUID,
+    seen: set[str],
+    appended: list[dict[str, object]],
+) -> None:
+    rows = (
+        db.execute(
+            select(
+                detail_link_request_votes.c.request_id,
+                detail_link_request_votes.c.vote,
+                detail_link_request_votes.c.vote_scope,
+                detail_link_request_votes.c.created_at,
+                detail_link_requests.c.request_type,
+                detail_link_requests.c.source_kind,
+                detail_link_requests.c.source_project_id,
+                detail_link_requests.c.source_event_id,
+                detail_link_requests.c.target_kind,
+                detail_link_requests.c.target_project_id,
+                detail_link_requests.c.target_event_id,
+            )
+            .select_from(
+                detail_link_request_votes.join(
+                    detail_link_requests,
+                    detail_link_requests.c.id == detail_link_request_votes.c.request_id,
+                )
+            )
+            .where(detail_link_request_votes.c.voter_id == current_user_id)
+            .order_by(detail_link_request_votes.c.created_at.desc())
+            .limit(12)
+        )
+        .mappings()
+        .all()
+    )
+    for row in rows:
+        vote_scope = str(row["vote_scope"] or "source")
+        if vote_scope == "source":
+            kind = str(row["source_kind"])
+            entity_id = row["source_project_id"] if kind == "project" else row["source_event_id"]
+        else:
+            kind = str(row["target_kind"])
+            entity_id = row["target_project_id"] if kind == "project" else row["target_event_id"]
+        if entity_id is None:
+            continue
+        if kind == "project":
+            subject = (
+                db.execute(
+                    select(projects.c.slug, projects.c.title).where(projects.c.id == entity_id)
+                )
+                .mappings()
+                .first()
+            )
+            surface = "projects"
+        else:
+            subject = (
+                db.execute(select(events.c.slug, events.c.title).where(events.c.id == entity_id))
+                .mappings()
+                .first()
+            )
+            surface = "events"
+        if subject is None:
+            continue
+        vote_kind = "link_sever" if str(row["request_type"] or "create") == "sever" else "link"
+        _remember_vote(
+            seen,
+            appended,
+            item_id=f"vote-{vote_kind}-{row['request_id']}-{vote_scope}",
+            title=subject["title"],
+            href=f"/{surface}/{subject['slug']}?tab=links&linkRequest={row['request_id']}",
+            meta="Sever link" if vote_kind == "link_sever" else "Link vote",
+            created_at=row["created_at"],
+            vote=row["vote"],
+        )
+
+
 def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str, object]]) -> None:
     seen = {str(item["id"]) for item in items}
     appended: list[dict[str, object]] = []
@@ -282,9 +469,9 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
                 projects.c.title.label("parent_title"),
             )
             .select_from(
-                project_plan_votes.join(project_plans, project_plans.c.id == project_plan_votes.c.plan_id).join(
-                    projects, projects.c.id == project_plans.c.project_id
-                )
+                project_plan_votes.join(
+                    project_plans, project_plans.c.id == project_plan_votes.c.plan_id
+                ).join(projects, projects.c.id == project_plans.c.project_id)
             )
             .where(project_plan_votes.c.voter_id == current_user_id)
             .order_by(project_plan_votes.c.created_at.desc())
@@ -294,19 +481,15 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
         .all()
     )
     for row in plan_rows:
-        item_id = f"vote-project-plan-{row['plan_id']}"
-        if item_id in seen:
-            continue
-        seen.add(item_id)
-        appended.append(
-            _vote_history_item(
-                item_id=item_id,
-                title=row["title"],
-                href=f"/projects/{row['slug']}?open=vote&voteKind=plan&voteTarget={row['plan_id']}",
-                meta=row["parent_title"],
-                created_at=row["created_at"],
-                vote=row["vote"],
-            )
+        _remember_vote(
+            seen,
+            appended,
+            item_id=f"vote-project-plan-{row['plan_id']}",
+            title=row["title"],
+            href=_vote_href("projects", row["slug"], "plan", row["plan_id"]),
+            meta=row["parent_title"],
+            created_at=row["created_at"],
+            vote=row["vote"],
         )
 
     phase_rows = (
@@ -333,19 +516,15 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
         .all()
     )
     for row in phase_rows:
-        item_id = f"vote-project-phase-{row['request_id']}"
-        if item_id in seen:
-            continue
-        seen.add(item_id)
-        appended.append(
-            _vote_history_item(
-                item_id=item_id,
-                title=f"Phase change · {row['parent_title']}",
-                href=f"/projects/{row['slug']}?open=vote&voteKind=phase_change&voteTarget={row['request_id']}",
-                meta=f"Advance to {str(row['target_phase_id']).replace('-', ' ').title()}",
-                created_at=row["created_at"],
-                vote=row["vote"],
-            )
+        _remember_vote(
+            seen,
+            appended,
+            item_id=f"vote-project-phase-{row['request_id']}",
+            title=f"Phase change · {row['parent_title']}",
+            href=_vote_href("projects", row["slug"], "phase_change", row["request_id"]),
+            meta=f"Advance to {_phase_label(row['target_phase_id'])}",
+            created_at=row["created_at"],
+            vote=row["vote"],
         )
 
     event_plan_rows = (
@@ -359,9 +538,9 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
                 events.c.title.label("parent_title"),
             )
             .select_from(
-                event_plan_votes.join(event_plans, event_plans.c.id == event_plan_votes.c.plan_id).join(
-                    events, events.c.id == event_plans.c.event_id
-                )
+                event_plan_votes.join(
+                    event_plans, event_plans.c.id == event_plan_votes.c.plan_id
+                ).join(events, events.c.id == event_plans.c.event_id)
             )
             .where(event_plan_votes.c.voter_id == current_user_id)
             .order_by(event_plan_votes.c.created_at.desc())
@@ -371,19 +550,15 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
         .all()
     )
     for row in event_plan_rows:
-        item_id = f"vote-event-plan-{row['plan_id']}"
-        if item_id in seen:
-            continue
-        seen.add(item_id)
-        appended.append(
-            _vote_history_item(
-                item_id=item_id,
-                title=row["title"],
-                href=f"/events/{row['slug']}?open=vote&voteKind=plan&voteTarget={row['plan_id']}",
-                meta=row["parent_title"],
-                created_at=row["created_at"],
-                vote=row["vote"],
-            )
+        _remember_vote(
+            seen,
+            appended,
+            item_id=f"vote-event-plan-{row['plan_id']}",
+            title=row["title"],
+            href=_vote_href("events", row["slug"], "plan", row["plan_id"]),
+            meta=row["parent_title"],
+            created_at=row["created_at"],
+            vote=row["vote"],
         )
 
     event_phase_rows = (
@@ -410,21 +585,118 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
         .all()
     )
     for row in event_phase_rows:
-        item_id = f"vote-event-phase-{row['request_id']}"
-        if item_id in seen:
-            continue
-        seen.add(item_id)
-        appended.append(
-            _vote_history_item(
-                item_id=item_id,
-                title=f"Phase change · {row['parent_title']}",
-                href=f"/events/{row['slug']}?open=vote&voteKind=phase_change&voteTarget={row['request_id']}",
-                meta=f"Advance to {str(row['target_phase_id']).replace('-', ' ').title()}",
-                created_at=row["created_at"],
-                vote=row["vote"],
-            )
+        _remember_vote(
+            seen,
+            appended,
+            item_id=f"vote-event-phase-{row['request_id']}",
+            title=f"Phase change · {row['parent_title']}",
+            href=_vote_href("events", row["slug"], "phase_change", row["request_id"]),
+            meta=f"Advance to {_phase_label(row['target_phase_id'])}",
+            created_at=row["created_at"],
+            vote=row["vote"],
         )
 
+    _append_request_votes(
+        db,
+        current_user_id,
+        vote_table=project_update_request_votes,
+        request_table=project_update_requests,
+        parent_table=projects,
+        parent_fk=project_update_requests.c.project_id,
+        item_id_prefix="vote-project-update-",
+        vote_kind="update",
+        surface="projects",
+        seen=seen,
+        appended=appended,
+        title_column=project_update_requests.c.body,
+        truncate_title=True,
+    )
+    _append_request_votes(
+        db,
+        current_user_id,
+        vote_table=event_update_request_votes,
+        request_table=event_update_requests,
+        parent_table=events,
+        parent_fk=event_update_requests.c.event_id,
+        item_id_prefix="vote-event-update-",
+        vote_kind="update",
+        surface="events",
+        seen=seen,
+        appended=appended,
+        title_column=event_update_requests.c.body,
+        truncate_title=True,
+    )
+    _append_request_votes(
+        db,
+        current_user_id,
+        vote_table=project_edit_request_votes,
+        request_table=project_edit_requests,
+        parent_table=projects,
+        parent_fk=project_edit_requests.c.project_id,
+        item_id_prefix="vote-project-edit-",
+        vote_kind="edit",
+        surface="projects",
+        seen=seen,
+        appended=appended,
+        title_column=project_edit_requests.c.title,
+    )
+    _append_request_votes(
+        db,
+        current_user_id,
+        vote_table=event_edit_request_votes,
+        request_table=event_edit_requests,
+        parent_table=events,
+        parent_fk=event_edit_requests.c.event_id,
+        item_id_prefix="vote-event-edit-",
+        vote_kind="edit",
+        surface="events",
+        seen=seen,
+        appended=appended,
+        title_column=event_edit_requests.c.title,
+    )
+    _append_request_votes(
+        db,
+        current_user_id,
+        vote_table=project_pull_request_votes,
+        request_table=project_pull_requests,
+        parent_table=projects,
+        parent_fk=project_pull_requests.c.project_id,
+        item_id_prefix="vote-project-pr-",
+        vote_kind="pull_request",
+        surface="projects",
+        seen=seen,
+        appended=appended,
+        title_column=project_pull_requests.c.title,
+    )
+    _append_request_votes(
+        db,
+        current_user_id,
+        vote_table=project_merge_capability_change_votes,
+        request_table=project_merge_capability_change_requests,
+        parent_table=projects,
+        parent_fk=project_merge_capability_change_requests.c.project_id,
+        item_id_prefix="vote-project-merge-capability-",
+        vote_kind="merge_capability",
+        surface="projects",
+        seen=seen,
+        appended=appended,
+        title_prefix="Merge capability",
+    )
+    _append_request_votes(
+        db,
+        current_user_id,
+        vote_table=project_repository_replacement_votes,
+        request_table=project_repository_replacement_requests,
+        parent_table=projects,
+        parent_fk=project_repository_replacement_requests.c.project_id,
+        item_id_prefix="vote-project-repository-",
+        vote_kind="repository_replacement",
+        surface="projects",
+        seen=seen,
+        appended=appended,
+        title_prefix="Repository replacement",
+    )
+    _append_link_votes(db, current_user_id, seen, appended)
     items.extend(appended)
 
 
@@ -451,7 +723,10 @@ def _append_current_role_signups(
                     project_activity_roles,
                     project_activity_roles.c.id == project_activity_assignments.c.role_id,
                 )
-                .join(project_activities, project_activities.c.id == project_activity_roles.c.activity_id)
+                .join(
+                    project_activities,
+                    project_activities.c.id == project_activity_roles.c.activity_id,
+                )
                 .join(projects, projects.c.id == project_activities.c.project_id)
             )
             .where(
@@ -501,7 +776,10 @@ def _append_current_role_signups(
                     event_activity_roles,
                     event_activity_roles.c.id == event_activity_assignments.c.role_id,
                 )
-                .join(event_activities, event_activities.c.id == event_activity_roles.c.activity_id)
+                .join(
+                    event_activities,
+                    event_activities.c.id == event_activity_roles.c.activity_id,
+                )
                 .join(events, events.c.id == event_activities.c.event_id)
             )
             .where(
