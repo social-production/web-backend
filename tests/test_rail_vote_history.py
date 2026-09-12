@@ -209,3 +209,4 @@ def test_bootstrap_history_includes_update_and_edit_votes() -> None:
     for item in history:
         if item["kind"] == "vote":
             assert item["viewerParticipated"] is True
+            assert item["outcome"] in {"passed", "failed", "open"}

@@ -261,6 +261,25 @@ def _build_activity_rail_history(db: Session, current_user_id: UUID) -> list[dic
     return items[:40]
 
 
+def _vote_outcome(status: object | None = None, *, is_leading: bool = False) -> str:
+    if is_leading:
+        return "passed"
+    normalized = str(status or "").strip().lower()
+    if normalized in {
+        "approved",
+        "accepted",
+        "merged",
+        "complete",
+        "completed",
+        "passed",
+        "awaiting-merge",
+    }:
+        return "passed"
+    if normalized in {"rejected", "declined", "failed", "closed"}:
+        return "failed"
+    return "open"
+
+
 def _vote_history_item(
     *,
     item_id: str,
@@ -269,9 +288,12 @@ def _vote_history_item(
     meta: str,
     created_at: object,
     vote: str,
+    vote_kind: str | None = None,
+    entity_kind: str | None = None,
+    outcome: str = "open",
 ) -> dict[str, object]:
     vote_label = {"yes": "Yes", "no": "No", "neutral": "Neutral"}.get(str(vote), str(vote))
-    return {
+    item: dict[str, object] = {
         "kind": "vote",
         "id": item_id,
         "subjectId": item_id,
@@ -280,7 +302,13 @@ def _vote_history_item(
         "meta": f"You voted {vote_label} · {meta}",
         "createdAt": _small_iso(created_at),
         "viewerParticipated": True,
+        "outcome": outcome,
     }
+    if vote_kind:
+        item["voteKindLabel"] = vote_kind
+    if entity_kind:
+        item["voteEntityKind"] = entity_kind
+    return item
 
 
 def _phase_label(phase_id: object) -> str:
@@ -301,6 +329,9 @@ def _remember_vote(
     meta: str,
     created_at: object,
     vote: str,
+    vote_kind: str | None = None,
+    entity_kind: str | None = None,
+    outcome: str = "open",
 ) -> None:
     if item_id in seen:
         return
@@ -313,6 +344,9 @@ def _remember_vote(
             meta=meta,
             created_at=created_at,
             vote=vote,
+            vote_kind=vote_kind,
+            entity_kind=entity_kind,
+            outcome=outcome,
         )
     )
 
@@ -336,6 +370,13 @@ def _append_request_votes(
     limit: int = 12,
 ) -> None:
     title_expr = title_column if title_column is not None else parent_table.c.title
+    extra_columns = []
+    status_column = getattr(request_table.c, "status", None)
+    stage_column = getattr(request_table.c, "stage", None)
+    if status_column is not None:
+        extra_columns.append(status_column)
+    elif stage_column is not None:
+        extra_columns.append(stage_column.label("status"))
     rows = (
         db.execute(
             select(
@@ -345,6 +386,7 @@ def _append_request_votes(
                 parent_table.c.slug,
                 parent_table.c.title.label("parent_title"),
                 title_expr.label("title"),
+                *extra_columns,
             )
             .select_from(
                 vote_table.join(request_table, request_table.c.id == vote_table.c.request_id).join(
@@ -376,6 +418,9 @@ def _append_request_votes(
             meta=str(meta),
             created_at=row["created_at"],
             vote=row["vote"],
+            vote_kind=vote_kind,
+            entity_kind="event" if surface == "events" else "project",
+            outcome=_vote_outcome(row["status"] if "status" in row else None),
         )
 
 
@@ -393,6 +438,7 @@ def _append_link_votes(
                 detail_link_request_votes.c.vote_scope,
                 detail_link_request_votes.c.created_at,
                 detail_link_requests.c.request_type,
+                detail_link_requests.c.status,
                 detail_link_requests.c.source_kind,
                 detail_link_requests.c.source_project_id,
                 detail_link_requests.c.source_event_id,
@@ -451,6 +497,9 @@ def _append_link_votes(
             meta="Sever link" if vote_kind == "link_sever" else "Link vote",
             created_at=row["created_at"],
             vote=row["vote"],
+            vote_kind=vote_kind,
+            entity_kind="event" if surface == "events" else "project",
+            outcome=_vote_outcome(row["status"] if "status" in row else None),
         )
 
 
@@ -465,6 +514,8 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
                 project_plan_votes.c.vote,
                 project_plan_votes.c.created_at,
                 project_plans.c.title,
+                project_plans.c.status,
+                project_plans.c.is_leading,
                 projects.c.slug,
                 projects.c.title.label("parent_title"),
             )
@@ -490,6 +541,9 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
             meta=row["parent_title"],
             created_at=row["created_at"],
             vote=row["vote"],
+            vote_kind="plan",
+            entity_kind="project",
+            outcome=_vote_outcome(row.get("status"), is_leading=bool(row.get("is_leading"))),
         )
 
     phase_rows = (
@@ -499,6 +553,7 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
                 project_phase_change_votes.c.vote,
                 project_phase_change_votes.c.created_at,
                 project_phase_change_requests.c.target_phase_id,
+                project_phase_change_requests.c.status,
                 projects.c.slug,
                 projects.c.title.label("parent_title"),
             )
@@ -525,6 +580,9 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
             meta=f"Advance to {_phase_label(row['target_phase_id'])}",
             created_at=row["created_at"],
             vote=row["vote"],
+            vote_kind="phase_change",
+            entity_kind="project",
+            outcome=_vote_outcome(row["status"] if "status" in row else None),
         )
 
     event_plan_rows = (
@@ -534,6 +592,8 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
                 event_plan_votes.c.vote,
                 event_plan_votes.c.created_at,
                 event_plans.c.title,
+                event_plans.c.status,
+                event_plans.c.is_leading,
                 events.c.slug,
                 events.c.title.label("parent_title"),
             )
@@ -559,6 +619,9 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
             meta=row["parent_title"],
             created_at=row["created_at"],
             vote=row["vote"],
+            vote_kind="plan",
+            entity_kind="event",
+            outcome=_vote_outcome(row.get("status"), is_leading=bool(row.get("is_leading"))),
         )
 
     event_phase_rows = (
@@ -568,6 +631,7 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
                 event_phase_change_votes.c.vote,
                 event_phase_change_votes.c.created_at,
                 event_phase_change_requests.c.target_phase_id,
+                event_phase_change_requests.c.status,
                 events.c.slug,
                 events.c.title.label("parent_title"),
             )
@@ -594,6 +658,9 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
             meta=f"Advance to {_phase_label(row['target_phase_id'])}",
             created_at=row["created_at"],
             vote=row["vote"],
+            vote_kind="phase_change",
+            entity_kind="event",
+            outcome=_vote_outcome(row["status"] if "status" in row else None),
         )
 
     _append_request_votes(
