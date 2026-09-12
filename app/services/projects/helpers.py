@@ -544,15 +544,22 @@ def _plan_leader_status(
     is_leading: bool,
     passes: bool,
     approval_percent: float,
-    passing_plans: list[tuple[str, float]],
+    average_rating: float,
+    passing_plans: list[tuple[str, float, float]],
 ) -> str | None:
     if is_leading:
         return "leading"
     if not passes or not passing_plans:
         return None
-    max_percent = max(percent for _, percent in passing_plans)
-    top_count = sum(1 for _, percent in passing_plans if percent == max_percent)
-    if approval_percent == max_percent and top_count > 1:
+    max_percent = max(percent for _, percent, _ in passing_plans)
+    top_ratio = [
+        (plan_id, avg) for plan_id, percent, avg in passing_plans if percent == max_percent
+    ]
+    if len(top_ratio) <= 1:
+        return None
+    max_avg = max(avg for _, avg in top_ratio)
+    top_avg_count = sum(1 for _, avg in top_ratio if avg == max_avg)
+    if approval_percent == max_percent and average_rating == max_avg and top_avg_count > 1:
         return "tied"
     return None
 

@@ -725,7 +725,7 @@ def share_project_with_user(
         subject_id=project_row["id"],
         target_id=project_row["id"],
         title=project_row["title"],
-        body=f"A project was shared with you: {project_row['title']}. Open /projects/{project_row['slug']}",
+        body=f"{project_row['title']} was shared with you.",
         href=f"/projects/{project_row['slug']}",
     )
     return {"ok": True}

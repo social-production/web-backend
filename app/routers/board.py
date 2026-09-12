@@ -21,6 +21,7 @@ router = APIRouter(prefix="/board", tags=["board"])
 class BoardProfileOut(BaseModel):
     user_id: UUID
     username: str
+    profile_image_url: str | None = None
     standing_state: str
     membership_state: str
     updated_at: object

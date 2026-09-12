@@ -24,6 +24,8 @@ from app.services.plan_criteria import (
     VALID_PLAN_RATINGS,
     assessment_criteria_for_plan,
     parse_value_criterion_id,
+    pick_leading_plan_id,
+    plan_average_rating,
 )
 from app.utils.votes import can_cast_project_governance_vote, resolve_project_vote_population
 
@@ -151,11 +153,26 @@ def sync_project_plan_leading_flags(
         .all()
     )
 
-    candidates: list[tuple[UUID, float]] = []
+    candidates: list[tuple[UUID, float, float]] = []
     for plan_id in plan_ids:
         summary = _compute_vote_summary(db, plan_id, member_count)
-        if summary["is_winning"]:
-            candidates.append((plan_id, float(summary["approval_ratio"])))
+        if not summary["is_winning"]:
+            continue
+
+        rating_rows = db.execute(
+            select(
+                project_plan_criterion_ratings.c.criterion_id,
+                project_plan_criterion_ratings.c.rating,
+                project_plan_criterion_ratings.c.voter_id,
+            ).where(project_plan_criterion_ratings.c.plan_id == plan_id)
+        ).all()
+        ratings_by_criterion: dict[str, list[tuple[int, UUID]]] = {}
+        for criterion_id, rating, voter_id in rating_rows:
+            ratings_by_criterion.setdefault(str(criterion_id), []).append((rating, voter_id))
+
+        candidates.append(
+            (plan_id, float(summary["approval_ratio"]), plan_average_rating(ratings_by_criterion))
+        )
 
     db.execute(
         update(project_plans)
@@ -166,17 +183,13 @@ def sync_project_plan_leading_flags(
         .values(is_leading=False)
     )
 
-    leader_id: UUID | None = None
-    if candidates:
-        max_ratio = max(ratio for _, ratio in candidates)
-        top = [plan_id for plan_id, ratio in candidates if ratio == max_ratio]
-        if len(top) == 1:
-            leader_id = top[0]
-            db.execute(
-                update(project_plans)
-                .where(project_plans.c.id == leader_id)
-                .values(is_leading=True, status="approved")
-            )
+    leader_id = pick_leading_plan_id(candidates)
+    if leader_id is not None:
+        db.execute(
+            update(project_plans)
+            .where(project_plans.c.id == leader_id)
+            .values(is_leading=True, status="approved")
+        )
 
     if leader_id is not None:
         leader_row = (

@@ -66,6 +66,7 @@ from app.services.locations import get_location, is_map_eligible, serialize_loca
 from app.services.people_suggestions import get_ranked_people_suggestions
 from app.services.plan_criteria import (
     assessment_criteria_for_plan,
+    plan_average_rating,
     serialize_plan_criterion_assessments,
 )
 from app.services.signal_gates import build_proposal_signal_summary
@@ -309,8 +310,24 @@ async def get_event_detail(
         .all()
     )
 
-    passing_plans: list[tuple[str, float]] = []
+    passing_plans: list[tuple[str, float, float]] = []
+    average_by_plan_id: dict[str, float] = {}
+    ratings_by_plan_id: dict[str, dict[str, list[tuple[int, UUID]]]] = {}
     for plan in plan_rows:
+        plan_id_str = str(plan["id"])
+        criterion_rating_rows = db.execute(
+            select(
+                event_plan_criterion_ratings.c.criterion_id,
+                event_plan_criterion_ratings.c.rating,
+                event_plan_criterion_ratings.c.voter_id,
+            ).where(event_plan_criterion_ratings.c.plan_id == plan["id"])
+        ).all()
+        ratings_by_criterion: dict[str, list[tuple[int, UUID]]] = {}
+        for criterion_id, rating, voter_id in criterion_rating_rows:
+            ratings_by_criterion.setdefault(str(criterion_id), []).append((rating, voter_id))
+        ratings_by_plan_id[plan_id_str] = ratings_by_criterion
+        average_by_plan_id[plan_id_str] = plan_average_rating(ratings_by_criterion)
+
         plan_vote_rows = db.execute(
             select(event_plan_votes.c.vote, event_plan_votes.c.voter_id).where(
                 event_plan_votes.c.plan_id == plan["id"]
@@ -320,11 +337,14 @@ async def get_event_detail(
             plan_vote_rows, vote_context_population, current_user_id
         )
         if passes:
-            passing_plans.append((str(plan["id"]), overall_summary["approvalPercent"]))
+            passing_plans.append(
+                (plan_id_str, overall_summary["approvalPercent"], average_by_plan_id[plan_id_str])
+            )
 
     event_plans_payload = []
     leading_plan_ids: list[str] = []
     for plan in plan_rows:
+        plan_id_str = str(plan["id"])
         plan_vote_rows = db.execute(
             select(event_plan_votes.c.vote, event_plan_votes.c.voter_id).where(
                 event_plan_votes.c.plan_id == plan["id"]
@@ -337,20 +357,12 @@ async def get_event_detail(
             is_leading=bool(plan["is_leading"]),
             passes=passes,
             approval_percent=overall_summary["approvalPercent"],
+            average_rating=average_by_plan_id.get(plan_id_str, 0.0),
             passing_plans=passing_plans,
         )
 
         value_assessments = []
-        criterion_rating_rows = db.execute(
-            select(
-                event_plan_criterion_ratings.c.criterion_id,
-                event_plan_criterion_ratings.c.rating,
-                event_plan_criterion_ratings.c.voter_id,
-            ).where(event_plan_criterion_ratings.c.plan_id == plan["id"])
-        ).all()
-        ratings_by_criterion: dict[str, list[tuple[int, UUID]]] = {}
-        for criterion_id, rating, voter_id in criterion_rating_rows:
-            ratings_by_criterion.setdefault(criterion_id, []).append((rating, voter_id))
+        ratings_by_criterion = ratings_by_plan_id.get(plan_id_str, {})
 
         prominent_value_tuples = [
             (value_id, value_label)
@@ -412,6 +424,7 @@ async def get_event_detail(
                 "planPhases": plan_phases,
                 "valueAssessments": value_assessments,
                 "criterionAssessments": criterion_assessments,
+                "averageRating": average_by_plan_id.get(plan_id_str, 0.0),
                 "overallApproval": overall_summary,
                 "isLeading": bool(plan["is_leading"]),
                 "leaderStatus": leader_status,

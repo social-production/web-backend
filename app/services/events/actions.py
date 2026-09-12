@@ -887,7 +887,7 @@ def share_event_with_user(
         subject_id=event_row["id"],
         target_id=event_row["id"],
         title=event_row["title"],
-        body=f"An event was shared with you: {event_row['title']}. Open /events/{event_row['slug']}",
+        body=f"{event_row['title']} was shared with you.",
         href=f"/events/{event_row['slug']}",
     )
     return {"ok": True}

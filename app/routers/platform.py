@@ -23,6 +23,7 @@ class PlatformChannelOut(BaseModel):
 class PlatformBoardPersonOut(BaseModel):
     user_id: UUID
     username: str
+    profile_image_url: str | None = None
     standing_state: str
     updated_at: object
     yes_count: int

@@ -143,3 +143,37 @@ def serialize_plan_criterion_assessments(
         assessments.append({**criterion, **summary})
 
     return assessments
+
+
+def plan_average_rating(
+    rating_rows_by_criterion: dict[str, list[tuple[int, UUID]]],
+) -> float:
+    """Mean of per-criterion averages that have at least one rating."""
+    averages: list[float] = []
+    for rows in rating_rows_by_criterion.values():
+        summary = criterion_rating_summary(rows, None)
+        if int(summary["ratingCount"]) > 0:
+            averages.append(float(summary["averageRating"]))
+    if not averages:
+        return 0.0
+    return round(sum(averages) / len(averages), 4)
+
+
+def pick_leading_plan_id(
+    candidates: list[tuple[UUID, float, float]],
+) -> UUID | None:
+    """Pick a unique leader by approval ratio, then average rating. Ties return None."""
+    if not candidates:
+        return None
+
+    max_ratio = max(ratio for _, ratio, _ in candidates)
+    top_ratio = [item for item in candidates if item[1] == max_ratio]
+    if len(top_ratio) == 1:
+        return top_ratio[0][0]
+
+    max_avg = max(avg for _, _, avg in top_ratio)
+    top_avg = [item for item in top_ratio if item[2] == max_avg]
+    if len(top_avg) == 1:
+        return top_avg[0][0]
+
+    return None

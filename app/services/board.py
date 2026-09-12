@@ -308,6 +308,7 @@ def _serialize_board_profile(
     return {
         "user_id": user_id,
         "username": row["username"],
+        "profile_image_url": row.get("profile_image_url"),
         "standing_state": standing_state,
         "membership_state": db_state,
         "updated_at": row["updated_at"],
@@ -334,6 +335,7 @@ def _board_rows_with_users(db: Session) -> list[Mapping[str, object]]:
                 platform_board_memberships.c.grace_ends_at,
                 platform_board_memberships.c.updated_at,
                 users.c.username,
+                users.c.profile_image_url,
             )
             .join(users, users.c.id == platform_board_memberships.c.user_id)
             .where(platform_board_memberships.c.standing_state.in_(VALID_BOARD_STATES))
