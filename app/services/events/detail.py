@@ -75,7 +75,7 @@ from app.utils.votes import is_platform_event, required_votes, resolve_event_vot
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 _PLACEHOLDER_SCHEDULE_LABELS = frozenset({"tbd", "not specified", "to be determined"})
 EVENT_PHASES = (
-    ("proposal", 1, "P1", "Proposal", "Collect demand and define event values."),
+    ("proposal", 1, "P1", "Proposal", "Collect support and define event values."),
     ("event-plan", 2, "P2", "Event Plan", "Propose and approve event plans."),
     ("activity", 3, "P3", "Activity", "Run event activities."),
     ("closed", 4, "P4", "Closed", "Event is closed."),
@@ -849,6 +849,7 @@ async def get_event_detail(
     )
     in_proposal = row["current_phase_id"] == "proposal"
     in_event_plan = row["current_phase_id"] == "event-plan"
+    in_activity = row["current_phase_id"] == "activity"
     viewer_can_cast_governance = (
         current_user_id is not None if uses_platform_vote_context else viewer_is_member
     )
@@ -883,7 +884,9 @@ async def get_event_detail(
         "activity": {
             "activities": live_activities,
             "history": activity_history,
-            "viewerCanCreateActivities": viewer_is_member and can_propose_activities,
+            "viewerCanCreateActivities": viewer_is_member
+            and can_propose_activities
+            and in_activity,
             "selectablePlanPhases": selectable_plan_phases,
         },
         "viewerCanRequestPhaseChanges": viewer_is_member,
@@ -1066,8 +1069,10 @@ async def get_event_detail(
         viewer_can_cast_governance and not is_organizer_controlled
     )
     lifecycle["activity"]["viewerCanCreateActivities"] = (
-        viewer_is_organizer if is_organizer_controlled else viewer_is_member
-    ) and can_propose_activities
+        (viewer_is_organizer if is_organizer_controlled else viewer_is_member)
+        and can_propose_activities
+        and in_activity
+    )
 
     location_row = None
     location_id = row.get("location_id")

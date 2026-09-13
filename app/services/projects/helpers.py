@@ -40,7 +40,7 @@ from app.utils.votes import required_votes
 PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service"})
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
 PROJECT_PHASES = (
-    ("phase-1", 1, "P1", "Proposal", "Define values and demand."),
+    ("phase-1", 1, "P1", "Proposal", "Define values and support."),
     ("phase-2", 2, "P2", "Production Plan", "Select production plan."),
     ("phase-3", 3, "P3", "Distribution Plan", "Select distribution plan."),
     ("phase-4", 4, "P4", "Acquisition", "Prepare acquisition and inventory."),

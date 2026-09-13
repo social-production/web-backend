@@ -14,6 +14,8 @@ from tests.conftest import (
     private_event_plan_fields,
     seed_channel_with_membership,
     seed_user,
+    set_event_phase,
+    set_project_phase,
 )
 
 
@@ -421,6 +423,7 @@ def test_map_markers_include_project_activity_and_exclude_undated_project_entity
     )
     assert project.status_code == 200, project.text
     project_slug = project.json()["project"]["slug"]
+    set_project_phase(db_transaction, project_slug, "phase-2")
 
     plan = isolated_client.post(
         f"/projects/{project_slug}/plans",
@@ -448,6 +451,8 @@ def test_map_markers_include_project_activity_and_exclude_undated_project_entity
             json={"vote": "yes"},
         )
         assert vote.status_code == 200, vote.text
+
+    set_project_phase(db_transaction, project_slug, "phase-5")
 
     activity = isolated_client.post(
         f"/projects/{project_slug}/activities",
@@ -659,6 +664,7 @@ def test_region_feed_includes_project_activity(db_transaction, isolated_client):
     )
     assert project.status_code == 200, project.text
     project_slug = project.json()["project"]["slug"]
+    set_project_phase(db_transaction, project_slug, "phase-5")
 
     activity = isolated_client.post(
         f"/projects/{project_slug}/activities",
@@ -870,6 +876,7 @@ def test_map_markers_include_event_activity_and_inherit_parent_location(
 ):
     seeded = _seed_region_fixtures(db_transaction, isolated_client)
     headers = _auth_header(seeded["owner_token"])
+    set_event_phase(db_transaction, seeded["near_slug"], "activity")
     scheduled_at = (datetime.now(UTC) + timedelta(hours=4)).isoformat()
     ends_at = (datetime.now(UTC) + timedelta(hours=6)).isoformat()
 
@@ -956,6 +963,7 @@ def test_map_markers_project_activity_inherits_parent_location(db_transaction, i
     assert project.status_code == 200, project.text
     project_slug = project.json()["project"]["slug"]
     project_id = project.json()["project"]["id"]
+    set_project_phase(db_transaction, project_slug, "phase-5")
 
     activity = isolated_client.post(
         f"/projects/{project_slug}/activities",
@@ -1015,6 +1023,7 @@ def test_map_markers_hide_full_collective_service_activity(db_transaction, isola
     )
     assert project.status_code == 200, project.text
     project_slug = project.json()["project"]["slug"]
+    set_project_phase(db_transaction, project_slug, "phase-5")
 
     activity = isolated_client.post(
         f"/projects/{project_slug}/activities",

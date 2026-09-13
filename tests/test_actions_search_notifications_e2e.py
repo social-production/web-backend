@@ -154,6 +154,28 @@ def run() -> None:
         )
         assert content_vote.status_code == 200, content_vote.text
 
+        event_phase_request = client.post(
+            f"/events/{event_slug}/phase-requests",
+            headers=_auth_header(seeded["owner_token"]),
+            json={"target_phase_id": "event-plan", "reason": "Ready"},
+        )
+        assert event_phase_request.status_code == 200, event_phase_request.text
+        event_phase_request_id = event_phase_request.json()["request"]["id"]
+
+        vote_phase_owner = client.post(
+            f"/events/{event_slug}/phase-requests/{event_phase_request_id}/vote",
+            headers=_auth_header(seeded["owner_token"]),
+            json={"vote": "yes"},
+        )
+        assert vote_phase_owner.status_code == 200, vote_phase_owner.text
+        vote_phase_member = client.post(
+            f"/events/{event_slug}/phase-requests/{event_phase_request_id}/vote",
+            headers=_auth_header(seeded["member_token"]),
+            json={"vote": "yes"},
+        )
+        assert vote_phase_member.status_code == 200, vote_phase_member.text
+        assert vote_phase_member.json()["executed"] is True
+
         event_plan = client.post(
             f"/events/{event_slug}/plans",
             headers=_auth_header(seeded["owner_token"]),
@@ -182,28 +204,6 @@ def run() -> None:
         )
         assert vote_event_plan_member.status_code == 200, vote_event_plan_member.text
         assert vote_event_plan_member.json()["is_leading"] is True
-
-        event_phase_request = client.post(
-            f"/events/{event_slug}/phase-requests",
-            headers=_auth_header(seeded["owner_token"]),
-            json={"target_phase_id": "event-plan", "reason": "Ready"},
-        )
-        assert event_phase_request.status_code == 200, event_phase_request.text
-        event_phase_request_id = event_phase_request.json()["request"]["id"]
-
-        vote_phase_owner = client.post(
-            f"/events/{event_slug}/phase-requests/{event_phase_request_id}/vote",
-            headers=_auth_header(seeded["owner_token"]),
-            json={"vote": "yes"},
-        )
-        assert vote_phase_owner.status_code == 200, vote_phase_owner.text
-        vote_phase_member = client.post(
-            f"/events/{event_slug}/phase-requests/{event_phase_request_id}/vote",
-            headers=_auth_header(seeded["member_token"]),
-            json={"vote": "yes"},
-        )
-        assert vote_phase_member.status_code == 200, vote_phase_member.text
-        assert vote_phase_member.json()["executed"] is True
 
         project_edit_request = client.post(
             f"/projects/{project_slug}/edit-requests",

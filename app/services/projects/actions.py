@@ -153,6 +153,11 @@ def add_project_value(
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     _ensure_project_member(db, project_row["id"], current_user_id)
+    if str(project_row["current_phase_id"]) != "phase-1":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Values can only be added during the proposal phase",
+        )
 
     normalized = label.strip()
     if not normalized:
@@ -203,6 +208,11 @@ def vote_project_value_importance(
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     _ensure_project_member(db, project_row["id"], current_user_id)
+    if str(project_row["current_phase_id"]) != "phase-1":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Values can only be voted on during the proposal phase",
+        )
 
     if importance < 1 or importance > 10:
         raise HTTPException(
@@ -303,6 +313,16 @@ def create_project_activity(
         _ensure_personal_service_author(project_row, current_user_id)
     else:
         _ensure_project_member(db, project_row["id"], current_user_id)
+
+    current_phase_id = str(project_row.get("current_phase_id") or "")
+    activity_phase_id = (
+        "phase-1" if project_row["project_mode"] == "personal-service" else "phase-5"
+    )
+    if current_phase_id != activity_phase_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Activities can only be created during the activity phase",
+        )
 
     if ends_at <= scheduled_at:
         raise HTTPException(

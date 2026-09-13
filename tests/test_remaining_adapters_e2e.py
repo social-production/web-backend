@@ -12,6 +12,7 @@ from app.auth.jwt import create_access_token
 from app.db import SessionLocal
 from app.main import app
 from app.models import event_memberships, events, project_memberships, projects, users
+from tests.conftest import commit_event_phase
 
 
 def _auth_header(token: str) -> dict[str, str]:
@@ -59,7 +60,7 @@ def _seed() -> dict[str, object]:
             description="seed",
             created_by=owner_id,
             is_private=True,
-            current_phase_id="phase-1",
+            current_phase_id="proposal",
             time_label="Soon",
             location_label="Workshop",
             scheduled_at=now + timedelta(days=1),
@@ -170,6 +171,8 @@ def run() -> None:
             json={"importance": 9},
         )
         assert event_value_vote.status_code == 200, event_value_vote.text
+
+        commit_event_phase(seeded["event_slug"], "activity")
 
         activity_now = datetime.now(UTC)
         activity = client.post(

@@ -36,6 +36,13 @@ ALLOWED_PLAN_TYPES_BY_MODE: dict[str, set[str]] = {
     "collective-service": {"organisation", "access"},
 }
 
+PLAN_TYPE_REQUIRED_PHASE: dict[str, str] = {
+    "production": "phase-2",
+    "organisation": "phase-2",
+    "distribution": "phase-3",
+    "access": "phase-3",
+}
+
 VALID_VOTES = {"yes", "no", "neutral"}
 VALID_PROJECT_SUBTYPES = {"standard", "software", "asset-management"}
 
@@ -133,6 +140,17 @@ def _assert_plan_type_allowed(project_mode: str, plan_type: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"plan_type must be one of: {sorted(allowed)}",
+        )
+
+
+def _assert_plan_phase_is_current(project_row: Mapping[str, object], plan_type: str) -> None:
+    required_phase = PLAN_TYPE_REQUIRED_PHASE.get(plan_type)
+    if required_phase is None:
+        return
+    if str(project_row["current_phase_id"]) != required_phase:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Plans can only be submitted during the matching lifecycle phase",
         )
 
 
@@ -240,6 +258,7 @@ def submit_project_plan(
     normalized_type = plan_type.strip().lower()
 
     _assert_plan_type_allowed(project_row["project_mode"], normalized_type)
+    _assert_plan_phase_is_current(project_row, normalized_type)
     _ensure_member(db, project_row["id"], current_user_id)
     plan_subtype = _plan_subtype_from_payload(plan_payload, project_row["project_subtype"])
 

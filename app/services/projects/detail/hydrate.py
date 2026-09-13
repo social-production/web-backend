@@ -84,7 +84,7 @@ PROJECT_MODES = frozenset({"productive", "collective-service", "personal-service
 PROJECT_SUBTYPES = frozenset({"standard", "software"})
 PROJECT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 PROJECT_PHASES = (
-    ("phase-1", 1, "P1", "Proposal", "Define values and demand."),
+    ("phase-1", 1, "P1", "Proposal", "Define values and support."),
     ("phase-2", 2, "P2", "Production Plan", "Select production plan."),
     ("phase-3", 3, "P3", "Distribution Plan", "Select distribution plan."),
     ("phase-4", 4, "P4", "Acquisition", "Prepare acquisition and inventory."),
@@ -811,7 +811,12 @@ async def get_project_detail(
     )
     viewer_can_request_edit = viewer_is_author if is_personal_service else viewer_is_member
     viewer_can_vote_on_edit_requests = False if is_personal_service else viewer_can_cast_governance
-    viewer_can_create_activities = viewer_is_author if is_personal_service else viewer_is_member
+    viewer_can_create_activities = (
+        viewer_is_author if is_personal_service else viewer_is_member
+    ) and (
+        (is_personal_service and str(row["current_phase_id"]) == "phase-1")
+        or (not is_personal_service and str(row["current_phase_id"]) == "phase-5")
+    )
     viewer_can_submit_requests = (
         (current_user_id is not None and not viewer_is_author)
         if is_personal_service
@@ -837,10 +842,11 @@ async def get_project_detail(
         else {
             "viewerCanSignalDemand": current_user_id is not None,
             "viewerCanSignalOpposition": current_user_id is not None,
-            "viewerCanAddValue": viewer_is_member,
-            "viewerCanVoteOnValues": viewer_is_member,
+            "viewerCanAddValue": viewer_is_member and str(row["current_phase_id"]) == "phase-1",
+            "viewerCanVoteOnValues": viewer_is_member and str(row["current_phase_id"]) == "phase-1",
         }
     )
+    current_phase_id = str(row["current_phase_id"])
     phase_plan_member_flags = (
         {"viewerCanSubmitPlans": False, "viewerCanVoteOnPlans": False}
         if is_personal_service
@@ -849,6 +855,16 @@ async def get_project_detail(
             "viewerCanVoteOnPlans": viewer_can_cast_governance,
         }
     )
+    phase_two_submit_flags = {
+        **phase_plan_member_flags,
+        "viewerCanSubmitPlans": phase_plan_member_flags["viewerCanSubmitPlans"]
+        and current_phase_id == "phase-2",
+    }
+    phase_three_submit_flags = {
+        **phase_plan_member_flags,
+        "viewerCanSubmitPlans": phase_plan_member_flags["viewerCanSubmitPlans"]
+        and current_phase_id == "phase-3",
+    }
 
     request_system = {
         "enabled": bool(service_settings_payload["enabled"]),
@@ -923,13 +939,13 @@ async def get_project_detail(
         "phaseTwo": {
             "plans": phase_two_plans,
             "winningPlanId": phase_two_winning,
-            **phase_plan_member_flags,
+            **phase_two_submit_flags,
             "availableAssetManagementServices": [],
         },
         "phaseThree": {
             "plans": phase_three_plans,
             "winningPlanId": phase_three_winning,
-            **phase_plan_member_flags,
+            **phase_three_submit_flags,
             "requestSystemEnabled": bool(service_settings_payload["enabled"]),
         },
         "phaseFour": None,

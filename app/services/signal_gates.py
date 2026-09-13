@@ -78,15 +78,15 @@ def ensure_proposal_advancement_allowed(
     ratio_percent = (demand / total * 100.0) if total > 0 else 0.0
 
     if total <= 0:
-        detail = "Proposal advancement requires active demand signals before planning can open."
+        detail = "Proposal advancement requires active support signals before planning can open."
     elif ratio_percent < SIGNAL_DEMAND_RATIO_THRESHOLD_PERCENT:
         detail = (
-            "Proposal advancement requires demand to stay above "
+            "Proposal advancement requires support to stay above "
             f"{int(SIGNAL_DEMAND_RATIO_THRESHOLD_PERCENT)}% of active signals."
         )
     elif uses_platform_vote_context and demand < required_demand:
         detail = (
-            "Proposal advancement requires more demand signals from weekly active users "
+            "Proposal advancement requires more support signals from weekly active users "
             "before planning can open."
         )
     else:

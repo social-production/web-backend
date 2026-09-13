@@ -19,6 +19,7 @@ from app.models import (
     scope_invites,
     users,
 )
+from tests.conftest import commit_project_phase
 
 
 def _auth_header(token: str) -> dict[str, str]:
@@ -233,6 +234,8 @@ def run() -> None:
             json={"importance": 8},
         )
         assert value_vote.status_code == 200, value_vote.text
+
+        commit_project_phase(seeded["project_slug"], "phase-5")
 
         activity_now = datetime.now(UTC)
         activity = client.post(

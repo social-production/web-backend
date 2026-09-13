@@ -4,7 +4,12 @@ from sqlalchemy import select
 
 from app.auth.jwt import create_access_token
 from app.models import event_plans, events, locations
-from tests.conftest import private_event_plan_fields, seed_channel_with_membership, seed_user
+from tests.conftest import (
+    private_event_plan_fields,
+    seed_channel_with_membership,
+    seed_user,
+    set_event_phase,
+)
 
 
 def test_online_event_plan_persists_location_and_syncs_event(db_session, client) -> None:
@@ -32,6 +37,7 @@ def test_online_event_plan_persists_location_and_syncs_event(db_session, client)
     )
     assert created.status_code == 200, created.text
     event_slug = created.json()["event"]["slug"]
+    set_event_phase(db_session, event_slug, "event-plan", commit=True)
 
     response = client.post(
         f"/events/{event_slug}/plans",

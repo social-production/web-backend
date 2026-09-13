@@ -34,7 +34,7 @@ EVENT_AUDIENCES = frozenset({"public", "private_community", "invite_only"})
 EVENT_GOVERNANCES = frozenset({"collaborative", "organizer_controlled"})
 _PLACEHOLDER_SCHEDULE_LABELS = frozenset({"tbd", "not specified", "to be determined"})
 EVENT_PHASES = (
-    ("proposal", 1, "P1", "Proposal", "Collect demand and define event values."),
+    ("proposal", 1, "P1", "Proposal", "Collect support and define event values."),
     ("event-plan", 2, "P2", "Event Plan", "Propose and approve event plans."),
     ("activity", 3, "P3", "Activity", "Run event activities."),
     ("closed", 4, "P4", "Closed", "Event is closed."),

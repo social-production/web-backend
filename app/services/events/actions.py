@@ -383,6 +383,11 @@ def add_event_value(
             status_code=status.HTTP_409_CONFLICT,
             detail="Organizer-controlled events don't use proposal values",
         )
+    if str(event_row["current_phase_id"]) != "proposal":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Values can only be added during the proposal phase",
+        )
 
     normalized = label.strip()
     if not normalized:
@@ -438,6 +443,11 @@ def vote_event_value_importance(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Organizer-controlled events don't use proposal values",
+        )
+    if str(event_row["current_phase_id"]) != "proposal":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Values can only be voted on during the proposal phase",
         )
 
     if importance < 1 or importance > 10:
@@ -536,6 +546,12 @@ def create_event_activity(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
+
+    if str(event_row.get("current_phase_id") or "") != "activity":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Activities can only be created during the activity phase",
+        )
 
     # Organizer-controlled events: only creator and co-organizers can create activities.
     # Collaborative members create activities once the plan supports them; invitees can still

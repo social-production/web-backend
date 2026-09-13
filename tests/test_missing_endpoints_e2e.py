@@ -11,6 +11,7 @@ from app.auth.jwt import create_access_token
 from app.db import SessionLocal
 from app.main import app
 from app.models import channels, event_memberships, events, project_memberships, projects, users
+from tests.conftest import commit_event_phase, commit_project_phase
 
 
 def _auth_header(token: str) -> dict[str, str]:
@@ -158,6 +159,8 @@ def run() -> None:
         assert project_value.status_code == 200, project_value.text
         project_value_id = project_value.json()["value"]["id"]
 
+        commit_project_phase(seeded["project_slug"], "phase-2")
+
         project_plan = client.post(
             f"/projects/{seeded['project_slug']}/plans",
             headers=_auth_header(seeded["owner_token"]),
@@ -180,6 +183,8 @@ def run() -> None:
         assert project_value_vote.status_code == 200, project_value_vote.text
         assert project_value_vote.json()["ok"] is True
 
+        commit_project_phase(seeded["project_slug"], "phase-1")
+
         event_value = client.post(
             f"/events/{seeded['event_slug']}/values",
             headers=_auth_header(seeded["owner_token"]),
@@ -187,6 +192,8 @@ def run() -> None:
         )
         assert event_value.status_code == 200, event_value.text
         event_value_id = event_value.json()["value"]["id"]
+
+        commit_event_phase(seeded["event_slug"], "event-plan")
 
         event_plan = client.post(
             f"/events/{seeded['event_slug']}/plans",

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 
 from app.auth.jwt import create_access_token
-from tests.conftest import seed_channel_with_membership, seed_user
+from tests.conftest import seed_channel_with_membership, seed_user, set_project_phase
 
 
 def _auth_header(user_id) -> dict[str, str]:
@@ -124,6 +124,7 @@ def test_project_role_suggestion_notifies_user(db_transaction, isolated_client):
 
     isolated_client.post(f"/projects/{slug}/join", headers=member)
     isolated_client.post(f"/projects/{slug}/join", headers=suggested)
+    set_project_phase(db_transaction, slug, "phase-5")
 
     start = datetime.now(UTC) + timedelta(days=2)
     activity = isolated_client.post(

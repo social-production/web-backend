@@ -226,6 +226,11 @@ def submit_event_plan(
     is_online: bool = False,
 ) -> dict[str, object]:
     event_row = _get_event_row_by_slug(db, event_slug)
+    if str(event_row["current_phase_id"]) != "event-plan":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Event plans can only be submitted during the Event Plan phase",
+        )
     _ensure_can_drive_lifecycle(db, event_row, current_user_id)
 
     # Organizer-controlled events skip governance votes: the creator/

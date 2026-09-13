@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.auth.cookies import CSRF_COOKIE
@@ -56,6 +56,48 @@ def isolated_client(db_transaction: Session) -> Generator[TestClient, None, None
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+def set_project_phase(db: Session, slug: str, phase_id: str, *, commit: bool = False) -> None:
+    result = db.execute(
+        update(projects)
+        .where(projects.c.slug == slug)
+        .values(current_phase_id=phase_id, updated_at=datetime.now(UTC))
+    )
+    if result.rowcount != 1:
+        raise AssertionError(f"could not set project {slug} to {phase_id}")
+    db.flush()
+    if commit:
+        db.commit()
+
+
+def set_event_phase(db: Session, slug: str, phase_id: str, *, commit: bool = False) -> None:
+    result = db.execute(
+        update(events)
+        .where(events.c.slug == slug)
+        .values(current_phase_id=phase_id, updated_at=datetime.now(UTC))
+    )
+    if result.rowcount != 1:
+        raise AssertionError(f"could not set event {slug} to {phase_id}")
+    db.flush()
+    if commit:
+        db.commit()
+
+
+def commit_project_phase(slug: str, phase_id: str) -> None:
+    db = SessionLocal()
+    try:
+        set_project_phase(db, slug, phase_id, commit=True)
+    finally:
+        db.close()
+
+
+def commit_event_phase(slug: str, phase_id: str) -> None:
+    db = SessionLocal()
+    try:
+        set_event_phase(db, slug, phase_id, commit=True)
+    finally:
+        db.close()
 
 
 def future_scheduled_at(*, hours: int = 1) -> tuple[str, str]:
