@@ -40,8 +40,7 @@ services:
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/social_production
       REDIS_URL: redis://redis:6379/0
-      JWT_SECRET: dev-only-change-me
-      MESSAGE_ENCRYPTION_KEY: IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_REPO: ${GITHUB_REPO:-social-production/web}

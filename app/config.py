@@ -1,7 +1,16 @@
+import hashlib
 from functools import lru_cache
 
+from cryptography.fernet import Fernet
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# SHA-256 of Fernet keys that were published and must never be reused.
+_REVOKED_MESSAGE_KEY_DIGESTS = frozenset(
+    {
+        "37ce0034ed3fccd87ec501d53e6e6117c62d05f0c7de824b6e8c6f681b77e283",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -13,7 +22,7 @@ class Settings(BaseSettings):
     jwt_access_expire_minutes: int = 15
     jwt_refresh_expire_days: int = 30
     rate_limit_fail_closed: bool = False
-    message_encryption_key: str = "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8="
+    message_encryption_key: str = ""
     redis_url: str = "redis://localhost:6379/0"
     redis_socket_timeout_seconds: float = 2.0
     redis_socket_connect_timeout_seconds: float = 2.0
@@ -61,16 +70,19 @@ class Settings(BaseSettings):
         self.rate_limit_fail_closed = True
 
         weak_jwt_secrets = {"change-me", "dev-only-change-me", ""}
-        weak_message_keys = {
-            "change-me-too",
-            "dev-only-change-me-too",
-            "IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=",
-            "",
-        }
+        weak_message_keys = {"change-me-too", "dev-only-change-me-too", ""}
+        message_key = self.message_encryption_key.strip()
+        message_key_digest = hashlib.sha256(message_key.encode("utf-8")).hexdigest()
         if self.jwt_secret.strip() in weak_jwt_secrets:
             raise RuntimeError("JWT_SECRET must be set to a strong value in production")
-        if self.message_encryption_key.strip() in weak_message_keys:
+        if message_key in weak_message_keys or message_key_digest in _REVOKED_MESSAGE_KEY_DIGESTS:
             raise RuntimeError("MESSAGE_ENCRYPTION_KEY must be set to a Fernet key in production")
+        try:
+            Fernet(message_key.encode("utf-8"))
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(
+                "MESSAGE_ENCRYPTION_KEY must be set to a Fernet key in production"
+            ) from exc
         if "*" in self.cors_origin_list:
             raise RuntimeError("CORS_ORIGINS must list explicit origins in production")
 

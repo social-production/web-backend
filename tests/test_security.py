@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.auth.cookies import ACCESS_COOKIE, CSRF_COOKIE, REFRESH_COOKIE
 from app.config import Settings
 from app.main import app
+
+
+def _valid_message_key() -> str:
+    return Fernet.generate_key().decode()
 
 
 @pytest.fixture
@@ -137,10 +143,60 @@ def test_production_rejects_weak_jwt_secret():
     settings = Settings(
         app_env="production",
         jwt_secret="dev-only-change-me",
-        message_encryption_key="valid-fernet-key-not-in-weak-list-abc1234567890=",
+        message_encryption_key=_valid_message_key(),
         cors_origins="https://example.com",
     )
     with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        settings.validate_runtime_settings()
+
+
+def test_production_rejects_empty_message_key():
+    settings = Settings(
+        app_env="production",
+        jwt_secret="a-very-strong-production-secret-value",
+        message_encryption_key="",
+        cors_origins="https://example.com",
+    )
+    with pytest.raises(RuntimeError, match="MESSAGE_ENCRYPTION_KEY"):
+        settings.validate_runtime_settings()
+
+
+def test_production_rejects_placeholder_message_key():
+    settings = Settings(
+        app_env="production",
+        jwt_secret="a-very-strong-production-secret-value",
+        message_encryption_key="dev-only-change-me-too",
+        cors_origins="https://example.com",
+    )
+    with pytest.raises(RuntimeError, match="MESSAGE_ENCRYPTION_KEY"):
+        settings.validate_runtime_settings()
+
+
+def test_production_rejects_revoked_message_key_digest(monkeypatch):
+    revoked_key = _valid_message_key()
+    digest = hashlib.sha256(revoked_key.encode("utf-8")).hexdigest()
+    monkeypatch.setattr(
+        "app.config._REVOKED_MESSAGE_KEY_DIGESTS",
+        frozenset({digest}),
+    )
+    settings = Settings(
+        app_env="production",
+        jwt_secret="a-very-strong-production-secret-value",
+        message_encryption_key=revoked_key,
+        cors_origins="https://example.com",
+    )
+    with pytest.raises(RuntimeError, match="MESSAGE_ENCRYPTION_KEY"):
+        settings.validate_runtime_settings()
+
+
+def test_production_rejects_invalid_fernet_message_key():
+    settings = Settings(
+        app_env="production",
+        jwt_secret="a-very-strong-production-secret-value",
+        message_encryption_key="not-a-fernet-key",
+        cors_origins="https://example.com",
+    )
+    with pytest.raises(RuntimeError, match="MESSAGE_ENCRYPTION_KEY"):
         settings.validate_runtime_settings()
 
 
@@ -148,7 +204,7 @@ def test_production_rejects_wildcard_cors():
     settings = Settings(
         app_env="production",
         jwt_secret="a-very-strong-production-secret-value",
-        message_encryption_key="valid-fernet-key-not-in-weak-list-abc1234567890=",
+        message_encryption_key=_valid_message_key(),
         cors_origins="*",
     )
     with pytest.raises(RuntimeError, match="CORS_ORIGINS"):
@@ -258,7 +314,7 @@ def test_auth_rate_limit_fail_closed_in_production(monkeypatch):
     production_settings = Settings(
         app_env="production",
         jwt_secret="a-very-strong-production-secret-value",
-        message_encryption_key="valid-fernet-key-not-in-weak-list-abc1234567890=",
+        message_encryption_key=_valid_message_key(),
         cors_origins="https://example.com",
         rate_limit_fail_closed=True,
     )

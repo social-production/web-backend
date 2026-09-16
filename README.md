@@ -43,16 +43,17 @@ Open `http://localhost:5173`.
 | `REDIS_URL` | set in compose | Redis connection string |
 | `JWT_SECRET` | local dev value | Secret for JWT tokens. Generate: `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `JWT_ACCESS_EXPIRE_MINUTES` | `15` | Access token lifetime in minutes |
-| `MESSAGE_ENCRYPTION_KEY` | local dev value | Fernet key for message encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `MESSAGE_ENCRYPTION_KEY` | generate locally | Fernet key for message encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CORS_ORIGINS` | `http://localhost:5173` | Allowed origins, e.g. `https://socialproduction.example` |
 | `GITHUB_TOKEN` | _(empty)_ | Fine-grained GitHub PAT with **Issues: write** on `GITHUB_REPO`. Required for the in-app feedback form. |
 | `GITHUB_REPO` | `social-production/web` | `owner/repo` where feedback issues are created |
 
-With Docker, local development values are set in `docker-compose.yml`. Copy `.env.example` to `.env` in this folder and set `GITHUB_TOKEN` if you want feedback submissions to work:
+With Docker, copy `.env.example` to `.env`, generate `MESSAGE_ENCRYPTION_KEY`, and set `GITHUB_TOKEN` if you want feedback submissions to work:
 
 ```bash
 cp .env.example .env
-# Edit .env and paste your GitHub token
+# Generate MESSAGE_ENCRYPTION_KEY and paste it into .env
+# python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 docker compose up -d --build
 ```
 

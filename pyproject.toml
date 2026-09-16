@@ -43,4 +43,5 @@ select = ["E", "F", "I", "UP"]
 "app/routers/auth.py" = ["E501"]
 "app/config.py" = ["E501"]
 "app/main.py" = ["E501"]
+"tests/conftest.py" = ["E402"]
 

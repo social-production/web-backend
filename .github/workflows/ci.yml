@@ -40,7 +40,6 @@ jobs:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/social_production
       REDIS_URL: redis://localhost:6379/0
       JWT_SECRET: ci-test-jwt-secret-not-for-production
-      MESSAGE_ENCRYPTION_KEY: IoR_TjHO_mc373uQePi0GDzCouould4_1Sx6TB4ChD8=
 
     steps:
       - uses: actions/checkout@v7
@@ -48,6 +47,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      - name: Generate ephemeral message encryption key
+        run: |
+          python -c 'import base64, os; print("MESSAGE_ENCRYPTION_KEY=" + base64.urlsafe_b64encode(os.urandom(32)).decode())' >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pip install -e . ruff pip-audit

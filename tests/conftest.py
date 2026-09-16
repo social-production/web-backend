@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
+
+from cryptography.fernet import Fernet
+
+if not os.environ.get("MESSAGE_ENCRYPTION_KEY", "").strip():
+    os.environ["MESSAGE_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
 import pytest
 from fastapi.testclient import TestClient
