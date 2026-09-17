@@ -111,7 +111,9 @@ def test_list_notifications_serializes_new_kinds_with_iso_datetimes() -> None:
     db.commit()
 
     payload = list_notifications(db, recipient_id)
-    assert len(payload["items"]) == len(notification_kinds)
+    expected_kinds = {kind for kind, _, _ in notification_kinds if kind != "evt-plan-lead"}
+    assert {item["kind"] for item in payload["items"]} == expected_kinds
+    assert len(payload["items"]) == len(expected_kinds)
 
     for item in payload["items"]:
         assert isinstance(item["created_at"], str)
@@ -123,8 +125,8 @@ def test_list_notifications_serializes_new_kinds_with_iso_datetimes() -> None:
     response = client.get("/notifications", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["total"] == len(notification_kinds)
+    assert body["total"] == len(expected_kinds)
     returned_kinds = {item["kind"] for item in body["items"]}
-    assert returned_kinds == {kind for kind, _, _ in notification_kinds}
+    assert returned_kinds == expected_kinds
 
     db.close()

@@ -9,7 +9,11 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import notifications, users
+from app.models import notifications, user_settings, users
+from app.services.notification_preferences import (
+    allowed_notification_kinds,
+    recipient_allows_notification,
+)
 
 
 def _iso(value: object | None) -> str | None:
@@ -26,6 +30,7 @@ def _serialize_notification(row: Mapping[str, object]) -> dict[str, object]:
         "recipient_id": row["recipient_id"],
         "actor_id": row["actor_id"],
         "actor_username": row.get("actor_username"),
+        "actor_profile_image_url": row.get("actor_profile_image_url"),
         "kind": row["kind"],
         "surface": row["surface"],
         "subject_type": row["subject_type"],
@@ -54,6 +59,9 @@ def create_notification(
     target_id: UUID | None = None,
 ) -> dict[str, object]:
     """Internal helper for other services to emit notifications."""
+    if not recipient_allows_notification(db, recipient_id, kind):
+        return {"notification": None}
+
     try:
         created = (
             db.execute(
@@ -111,15 +119,28 @@ def list_notifications(
     offset: int = 0,
 ) -> dict[str, object]:
     actor_users = users.alias("actor_users")
+    settings_row = (
+        db.execute(select(user_settings).where(user_settings.c.user_id == current_user_id))
+        .mappings()
+        .first()
+    )
+    allowed_kinds = allowed_notification_kinds(settings_row)
+    if not allowed_kinds:
+        return {"total": 0, "items": []}
+
     query = (
         select(
             notifications,
             actor_users.c.username.label("actor_username"),
+            actor_users.c.profile_image_url.label("actor_profile_image_url"),
         )
         .select_from(
             notifications.outerjoin(actor_users, actor_users.c.id == notifications.c.actor_id)
         )
-        .where(notifications.c.recipient_id == current_user_id)
+        .where(
+            notifications.c.recipient_id == current_user_id,
+            notifications.c.kind.in_(allowed_kinds),
+        )
     )
     if unread_only:
         query = query.where(notifications.c.is_unread.is_(True))

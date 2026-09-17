@@ -62,6 +62,7 @@ class UserSettings(BaseModel):
     preferred_language: str
     display_timezone: str | None = None
     default_location_id: UUID | None = None
+    notification_categories: list[str]
 
 
 class PublicProfileResponse(BaseModel):
@@ -100,6 +101,7 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     preferred_language: str | None = None
     display_timezone: str | None = None
     default_location_id: UUID | None = None
+    notification_categories: list[str] | None = None
 
 
 class FollowResponse(BaseModel):

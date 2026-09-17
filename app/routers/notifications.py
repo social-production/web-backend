@@ -18,6 +18,7 @@ class NotificationOut(BaseModel):
     recipient_id: UUID
     actor_id: UUID | None = None
     actor_username: str | None = None
+    actor_profile_image_url: str | None = None
     kind: str
     surface: str
     subject_type: str

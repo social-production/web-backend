@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import notifications, user_follows, user_settings, users
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.notification_preferences import normalize_notification_categories
 from app.utils.usernames import username_matches
 
 USER_SETTINGS_FIELDS = {
@@ -32,6 +33,7 @@ USER_SETTINGS_FIELDS = {
     "preferred_language",
     "display_timezone",
     "default_location_id",
+    "notification_categories",
 }
 
 
@@ -69,6 +71,9 @@ def _serialize_settings(row: Mapping[str, object]) -> dict[str, object]:
         "preferred_language": row["preferred_language"],
         "display_timezone": row["display_timezone"],
         "default_location_id": row["default_location_id"],
+        "notification_categories": normalize_notification_categories(
+            row.get("notification_categories")
+        ),
     }
 
 
@@ -220,6 +225,11 @@ def update_own_profile_settings(
                     detail="default_location_not_found",
                 )
             settings_updates["default_location_id"] = location_id
+
+    if "notification_categories" in settings_updates:
+        settings_updates["notification_categories"] = normalize_notification_categories(
+            settings_updates["notification_categories"]
+        )
 
     if not profile_updates and not settings_updates:
         return get_own_profile(db, current_user_id)

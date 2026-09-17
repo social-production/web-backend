@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     notifications,
+    user_settings,
     users,
 )
 from app.services.messages import get_total_unread_message_count
+from app.services.notification_preferences import allowed_notification_kinds
 
 
 def _get_viewer_row(db: Session, current_user_id: UUID):
@@ -29,12 +31,22 @@ def _get_viewer_row(db: Session, current_user_id: UUID):
 
 
 def _get_unread_notification_count(db: Session, current_user_id: UUID) -> int:
+    settings_row = (
+        db.execute(select(user_settings).where(user_settings.c.user_id == current_user_id))
+        .mappings()
+        .first()
+    )
+    allowed_kinds = allowed_notification_kinds(settings_row)
+    if not allowed_kinds:
+        return 0
+
     count = db.execute(
         select(func.count())
         .select_from(notifications)
         .where(
             notifications.c.recipient_id == current_user_id,
             notifications.c.is_unread.is_(True),
+            notifications.c.kind.in_(allowed_kinds),
         )
     ).scalar_one()
     return int(count or 0)

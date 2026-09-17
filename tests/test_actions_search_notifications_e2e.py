@@ -319,7 +319,7 @@ def run() -> None:
     assert project_doc is not None and project_doc[0] == "Actions Project Edited"
     assert event_doc is not None and event_doc[0] == "Actions Event Edited"
 
-    expected_notifications = {"evt-plan-lead", "evt-phase-done", "pr-approved"}
+    expected_notifications = {"evt-phase-done", "pr-approved"}
     assert expected_notifications.issubset(owner_notification_kinds), {
         "missing_notifications": sorted(expected_notifications - owner_notification_kinds)
     }

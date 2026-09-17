@@ -52,6 +52,14 @@ user_settings = table(
     sa.Column("preferred_language", sa.String(5), nullable=False, server_default="en"),
     sa.Column("display_timezone", sa.String(64), nullable=True),
     sa.Column(
+        "notification_categories",
+        JSONB,
+        nullable=False,
+        server_default=sa.text(
+            '\'["follows","comments","shares_invites","roles","votes_needed","phase_done"]\'::jsonb'
+        ),
+    ),
+    sa.Column(
         "default_location_id",
         UUID,
         sa.ForeignKey("locations.id", ondelete="SET NULL"),
