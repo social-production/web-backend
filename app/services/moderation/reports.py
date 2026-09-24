@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -280,7 +280,15 @@ def vote_report(
                 "vote": normalized_vote,
             }
 
-        if existing is None:
+        if normalized_vote == "neutral":
+            if existing is not None:
+                db.execute(
+                    delete(report_votes).where(
+                    report_votes.c.report_id == report_id,
+                    report_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing is None:
             db.execute(
                 insert(report_votes).values(
                     report_id=report_id, voter_id=current_user_id, vote=normalized_vote

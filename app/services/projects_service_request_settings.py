@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,7 +20,7 @@ from app.services.governance_votes import compute_vote_summary
 from app.utils.votes import can_cast_project_governance_vote, resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
-VALID_VOTES = frozenset({"yes", "no"})
+VALID_VOTES = frozenset({"yes", "no", "neutral"})
 VALID_REQUEST_MODES = frozenset({"calendar", "direct", "both"})
 
 
@@ -243,7 +243,15 @@ def vote_settings_change_request(
     ).first()
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(project_service_request_setting_change_votes).where(
+                    project_service_request_setting_change_votes.c.request_id == request_id,
+                    project_service_request_setting_change_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(project_service_request_setting_change_votes).values(
                     request_id=request_id,

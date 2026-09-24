@@ -12,7 +12,11 @@ class PhaseCopy:
 
 DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
     "phase-1": PhaseCopy(
-        summary="Define what this project should achieve and how strongly members care about each value.",
+        summary=(
+            "Define what this project should achieve and how strongly members care about each value. "
+            "People propose outcomes and rate how important each one is, while support and opposition show whether the project should move forward. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Members propose values that describe outcomes the project should optimize for.",
             "Everyone rates each value's importance on a 1–10 scale; ratings above 50% carry into later planning.",
@@ -21,7 +25,11 @@ DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "phase-2": PhaseCopy(
-        summary="Turn agreed values into a concrete production or operations plan.",
+        summary=(
+            "Turn agreed values into a concrete production or operations plan. "
+            "Members submit plans for how the work will be built or run, then vote on each value and on the plan as a whole. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Members submit plans that explain how the project will be built, run, or delivered.",
             "Each plan must respond to the current support signal and address high-importance values.",
@@ -30,7 +38,11 @@ DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "phase-3": PhaseCopy(
-        summary="Decide how outputs reach the people who need them.",
+        summary=(
+            "Decide how outputs reach the people who need them. "
+            "Members propose how delivery, access, or handoff will work, and vote until one plan is approved. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Members propose distribution or access plans describing delivery, availability, and handoff.",
             "Plans are evaluated against the same high-importance values from proposal.",
@@ -39,7 +51,11 @@ DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "phase-4": PhaseCopy(
-        summary="Prepare inventory, materials, and acquisition steps before execution.",
+        summary=(
+            "Prepare inventory, materials, and acquisition steps before execution. "
+            "Members track what must be gathered and vote on acquisition requests before live work starts. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Track what must be acquired or prepared before the project can execute at scale.",
             "Inventory and acquisition requests can be raised and voted on by members.",
@@ -48,7 +64,11 @@ DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "phase-5": PhaseCopy(
-        summary="Schedule and run the activities that deliver the approved plan.",
+        summary=(
+            "Schedule and run the activities that deliver the approved plan. "
+            "People put work on the calendar, fill roles, and keep going until the project is ready to close. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Activities are created on the calendar and tied to roles with minimum signup requirements.",
             "Members commit to roles; calendar color reflects whether minimums are met.",
@@ -57,7 +77,11 @@ DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "phase-6": PhaseCopy(
-        summary="Confirm execution is complete and ready for final closure.",
+        summary=(
+            "Confirm execution is complete and ready for final closure. "
+            "Members review unfinished work and vote on whether the project can close. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Outstanding activities and execution items are reviewed before the project closes.",
             "Members can vote on whether execution obligations have been met.",
@@ -66,7 +90,11 @@ DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "phase-7": PhaseCopy(
-        summary="The project has finished its lifecycle and is archived for reference.",
+        summary=(
+            "The project has finished its lifecycle and is archived for reference. "
+            "History, votes, and outcomes stay visible, and no new plans or activities are accepted. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "No new plans, activities, or phase changes are accepted.",
             "History, votes, and outcomes remain visible for accountability.",
@@ -78,7 +106,11 @@ DEFAULT_PROJECT_PHASE_COPY: dict[str, PhaseCopy] = {
 
 COLLECTIVE_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
     "phase-2": PhaseCopy(
-        summary="Define how the collective service will operate day to day.",
+        summary=(
+            "Define how the collective service will operate day to day. "
+            "Members submit operations plans for staffing and scheduling, then vote until one plan leads. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Submit operations plans covering staffing, scheduling, and how the service runs.",
             "Explain how the plan meets current support and each high-importance value.",
@@ -87,7 +119,11 @@ COLLECTIVE_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
         ),
     ),
     "phase-3": PhaseCopy(
-        summary="Decide who can access the service and under what conditions.",
+        summary=(
+            "Decide who can access the service and under what conditions. "
+            "Members propose eligibility, booking rules, and capacity, then vote on the access plan. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Propose access plans describing eligibility, booking rules, and capacity limits.",
             "Plans must align with values rated above 50% in proposal.",
@@ -99,7 +135,11 @@ COLLECTIVE_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
 
 PERSONAL_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
     "phase-1": PhaseCopy(
-        summary="Offer your personal service and manage incoming requests.",
+        summary=(
+            "Offer your personal service and manage incoming requests. "
+            "You set availability and handle bookings directly, without a group vote. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "You define availability, roles, and how clients can book time with you.",
             "Requests appear on your calendar; you accept, plan, or decline them directly.",
@@ -109,7 +149,11 @@ PERSONAL_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
         note="Personal services skip collective proposal and multi-plan voting.",
     ),
     "phase-2": PhaseCopy(
-        summary="Your personal service is closed and no longer accepting activity.",
+        summary=(
+            "Your personal service is closed and no longer accepting activity. "
+            "Past bookings stay visible, and new requests are not accepted. "
+            "You are only looking at this phase until the project reaches it."
+        ),
         mechanics=(
             "Existing history and past bookings remain visible.",
             "You can reopen by creating a new service listing if the platform allows it.",
@@ -120,7 +164,11 @@ PERSONAL_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
 
 DEFAULT_EVENT_PHASE_COPY: dict[str, PhaseCopy] = {
     "proposal": PhaseCopy(
-        summary="Gather interest and define the values this event should optimize for.",
+        summary=(
+            "Gather interest and define the values this event should optimize for. "
+            "Members propose values, rate them, and show support before detailed plans are written. "
+            "You are only looking at this phase until the event reaches it."
+        ),
         mechanics=(
             "Members propose values and rate their importance; scores above 50% feed into planning.",
             "Support signals show whether enough people want the event to proceed.",
@@ -129,7 +177,11 @@ DEFAULT_EVENT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "event-plan": PhaseCopy(
-        summary="Propose schedules, locations, and staged plans for the event.",
+        summary=(
+            "Propose schedules, locations, and staged plans for the event. "
+            "Members submit plans and vote until one schedule and location is approved. "
+            "You are only looking at this phase until the event reaches it."
+        ),
         mechanics=(
             "Members submit event plans with dates, times, location, and staged activities.",
             "Each plan must explain how it responds to support and high-importance values.",
@@ -138,7 +190,11 @@ DEFAULT_EVENT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "activity": PhaseCopy(
-        summary="Run scheduled event activities and fill roles.",
+        summary=(
+            "Run scheduled event activities and fill roles. "
+            "People sign up for roles on the approved days until the event finishes. "
+            "You are only looking at this phase until the event reaches it."
+        ),
         mechanics=(
             "Activities are scheduled on approved plan days with role minimums.",
             "Signup progress is shown on the calendar: empty, partial, or minimum met.",
@@ -147,7 +203,11 @@ DEFAULT_EVENT_PHASE_COPY: dict[str, PhaseCopy] = {
         ),
     ),
     "closed": PhaseCopy(
-        summary="The event has ended; outcomes and history remain visible.",
+        summary=(
+            "The event has ended; outcomes and history remain visible. "
+            "No new plans or activities can be added, and past votes stay available to review. "
+            "You are only looking at this phase until the event reaches it."
+        ),
         mechanics=(
             "No new plans or activities can be added.",
             "Votes, attendance, and updates are preserved for reference.",

@@ -145,7 +145,15 @@ def vote_repository_replacement(
     )
 
     try:
-        if existing is None:
+        if normalized_vote == "neutral":
+            if existing is not None:
+                db.execute(
+                    delete(project_repository_replacement_votes).where(
+                    project_repository_replacement_votes.c.request_id == request_id,
+                    project_repository_replacement_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing is None:
             db.execute(
                 insert(project_repository_replacement_votes).values(
                     request_id=request_id,

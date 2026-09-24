@@ -5,7 +5,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, insert, or_, select, update
+from sqlalchemy import delete, and_, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -761,7 +761,7 @@ def vote_detail_link_request(
         )
 
     normalized_vote = (vote or "").strip().lower()
-    if normalized_vote not in {"yes", "no"}:
+    if normalized_vote not in {"yes", "no", "neutral"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="vote must be one of: ['no', 'yes']",
@@ -792,7 +792,16 @@ def vote_detail_link_request(
     ).first()
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(detail_link_request_votes).where(
+                    detail_link_request_votes.c.request_id == request_id,
+                    detail_link_request_votes.c.voter_id == current_user_id,
+                    detail_link_request_votes.c.vote_scope == vote_scope,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(detail_link_request_votes).values(
                     request_id=request_id,

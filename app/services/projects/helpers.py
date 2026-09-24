@@ -648,6 +648,15 @@ def _build_project_history(
 ) -> list[dict[str, object]]:
     phase_title_map = {item[0]: item[3] for item in PROJECT_PHASES}
     history: list[tuple[object, dict[str, object]]] = []
+    project_row = (
+        db.execute(
+            select(projects.c.title, projects.c.description).where(projects.c.id == project_id)
+        )
+        .mappings()
+        .first()
+    )
+    current_title = str(project_row["title"]) if project_row else ""
+    current_description = str(project_row["description"]) if project_row else ""
 
     def _author_username(author_id):
         if author_id is None:
@@ -731,8 +740,12 @@ def _build_project_history(
                     "payload": {
                         "type": "edit",
                         "changes": [
-                            {"label": "Title", "before": "", "after": req["title"]},
-                            {"label": "Description", "before": "", "after": req["description"]},
+                            {"label": "Title", "before": current_title, "after": req["title"]},
+                            {
+                                "label": "Description",
+                                "before": current_description,
+                                "after": req["description"],
+                            },
                         ],
                     },
                 },

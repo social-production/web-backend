@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -166,7 +166,15 @@ def vote_update_request(
     ).first()
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(event_update_request_votes).where(
+                    event_update_request_votes.c.request_id == request_id,
+                    event_update_request_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(event_update_request_votes).values(
                     request_id=request_id,

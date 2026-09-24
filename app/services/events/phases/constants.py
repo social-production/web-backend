@@ -9,4 +9,4 @@ EVENT_PHASE_ORDER = {
     "activity": 3,
     "closed": 4,
 }
-VALID_VOTES = frozenset({"yes", "no"})
+VALID_VOTES = frozenset({"yes", "no", "neutral"})

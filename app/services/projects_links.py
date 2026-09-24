@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,7 @@ from app.services.governance_votes import compute_vote_summary
 from app.utils.votes import resolve_project_vote_population
 
 APPROVAL_THRESHOLD = 0.66
-VALID_VOTES = frozenset({"yes", "no"})
+VALID_VOTES = frozenset({"yes", "no", "neutral"})
 
 
 def _get_project_by_slug(db: Session, slug: str) -> Mapping[str, object]:
@@ -196,7 +196,16 @@ def vote_project_link_request(
     )
 
     try:
-        if existing_vote is None:
+        if normalized_vote == "neutral":
+            if existing_vote is not None:
+                db.execute(
+                    delete(project_link_request_votes).where(
+                    project_link_request_votes.c.request_id == request_id,
+                    project_link_request_votes.c.voter_id == current_user_id,
+                    project_link_request_votes.c.vote_scope == vote_scope,
+                    )
+                )
+        elif existing_vote is None:
             db.execute(
                 insert(project_link_request_votes).values(
                     request_id=request_id,

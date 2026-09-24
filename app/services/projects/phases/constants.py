@@ -6,7 +6,7 @@ APPROVAL_THRESHOLD = 0.66
 VALID_PHASE_IDS = frozenset(
     {"phase-1", "phase-2", "phase-3", "phase-4", "phase-5", "phase-6", "phase-7"}
 )
-VALID_VOTES = frozenset({"yes", "no"})
+VALID_VOTES = frozenset({"yes", "no", "neutral"})
 STAGE_LABEL_BY_PHASE_ID = {
     "phase-1": "Proposal",
     "phase-2": "Production Plan",

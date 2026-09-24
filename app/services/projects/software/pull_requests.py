@@ -116,7 +116,15 @@ def vote_pull_request(
     )
 
     try:
-        if existing is None:
+        if normalized_vote == "neutral":
+            if existing is not None:
+                db.execute(
+                    delete(project_pull_request_votes).where(
+                    project_pull_request_votes.c.request_id == request_id,
+                    project_pull_request_votes.c.voter_id == current_user_id,
+                    )
+                )
+        elif existing is None:
             db.execute(
                 insert(project_pull_request_votes).values(
                     request_id=request_id,
