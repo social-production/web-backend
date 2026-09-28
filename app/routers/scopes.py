@@ -17,6 +17,7 @@ from app.services.scopes import (
     invite_user_to_community,
     join_scope,
     leave_scope,
+    list_discoverable_scopes,
     list_scope_members,
     list_taggable_scopes,
     redeem_scope_invite,
@@ -115,6 +116,21 @@ class TaggableScopesResponse(BaseModel):
     communities: list[TaggableScopeItem]
 
 
+class DiscoverScopeItem(BaseModel):
+    slug: str
+    label: str
+    href: str
+    description: str
+    visibility: str
+    member_count: int
+    viewer_is_member: bool
+
+
+class DiscoverScopesResponse(BaseModel):
+    kind: str
+    items: list[DiscoverScopeItem]
+
+
 @router.post(
     "/channels", dependencies=[Depends(get_current_user_id)], response_model=ChannelResponse
 )
@@ -152,6 +168,16 @@ def get_taggable_scopes(
     return list_taggable_scopes(
         db=db, current_user_id=current_user_id, query=q, kind=kind, limit=limit
     )
+
+
+@router.get("/discover", response_model=DiscoverScopesResponse)
+def get_discoverable_scopes(
+    kind: str,
+    limit: int = 200,
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return list_discoverable_scopes(db=db, current_user_id=current_user_id, kind=kind, limit=limit)
 
 
 @router.get("/channels/{slug}", response_model=ChannelResponse)

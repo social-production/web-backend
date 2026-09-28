@@ -14,6 +14,7 @@ from app.models import (
     content_votes,
     events,
     help_requests,
+    platform_feedback,
     posts,
     projects,
     threads,
@@ -38,7 +39,9 @@ from app.services.notifications import create_notification
 logger = logging.getLogger(__name__)
 
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project", "help_request"})
-VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "help_request"})
+VOTABLE_TARGET_TYPES = frozenset(
+    {"thread", "post", "comment", "help_request", "platform_feedback"}
+)
 REPORTABLE_TARGET_TYPES = MODERATION_REPORTABLE_TARGET_TYPES
 REPORT_REASONS = MODERATION_REPORT_REASONS
 REPORT_VOTES = frozenset({"yes", "no"})
@@ -170,6 +173,10 @@ def _ensure_vote_target_exists(db: Session, target_type: str, target_id: UUID) -
     elif target_type == "help_request":
         exists = db.execute(
             select(help_requests.c.id).where(help_requests.c.id == target_id)
+        ).first()
+    elif target_type == "platform_feedback":
+        exists = db.execute(
+            select(platform_feedback.c.id).where(platform_feedback.c.id == target_id)
         ).first()
     else:
         raise HTTPException(
@@ -415,6 +422,12 @@ def _apply_vote_count_delta(db: Session, target_type: str, target_id: UUID, delt
                 update(help_requests)
                 .where(help_requests.c.id == target_id)
                 .values(vote_count=help_requests.c.vote_count + delta)
+            )
+        elif target_type == "platform_feedback":
+            db.execute(
+                update(platform_feedback)
+                .where(platform_feedback.c.id == target_id)
+                .values(vote_count=platform_feedback.c.vote_count + delta)
             )
         else:
             db.execute(

@@ -85,7 +85,7 @@ comments = table(
 content_votes = table(
     "content_votes",
     uuid_pk(),
-    sa.Column("target_type", sa.String(16), nullable=False),
+    sa.Column("target_type", sa.String(24), nullable=False),
     sa.Column("target_id", UUID, nullable=False),
     user_fk("voter_id", nullable=False, ondelete="CASCADE"),
     sa.Column("direction", sa.SmallInteger, nullable=False),
@@ -94,6 +94,20 @@ content_votes = table(
     sa.UniqueConstraint(
         "target_type", "target_id", "voter_id", name="uq_content_votes_target_voter"
     ),
+)
+
+platform_feedback = table(
+    "platform_feedback",
+    uuid_pk(),
+    user_fk("author_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("kind", sa.String(16), nullable=False),
+    sa.Column("title", sa.String(200), nullable=False),
+    sa.Column("description", sa.Text, nullable=False),
+    sa.Column("vote_count", sa.Integer, nullable=False, server_default="0"),
+    sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
+    sa.Column("moderation_reason", sa.String(24), nullable=True),
+    created_at(),
+    updated_at(),
 )
 
 help_requests = table(

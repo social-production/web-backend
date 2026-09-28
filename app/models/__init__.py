@@ -5,6 +5,7 @@ from app.models.content import (
     help_request_role_assignments,
     help_request_roles,
     help_requests,
+    platform_feedback,
     post_links,
     posts,
     report_votes,

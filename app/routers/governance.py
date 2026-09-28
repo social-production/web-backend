@@ -25,7 +25,9 @@ class CommentCreateRequest(BaseModel):
 class VoteCastRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    target_type: str = Field(pattern="^(thread|post|comment|event|project|help_request)$")
+    target_type: str = Field(
+        pattern="^(thread|post|comment|event|project|help_request|platform_feedback)$"
+    )
     target_id: UUID
     direction: str = Field(pattern="^(up|down|neutral)$")
 

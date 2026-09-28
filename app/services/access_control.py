@@ -16,6 +16,7 @@ from app.models import (
     events,
     help_request_tags,
     help_requests,
+    platform_feedback,
     posts,
     project_tags,
     projects,
@@ -30,7 +31,9 @@ CHANNEL_SCOPE_KIND = "channel"
 
 TAGGED_ENTITY_TYPES = frozenset({"thread", "project", "event", "help_request"})
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project", "help_request"})
-VOTE_TARGET_TYPES = frozenset({"thread", "post", "comment", "event", "project", "help_request"})
+VOTE_TARGET_TYPES = frozenset(
+    {"thread", "post", "comment", "event", "project", "help_request", "platform_feedback"}
+)
 
 _TAG_TABLE_BY_ENTITY = {
     "thread": thread_tags,
@@ -252,6 +255,17 @@ def can_view_entity(db: Session, viewer_id: UUID | None, entity_type: str, entit
         if db.execute(select(table.c.id).where(table.c.id == entity_id)).first() is None:
             return False
         return can_view_by_tags(db, viewer_id, normalized, entity_id)
+
+    if normalized == "platform_feedback":
+        return (
+            db.execute(
+                select(platform_feedback.c.id).where(
+                    platform_feedback.c.id == entity_id,
+                    platform_feedback.c.moderation_state == "visible",
+                )
+            ).first()
+            is not None
+        )
 
     return False
 

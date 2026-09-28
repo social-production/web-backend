@@ -336,6 +336,98 @@ def list_taggable_scopes(
     return {"channels": channel_items, "communities": community_items}
 
 
+RESERVED_CHANNEL_SLUGS = ("platform", "stewardship")
+
+
+def list_discoverable_scopes(
+    db: Session,
+    current_user_id: UUID | None,
+    kind: str,
+    limit: int = 200,
+) -> dict[str, object]:
+    normalized_kind = (kind or "").strip().lower()
+    if normalized_kind not in (CHANNEL_SCOPE_KIND, COMMUNITY_SCOPE_KIND):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="kind must be channel or community",
+        )
+    capped_limit = max(1, min(limit, 500))
+    table = channels if normalized_kind == CHANNEL_SCOPE_KIND else communities
+
+    member_counts = (
+        select(
+            scope_memberships.c.scope_id.label("scope_id"),
+            func.count(scope_memberships.c.user_id).label("member_count"),
+        )
+        .where(scope_memberships.c.scope_kind == normalized_kind)
+        .group_by(scope_memberships.c.scope_id)
+        .subquery("member_counts")
+    )
+    viewer_membership = (
+        select(scope_memberships.c.scope_id.label("scope_id"))
+        .where(
+            scope_memberships.c.scope_kind == normalized_kind,
+            scope_memberships.c.user_id == current_user_id,
+        )
+        .subquery("viewer_membership")
+        if current_user_id is not None
+        else None
+    )
+
+    member_count = func.coalesce(member_counts.c.member_count, 0).label("member_count")
+    columns = [table.c.slug, table.c.name, table.c.description, member_count]
+    if normalized_kind == COMMUNITY_SCOPE_KIND:
+        columns.append(communities.c.join_policy)
+    from_clause = table.outerjoin(member_counts, member_counts.c.scope_id == table.c.id)
+    if viewer_membership is not None:
+        columns.append(viewer_membership.c.scope_id.label("viewer_scope_id"))
+        from_clause = from_clause.outerjoin(
+            viewer_membership, viewer_membership.c.scope_id == table.c.id
+        )
+
+    conditions = []
+    if normalized_kind == CHANNEL_SCOPE_KIND:
+        conditions.append(channels.c.slug.not_in(RESERVED_CHANNEL_SLUGS))
+    elif viewer_membership is not None:
+        conditions.append(
+            or_(
+                communities.c.join_policy != "closed",
+                viewer_membership.c.scope_id.is_not(None),
+            )
+        )
+    else:
+        conditions.append(communities.c.join_policy != "closed")
+
+    rows = (
+        db.execute(
+            select(*columns)
+            .select_from(from_clause)
+            .where(*conditions)
+            .order_by(member_count.desc(), table.c.name.asc())
+            .limit(capped_limit)
+        )
+        .mappings()
+        .all()
+    )
+
+    prefix = "/channels" if normalized_kind == CHANNEL_SCOPE_KIND else "/communities"
+    items = [
+        {
+            "slug": row["slug"],
+            "label": row["name"],
+            "href": f"{prefix}/{row['slug']}",
+            "description": row["description"],
+            "visibility": "private"
+            if normalized_kind == COMMUNITY_SCOPE_KIND and row["join_policy"] == "closed"
+            else "public",
+            "member_count": int(row["member_count"] or 0),
+            "viewer_is_member": row.get("viewer_scope_id") is not None,
+        }
+        for row in rows
+    ]
+    return {"kind": normalized_kind, "items": items}
+
+
 def create_channel(
     db: Session, current_user_id: UUID, slug: str, name: str, description: str
 ) -> dict[str, object]:
