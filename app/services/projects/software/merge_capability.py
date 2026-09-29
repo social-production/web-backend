@@ -125,8 +125,8 @@ def vote_merge_capability_change(
             if existing is not None:
                 db.execute(
                     delete(project_merge_capability_change_votes).where(
-                    project_merge_capability_change_votes.c.request_id == request_id,
-                    project_merge_capability_change_votes.c.voter_id == current_user_id,
+                        project_merge_capability_change_votes.c.request_id == request_id,
+                        project_merge_capability_change_votes.c.voter_id == current_user_id,
                     )
                 )
         elif existing is None:

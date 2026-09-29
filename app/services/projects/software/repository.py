@@ -149,8 +149,8 @@ def vote_repository_replacement(
             if existing is not None:
                 db.execute(
                     delete(project_repository_replacement_votes).where(
-                    project_repository_replacement_votes.c.request_id == request_id,
-                    project_repository_replacement_votes.c.voter_id == current_user_id,
+                        project_repository_replacement_votes.c.request_id == request_id,
+                        project_repository_replacement_votes.c.voter_id == current_user_id,
                     )
                 )
         elif existing is None:

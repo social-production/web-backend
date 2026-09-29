@@ -118,15 +118,12 @@ def _ensure_can_submit_service_request(
     project_row: Mapping[str, object],
     user_id: UUID,
 ) -> None:
-    if project_row["project_mode"] == "personal-service":
-        if project_row["author_id"] == user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="The service creator cannot request their own service",
-            )
-        return
-
-    _ensure_project_member(db, project_row["id"], user_id)
+    assert_can_view_entity(db, user_id, "project", project_row["id"])
+    if project_row["project_mode"] == "personal-service" and project_row["author_id"] == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The service creator cannot request their own service",
+        )
 
 
 def _format_personal_service_request_message(

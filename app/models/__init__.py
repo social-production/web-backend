@@ -1,5 +1,6 @@
 from app.models.base import JSONB, TSVECTOR, UUID, Base, metadata
 from app.models.content import (
+    comment_attachments,
     comments,
     content_votes,
     help_request_role_assignments,
@@ -53,7 +54,15 @@ from app.models.governance import (
 )
 from app.models.links import detail_link_request_votes, detail_link_requests, detail_links
 from app.models.locations import locations
-from app.models.messages import conversation_members, conversations, messages, subject_chat_reads
+from app.models.messages import (
+    blobs,
+    conversation_members,
+    conversation_pins,
+    conversations,
+    message_attachments,
+    messages,
+    subject_chat_reads,
+)
 from app.models.notifications import notifications
 from app.models.projects import (
     project_activities,
@@ -127,12 +136,14 @@ __all__ = [
     "scope_confidence_votes",
     "posts",
     "post_links",
+    "platform_feedback",
     "help_requests",
     "help_request_roles",
     "help_request_role_assignments",
     "threads",
     "thread_tags",
     "comments",
+    "comment_attachments",
     "content_votes",
     "reports",
     "report_votes",
@@ -202,6 +213,9 @@ __all__ = [
     "conversation_members",
     "messages",
     "subject_chat_reads",
+    "blobs",
+    "message_attachments",
+    "conversation_pins",
     "notifications",
     "searchable_documents",
     "platform_board_memberships",

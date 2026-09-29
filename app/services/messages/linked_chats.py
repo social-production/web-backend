@@ -8,6 +8,7 @@ from sqlalchemy import func, insert, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
+    comment_attachments,
     comments,
     event_memberships,
     events,
@@ -19,6 +20,28 @@ from app.models import (
     subject_chat_reads,
 )
 from app.services.messages.util import _iso
+
+
+def _comment_preview(db: Session, last_comment: object | None) -> str:
+    if not last_comment:
+        return ""
+    body = str(last_comment["body"] or "").strip()
+    if body:
+        return body[:200]
+    attachment = (
+        db.execute(
+            select(comment_attachments.c.kind, comment_attachments.c.filename).where(
+                comment_attachments.c.comment_id == last_comment["id"]
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if attachment is None:
+        return ""
+    if attachment["kind"] == "image":
+        return "Photo"
+    return str(attachment["filename"])[:200]
 
 
 def _get_subject_chat_last_read_at(
@@ -111,7 +134,7 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
         for row in event_rows:
             last_comment = (
                 db.execute(
-                    select(comments.c.body, comments.c.created_at)
+                    select(comments.c.id, comments.c.body, comments.c.created_at)
                     .where(
                         comments.c.subject_type == "event",
                         comments.c.subject_id == row["id"],
@@ -138,7 +161,7 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
                     "entity_id": str(row["id"]),
                     "entity_slug": row["slug"],
                     "title": row["title"],
-                    "preview": last_comment["body"][:200] if last_comment else "",
+                    "preview": _comment_preview(db, last_comment),
                     "last_message_at": _iso(last_comment["created_at"])
                     if last_comment
                     else _iso(row["last_activity_at"]),
@@ -167,7 +190,7 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
         for row in project_rows:
             last_comment = (
                 db.execute(
-                    select(comments.c.body, comments.c.created_at)
+                    select(comments.c.id, comments.c.body, comments.c.created_at)
                     .where(
                         comments.c.subject_type == "project",
                         comments.c.subject_id == row["id"],
@@ -194,7 +217,7 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
                     "entity_id": str(row["id"]),
                     "entity_slug": row["slug"],
                     "title": row["title"],
-                    "preview": last_comment["body"][:200] if last_comment else "",
+                    "preview": _comment_preview(db, last_comment),
                     "last_message_at": _iso(last_comment["created_at"])
                     if last_comment
                     else _iso(row["last_activity_at"]),
@@ -254,7 +277,7 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
         for row in help_request_rows:
             last_comment = (
                 db.execute(
-                    select(comments.c.body, comments.c.created_at)
+                    select(comments.c.id, comments.c.body, comments.c.created_at)
                     .where(
                         comments.c.subject_type == "help_request",
                         comments.c.subject_id == row["id"],
@@ -283,7 +306,7 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
                     "entity_id": str(row["id"]),
                     "entity_slug": str(row["id"]),
                     "title": row["title"],
-                    "preview": last_comment["body"][:200] if last_comment else "",
+                    "preview": _comment_preview(db, last_comment),
                     "last_message_at": _iso(last_comment["created_at"])
                     if last_comment
                     else _iso(row["created_at"]),

@@ -867,9 +867,11 @@ async def get_event_detail(
         "phases": _event_lifecycle_phases(row["current_phase_id"]),
         "phaseOne": {
             "values": phase_one_values,
-            "viewerCanSignalDemand": current_user_id is not None and row["current_phase_id"] != "closed",
+            "viewerCanSignalDemand": current_user_id is not None
+            and row["current_phase_id"] != "closed",
             "viewerHasDemandSignal": viewer_signal == "demand",
-            "viewerCanSignalOpposition": current_user_id is not None and row["current_phase_id"] != "closed",
+            "viewerCanSignalOpposition": current_user_id is not None
+            and row["current_phase_id"] != "closed",
             "viewerHasOppositionSignal": viewer_signal == "opposition",
             "signalSummary": signal_summary,
             "viewerCanAddValue": viewer_is_member and in_proposal,
@@ -975,6 +977,9 @@ async def get_event_detail(
         target_ids=discussion_comment_ids,
         current_user_id=current_user_id,
     )
+    from app.services.messages.attachments import detail_attachments_by_comment
+
+    discussion_attachments = detail_attachments_by_comment(db, discussion_comment_ids)
     discussion = [
         {
             "id": str(comment_id),
@@ -991,6 +996,7 @@ async def get_event_detail(
             "moderationReason": moderation_reason,
             "report": discussion_reports.get(comment_id),
             "replies": [],
+            "attachments": discussion_attachments.get(str(comment_id), []),
         }
         for (
             comment_id,

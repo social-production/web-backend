@@ -284,8 +284,8 @@ def vote_report(
             if existing is not None:
                 db.execute(
                     delete(report_votes).where(
-                    report_votes.c.report_id == report_id,
-                    report_votes.c.voter_id == current_user_id,
+                        report_votes.c.report_id == report_id,
+                        report_votes.c.voter_id == current_user_id,
                     )
                 )
         elif existing is None:

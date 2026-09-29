@@ -116,8 +116,8 @@ def vote_project_edit_request(
             if existing_vote is not None:
                 db.execute(
                     delete(project_edit_request_votes).where(
-                    project_edit_request_votes.c.request_id == request_id,
-                    project_edit_request_votes.c.voter_id == current_user_id,
+                        project_edit_request_votes.c.request_id == request_id,
+                        project_edit_request_votes.c.voter_id == current_user_id,
                     )
                 )
         elif existing_vote is None:

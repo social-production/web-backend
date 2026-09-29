@@ -155,6 +155,16 @@ class MessagingProvider(Protocol):
     def get_linked_chats(self, current_user_id: UUID) -> dict[str, object]: ...
 
 
+class BlobStore(Protocol):
+    """Stores opaque ciphertext. Callers encrypt before put and decrypt after get."""
+
+    def put(self, key: str, data: bytes) -> None: ...
+
+    def get(self, key: str) -> bytes | None: ...
+
+    def delete(self, key: str) -> None: ...
+
+
 class FeedProvider(Protocol):
     def get_public_feed(
         self,

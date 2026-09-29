@@ -62,11 +62,7 @@ def _vote_fields(row: Mapping[str, object]) -> dict[str, object]:
     approval_percent = (upvote_count / total_votes * 100.0) if total_votes > 0 else 0.0
     active_vote_value = row.get("active_vote")
     active_vote = (
-        "up"
-        if active_vote_value == 1
-        else "down"
-        if active_vote_value == -1
-        else "neutral"
+        "up" if active_vote_value == 1 else "down" if active_vote_value == -1 else "neutral"
     )
     return {
         "upvote_count": upvote_count,
@@ -127,7 +123,9 @@ def create_feedback(
             .one()
         )
         author_username = (
-            db.execute(select(users.c.username).where(users.c.id == current_user_id)).scalar_one_or_none()
+            db.execute(
+                select(users.c.username).where(users.c.id == current_user_id)
+            ).scalar_one_or_none()
             or ""
         )
         record_meaningful_action(
@@ -190,9 +188,8 @@ def _feedback_trending_score():
 
 
 def _feedback_select(current_user_id: UUID | None):
-    vote_filter = (
-        (content_votes.c.target_type == "platform_feedback")
-        & (content_votes.c.target_id == platform_feedback.c.id)
+    vote_filter = (content_votes.c.target_type == "platform_feedback") & (
+        content_votes.c.target_id == platform_feedback.c.id
     )
     return (
         select(
@@ -221,9 +218,9 @@ def _feedback_select(current_user_id: UUID | None):
             _feedback_trending_score(),
         )
         .select_from(
-            platform_feedback.outerjoin(users, users.c.id == platform_feedback.c.author_id).outerjoin(
-                content_votes, vote_filter
-            )
+            platform_feedback.outerjoin(
+                users, users.c.id == platform_feedback.c.author_id
+            ).outerjoin(content_votes, vote_filter)
         )
         .where(platform_feedback.c.moderation_state == "visible")
         .group_by(
@@ -265,9 +262,7 @@ def list_feedback(
         else [_feedback_trending_score().desc(), platform_feedback.c.created_at.desc()]
     )
 
-    rows = db.execute(
-        query.order_by(*order_columns).limit(limit).offset(offset)
-    ).mappings()
+    rows = db.execute(query.order_by(*order_columns).limit(limit).offset(offset)).mappings()
 
     items = [_serialize_feedback_row(row) for row in rows]
     return {
@@ -285,9 +280,7 @@ def get_feedback_by_id(
 ) -> dict[str, object]:
     _ensure_platform_feedback_table(db)
     row = (
-        db.execute(
-            _feedback_select(current_user_id).where(platform_feedback.c.id == feedback_id)
-        )
+        db.execute(_feedback_select(current_user_id).where(platform_feedback.c.id == feedback_id))
         .mappings()
         .first()
     )

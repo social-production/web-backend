@@ -168,8 +168,8 @@ def vote_edit_request(
             if existing_vote is not None:
                 db.execute(
                     delete(event_edit_request_votes).where(
-                    event_edit_request_votes.c.request_id == request_id,
-                    event_edit_request_votes.c.voter_id == current_user_id,
+                        event_edit_request_votes.c.request_id == request_id,
+                        event_edit_request_votes.c.voter_id == current_user_id,
                     )
                 )
         elif existing_vote is None:

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
+from starlette.formparsers import MultiPartException
 
 from app.auth.dependencies import get_current_user_id
 from app.dependencies import get_db, get_messaging_provider
@@ -17,13 +19,18 @@ from app.services.messages import (
     list_conversations,
     mark_conversation_as_read,
     mark_linked_chat_read,
+    pin_message,
+    read_message_attachment,
     remove_group_member,
     rename_group_conversation,
     send_message,
     start_direct_conversation,
+    unpin_message,
 )
 
 router = APIRouter(prefix="/messages", tags=["messages"])
+
+MAX_UPLOAD_PART_BYTES = 12 * 1024 * 1024
 
 
 class ParticipantOut(BaseModel):
@@ -85,6 +92,14 @@ class SendMessageRequest(BaseModel):
     body: str = Field(min_length=1)
 
 
+class AttachmentOut(BaseModel):
+    id: UUID
+    kind: str
+    filename: str
+    content_type: str
+    byte_size: int
+
+
 class MessageOut(BaseModel):
     id: UUID
     conversation_id: UUID
@@ -92,6 +107,13 @@ class MessageOut(BaseModel):
     body: str
     created_at: object
     updated_at: object
+    attachments: list[AttachmentOut] = Field(default_factory=list)
+
+
+class PinOut(BaseModel):
+    message_id: UUID
+    pinned_at: object
+    preview: str = ""
 
 
 class MessageResponse(BaseModel):
@@ -102,6 +124,12 @@ class ConversationMessagesResponse(BaseModel):
     conversation_id: UUID
     total: int
     items: list[MessageOut]
+    pins: list[PinOut] = Field(default_factory=list)
+    can_pin: bool = False
+
+
+class PinActionResponse(BaseModel):
+    ok: bool
 
 
 class ConversationReadResponse(BaseModel):
@@ -188,18 +216,50 @@ def list_my_conversations(
     return list_conversations(db=db, current_user_id=current_user_id)
 
 
+def _content_disposition(kind: str, filename: str) -> str:
+    safe = filename.replace("\\", "_").replace('"', "").replace("\r", "").replace("\n", "")
+    disposition = "inline" if kind == "image" else "attachment"
+    return f'{disposition}; filename="{safe}"'
+
+
 @router.post("/conversations/{conversation_id}/messages", response_model=MessageResponse)
-def send_conversation_message(
+async def send_conversation_message(
     conversation_id: UUID,
-    payload: SendMessageRequest,
+    request: Request,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    content_type = request.headers.get("content-type", "")
+    attachments: list = []
+    if "multipart/form-data" in content_type:
+        try:
+            form = await request.form(max_part_size=MAX_UPLOAD_PART_BYTES)
+        except MultiPartException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Files must be 10MB or smaller",
+            ) from exc
+        raw_body = form.get("body")
+        body = raw_body if isinstance(raw_body, str) else ""
+        from app.services.messages.attachments import prepare_form_uploads
+
+        attachments = await prepare_form_uploads(form)
+    else:
+        try:
+            payload = SendMessageRequest.model_validate(await request.json())
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Message body is required",
+            ) from exc
+        body = payload.body
+
     return send_message(
         db=db,
         current_user_id=current_user_id,
         conversation_id=conversation_id,
-        body=payload.body,
+        body=body,
+        attachments=attachments,
     )
 
 
@@ -219,6 +279,60 @@ def get_conversation_messages(
         conversation_id=conversation_id,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/attachments/{attachment_id}")
+def download_attachment(
+    attachment_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    payload = read_message_attachment(
+        db=db, current_user_id=current_user_id, attachment_id=attachment_id
+    )
+    return Response(
+        content=payload["data"],
+        media_type=str(payload["content_type"]),
+        headers={
+            "Content-Disposition": _content_disposition(
+                str(payload["kind"]), str(payload["filename"])
+            ),
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/conversations/{conversation_id}/pins/{message_id}", response_model=PinActionResponse)
+def pin_conversation_message(
+    conversation_id: UUID,
+    message_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return pin_message(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+
+@router.delete(
+    "/conversations/{conversation_id}/pins/{message_id}", response_model=PinActionResponse
+)
+def unpin_conversation_message(
+    conversation_id: UUID,
+    message_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return unpin_message(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
     )
 
 

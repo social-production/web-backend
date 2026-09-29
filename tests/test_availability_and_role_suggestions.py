@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 
+from sqlalchemy import insert
+
 from app.auth.jwt import create_access_token
+from app.models import project_service_request_settings
 from tests.conftest import seed_channel_with_membership, seed_user, set_project_phase
 
 
@@ -95,6 +98,84 @@ def test_personal_service_weekly_availability_and_slot_hold(db_transaction, isol
     assert matching
     assert matching[0].get("held") is True
     assert matching[0]["bookings"]
+
+
+def test_signed_in_non_member_can_request_a_collective_service(db_transaction, isolated_client):
+    creator_id, _ = seed_user(db_transaction, username_prefix="svc-creator")
+    requester_id, _ = seed_user(db_transaction, username_prefix="svc-guest")
+    _channel_id, channel_slug = seed_channel_with_membership(db_transaction, creator_id=creator_id)
+    db_transaction.flush()
+
+    creator = _auth_header(creator_id)
+    requester = _auth_header(requester_id)
+
+    created = isolated_client.post(
+        "/projects",
+        headers=creator,
+        json={
+            "title": "Open repair",
+            "description": "Anyone can ask",
+            "project_mode": "collective-service",
+            "location_label": "Online",
+            "channel_slugs": [channel_slug],
+        },
+    )
+    assert created.status_code == 200, created.text
+    slug = created.json()["project"]["slug"]
+    project_id = created.json()["project"]["id"]
+    db_transaction.execute(
+        insert(project_service_request_settings).values(
+            project_id=project_id,
+            enabled=True,
+            request_mode="direct",
+            allow_off_schedule_requests=True,
+            summary="Direct requests",
+        )
+    )
+    db_transaction.flush()
+
+    detail = isolated_client.get(f"/projects/{slug}", headers=requester)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["lifecycle"]["requestSystem"]["viewerCanSubmitRequests"] is True
+
+    request_resp = isolated_client.post(
+        f"/projects/{slug}/service-requests",
+        headers=requester,
+        json={"title": "Need a repair", "body": "The hinge is loose."},
+    )
+    assert request_resp.status_code == 200, request_resp.text
+
+
+def test_personal_service_creator_cannot_request_their_own_service(db_transaction, isolated_client):
+    creator_id, _ = seed_user(db_transaction, username_prefix="own-creator")
+    _channel_id, channel_slug = seed_channel_with_membership(db_transaction, creator_id=creator_id)
+    db_transaction.flush()
+    creator = _auth_header(creator_id)
+
+    created = isolated_client.post(
+        "/projects",
+        headers=creator,
+        json={
+            "title": "Haircut",
+            "description": "Personal cuts",
+            "project_mode": "personal-service",
+            "location_label": "Online",
+            "channel_slugs": [channel_slug],
+            "request_mode": "direct",
+        },
+    )
+    assert created.status_code == 200, created.text
+    slug = created.json()["project"]["slug"]
+
+    detail = isolated_client.get(f"/projects/{slug}", headers=creator)
+    assert detail.json()["lifecycle"]["requestSystem"]["viewerCanSubmitRequests"] is False
+
+    request_resp = isolated_client.post(
+        f"/projects/{slug}/service-requests",
+        headers=creator,
+        json={"title": "My own cut", "body": "This should be refused."},
+    )
+    assert request_resp.status_code == 403, request_resp.text
 
 
 def test_project_role_suggestion_notifies_user(db_transaction, isolated_client):

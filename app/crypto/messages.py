@@ -18,3 +18,11 @@ def encrypt_message(plaintext: str) -> str:
 def decrypt_message(ciphertext: str) -> str:
     plaintext = get_message_fernet().decrypt(ciphertext.encode("utf-8"))
     return plaintext.decode("utf-8")
+
+
+def encrypt_bytes(data: bytes) -> bytes:
+    return get_message_fernet().encrypt(data)
+
+
+def decrypt_bytes(token: bytes) -> bytes:
+    return get_message_fernet().decrypt(token)

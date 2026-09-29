@@ -120,8 +120,8 @@ def vote_pull_request(
             if existing is not None:
                 db.execute(
                     delete(project_pull_request_votes).where(
-                    project_pull_request_votes.c.request_id == request_id,
-                    project_pull_request_votes.c.voter_id == current_user_id,
+                        project_pull_request_votes.c.request_id == request_id,
+                        project_pull_request_votes.c.voter_id == current_user_id,
                     )
                 )
         elif existing is None:

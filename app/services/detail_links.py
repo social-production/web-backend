@@ -5,7 +5,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, and_, insert, or_, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -796,9 +796,9 @@ def vote_detail_link_request(
             if existing_vote is not None:
                 db.execute(
                     delete(detail_link_request_votes).where(
-                    detail_link_request_votes.c.request_id == request_id,
-                    detail_link_request_votes.c.voter_id == current_user_id,
-                    detail_link_request_votes.c.vote_scope == vote_scope,
+                        detail_link_request_votes.c.request_id == request_id,
+                        detail_link_request_votes.c.voter_id == current_user_id,
+                        detail_link_request_votes.c.vote_scope == vote_scope,
                     )
                 )
         elif existing_vote is None:

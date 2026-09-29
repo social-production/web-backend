@@ -39,9 +39,7 @@ from app.services.notifications import create_notification
 logger = logging.getLogger(__name__)
 
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project", "help_request"})
-VOTABLE_TARGET_TYPES = frozenset(
-    {"thread", "post", "comment", "help_request", "platform_feedback"}
-)
+VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "help_request", "platform_feedback"})
 REPORTABLE_TARGET_TYPES = MODERATION_REPORTABLE_TARGET_TYPES
 REPORT_REASONS = MODERATION_REPORT_REASONS
 REPORT_VOTES = frozenset({"yes", "no"})
@@ -105,6 +103,7 @@ def _serialize_comment(
     replies: list[dict[str, object]] | None = None,
     active_vote: int = 0,
     report: dict[str, object] | None = None,
+    attachments: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     moderation_state = str(row.get("moderation_state") or "visible")
     moderation_reason = row.get("moderation_reason")
@@ -132,6 +131,7 @@ def _serialize_comment(
         or (report is not None and str(report.get("resolution") or "") in {"open", "under_review"}),
         "report": report,
         "replies": replies or [],
+        "attachments": attachments or [],
     }
 
 
@@ -449,12 +449,31 @@ def add_comment(
     subject_id: UUID,
     body: str,
     parent_id: UUID | None = None,
+    attachment: object | None = None,
+    attachments: list | None = None,
 ) -> dict[str, object]:
     normalized_subject_type = subject_type.strip().lower()
     if normalized_subject_type not in COMMENTABLE_SUBJECT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"subject_type must be one of: {sorted(COMMENTABLE_SUBJECT_TYPES)}",
+        )
+
+    from app.services.messages.attachments import LINKED_CHAT_SUBJECTS, store_comment_attachment
+
+    stripped_body = body.strip()
+    prepared_attachments = list(attachments or [])
+    if attachment is not None:
+        prepared_attachments.append(attachment)
+    if prepared_attachments and normalized_subject_type not in LINKED_CHAT_SUBJECTS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Attachments are only available in project, event, and help request chats",
+        )
+    if not stripped_body and not prepared_attachments:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Message body is required",
         )
 
     _ensure_subject_exists(db, normalized_subject_type, subject_id)
@@ -481,7 +500,7 @@ def add_comment(
                     subject_id=subject_id,
                     parent_id=parent_id,
                     author_id=current_user_id,
-                    body=body.strip(),
+                    body=stripped_body,
                 )
                 .returning(
                     comments.c.id,
@@ -499,6 +518,9 @@ def add_comment(
             .one()
         )
 
+        stored_attachments = [
+            store_comment_attachment(db, created["id"], item) for item in prepared_attachments
+        ]
         _update_subject_comment_count(db, normalized_subject_type, subject_id, 1)
         record_meaningful_action(
             db=db,
@@ -540,7 +562,7 @@ def add_comment(
     created_with_username = dict(created)
     created_with_username["author_username"] = author_row[0] if author_row else ""
 
-    return {"comment": _serialize_comment(created_with_username)}
+    return {"comment": _serialize_comment(created_with_username, attachments=stored_attachments)}
 
 
 def get_comments(
@@ -609,6 +631,10 @@ def get_comments(
         current_user_id=current_user_id,
     )
 
+    from app.services.messages.attachments import attachments_for_comments
+
+    attachment_map = attachments_for_comments(db, [row["id"] for row in rows])
+
     top_level: dict[UUID, dict[str, object]] = {}
     all_comments: dict[UUID, dict[str, object]] = {}
     children: dict[UUID | None, list[UUID]] = {}
@@ -620,6 +646,7 @@ def get_comments(
             replies=[],
             active_vote=active_votes.get(row["id"], 0),
             report=reports_by_id.get(row["id"]),
+            attachments=attachment_map.get(row["id"], []),
         )
         all_comments[row["id"]] = item
         parent_key = row["parent_id"]

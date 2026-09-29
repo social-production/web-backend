@@ -817,10 +817,8 @@ async def get_project_detail(
         (is_personal_service and str(row["current_phase_id"]) == "phase-1")
         or (not is_personal_service and str(row["current_phase_id"]) == "phase-5")
     )
-    viewer_can_submit_requests = (
-        (current_user_id is not None and not viewer_is_author)
-        if is_personal_service
-        else viewer_is_member
+    viewer_can_submit_requests = current_user_id is not None and (
+        not is_personal_service or not viewer_is_author
     )
     viewer_can_request_settings_changes = (
         viewer_is_author if is_personal_service else viewer_is_member
@@ -1057,6 +1055,9 @@ async def get_project_detail(
         target_ids=discussion_comment_ids,
         current_user_id=current_user_id,
     )
+    from app.services.messages.attachments import detail_attachments_by_comment
+
+    discussion_attachments = detail_attachments_by_comment(db, discussion_comment_ids)
     discussion = [
         {
             "id": str(comment_id),
@@ -1073,6 +1074,7 @@ async def get_project_detail(
             "moderationReason": moderation_reason,
             "report": discussion_reports.get(comment_id),
             "replies": [],
+            "attachments": discussion_attachments.get(str(comment_id), []),
         }
         for (
             comment_id,

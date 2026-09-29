@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
+from starlette.formparsers import MultiPartException
 
 from app.auth.dependencies import get_current_user_id, get_optional_current_user_id
 from app.dependencies import get_db
 from app.services.governance import add_comment, cast_vote, get_comments, submit_report, vote_report
+from app.services.messages.attachments import read_comment_attachment
+
+MAX_UPLOAD_PART_BYTES = 12 * 1024 * 1024
 
 router = APIRouter(prefix="/governance", tags=["governance"])
 
@@ -48,6 +52,7 @@ class CommentOut(BaseModel):
     moderation_reason: str | None = None
     report: dict[str, object] | None = None
     replies: list[CommentOut] = Field(default_factory=list)
+    attachments: list[dict[str, object]] = Field(default_factory=list)
 
 
 class CommentCreateResponse(BaseModel):
@@ -127,12 +132,68 @@ class ReportVoteResponse(BaseModel):
     vote: str
 
 
+def _content_disposition(kind: str, filename: str) -> str:
+    safe = filename.replace("\\", "_").replace('"', "").replace("\r", "").replace("\n", "")
+    disposition = "inline" if kind == "image" else "attachment"
+    return f'{disposition}; filename="{safe}"'
+
+
 @router.post("/comments", response_model=CommentCreateResponse)
-def create_comment(
-    payload: CommentCreateRequest,
+async def create_comment(
+    request: Request,
     current_user_id: UUID = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    content_type = request.headers.get("content-type", "")
+    attachments: list = []
+    if "multipart/form-data" in content_type:
+        try:
+            form = await request.form(max_part_size=MAX_UPLOAD_PART_BYTES)
+        except MultiPartException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Files must be 10MB or smaller",
+            ) from exc
+        raw_body = form.get("body")
+        body = raw_body if isinstance(raw_body, str) else ""
+        subject_type = form.get("subject_type")
+        subject_id = form.get("subject_id")
+        parent_raw = form.get("parent_id")
+        if not isinstance(subject_type, str) or not isinstance(subject_id, str):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="subject_type and subject_id are required",
+            )
+        try:
+            parsed_subject_id = UUID(subject_id)
+            parsed_parent_id = (
+                UUID(parent_raw) if isinstance(parent_raw, str) and parent_raw else None
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="subject_id must be a UUID",
+            ) from exc
+        from app.services.messages.attachments import prepare_form_uploads
+
+        attachments = await prepare_form_uploads(form)
+        return add_comment(
+            db=db,
+            current_user_id=current_user_id,
+            subject_type=subject_type,
+            subject_id=parsed_subject_id,
+            body=body,
+            parent_id=parsed_parent_id,
+            attachments=attachments,
+        )
+
+    try:
+        payload = CommentCreateRequest.model_validate(await request.json())
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Message body is required",
+        ) from exc
     return add_comment(
         db=db,
         current_user_id=current_user_id,
@@ -140,6 +201,28 @@ def create_comment(
         subject_id=payload.subject_id,
         body=payload.body,
         parent_id=payload.parent_id,
+    )
+
+
+@router.get("/attachments/{attachment_id}")
+def download_comment_attachment(
+    attachment_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    payload = read_comment_attachment(
+        db=db, current_user_id=current_user_id, attachment_id=attachment_id
+    )
+    return Response(
+        content=payload["data"],
+        media_type=str(payload["content_type"]),
+        headers={
+            "Content-Disposition": _content_disposition(
+                str(payload["kind"]), str(payload["filename"])
+            ),
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

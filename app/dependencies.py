@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.postgres.access_policy import PostgresAccessPolicy
 from app.adapters.postgres.auth import JwtAuthProvider
+from app.adapters.postgres.blob_store import PostgresBlobStore
 from app.adapters.postgres.feeds import PostgresFeedProvider
 from app.adapters.postgres.messaging import PostgresMessagingProvider
 from app.adapters.postgres.notifications import PostgresNotificationsProvider
@@ -21,6 +22,7 @@ from app.db import SessionLocal
 from app.ports import (
     AccessPolicy,
     AuthProvider,
+    BlobStore,
     CacheStore,
     FeedProvider,
     MessagingProvider,
@@ -79,6 +81,10 @@ def get_notifications_provider(db: Session = Depends(get_db)) -> NotificationsPr
 
 def get_messaging_provider(db: Session = Depends(get_db)) -> MessagingProvider:
     return PostgresMessagingProvider(db)
+
+
+def get_blob_store(db: Session = Depends(get_db)) -> BlobStore:
+    return PostgresBlobStore(db)
 
 
 def get_feed_provider(db: Session = Depends(get_db)) -> FeedProvider:

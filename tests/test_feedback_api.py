@@ -18,7 +18,9 @@ def _auth_headers(session: dict[str, str]) -> dict[str, str]:
 def test_feedback_create_list_detail_and_vote(
     db_transaction: Session, isolated_client: TestClient
 ) -> None:
-    creator = register_and_login_client(isolated_client, username="feedback-creator", ip="10.10.0.10")
+    creator = register_and_login_client(
+        isolated_client, username="feedback-creator", ip="10.10.0.10"
+    )
     voter = register_and_login_client(isolated_client, username="feedback-voter", ip="10.10.0.11")
 
     create_response = isolated_client.post(
@@ -71,9 +73,7 @@ def test_feedback_create_list_detail_and_vote(
     assert vote_response.status_code == 200, vote_response.text
     assert vote_response.json()["direction"] == "up"
 
-    voted_detail = isolated_client.get(
-        f"/feedback/{feedback_id}", headers=_auth_headers(voter)
-    )
+    voted_detail = isolated_client.get(f"/feedback/{feedback_id}", headers=_auth_headers(voter))
     assert voted_detail.status_code == 200, voted_detail.text
     voted_feedback = voted_detail.json()["feedback"]
     assert voted_feedback["upvote_count"] == 1

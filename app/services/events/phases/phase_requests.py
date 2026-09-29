@@ -251,8 +251,8 @@ def vote_phase_change_request(
             if existing_vote is not None:
                 db.execute(
                     delete(event_phase_change_votes).where(
-                    event_phase_change_votes.c.request_id == request_id,
-                    event_phase_change_votes.c.voter_id == current_user_id,
+                        event_phase_change_votes.c.request_id == request_id,
+                        event_phase_change_votes.c.voter_id == current_user_id,
                     )
                 )
         elif existing_vote is None:

@@ -14,6 +14,7 @@ from app.crypto.messages import decrypt_message
 from app.models import (
     conversation_members,
     conversations,
+    message_attachments,
     messages,
     users,
 )
@@ -80,10 +81,34 @@ def _ensure_member(db: Session, conversation_id: UUID, user_id: UUID) -> None:
         )
 
 
+def _message_preview(db: Session, message_id: UUID, encrypted_body: str) -> str:
+    try:
+        plaintext = decrypt_message(encrypted_body)
+    except InvalidToken:
+        plaintext = ""
+    if plaintext.strip():
+        return plaintext[:200]
+
+    attachment = (
+        db.execute(
+            select(message_attachments.c.kind, message_attachments.c.filename)
+            .where(message_attachments.c.message_id == message_id)
+            .limit(1)
+        )
+        .mappings()
+        .first()
+    )
+    if attachment is None:
+        return ""
+    if attachment["kind"] == "image":
+        return "Photo"
+    return str(attachment["filename"])[:200]
+
+
 def _conversation_preview(db: Session, conversation_id: UUID) -> str:
     last_message = (
         db.execute(
-            select(messages.c.encrypted_body)
+            select(messages.c.id, messages.c.encrypted_body)
             .where(messages.c.conversation_id == conversation_id)
             .order_by(messages.c.created_at.desc())
             .limit(1)
@@ -93,11 +118,7 @@ def _conversation_preview(db: Session, conversation_id: UUID) -> str:
     )
     if last_message is None:
         return ""
-
-    try:
-        return decrypt_message(last_message["encrypted_body"])[:200]
-    except InvalidToken:
-        return ""
+    return _message_preview(db, last_message["id"], last_message["encrypted_body"])
 
 
 def _conversation_unread_count(

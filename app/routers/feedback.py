@@ -46,9 +46,7 @@ def list_feedback_endpoint(
     db: Session = Depends(get_db),
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
 ) -> dict[str, object]:
-    filter_value = (
-        "bugs" if kind == "bug" else "suggestions" if kind == "suggestion" else filter
-    )
+    filter_value = "bugs" if kind == "bug" else "suggestions" if kind == "suggestion" else filter
     return list_feedback(
         db,
         current_user_id=current_user_id,

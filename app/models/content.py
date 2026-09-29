@@ -82,6 +82,24 @@ comments = table(
     updated_at(),
 )
 
+comment_attachments = table(
+    "comment_attachments",
+    uuid_pk(),
+    sa.Column(
+        "comment_id",
+        UUID,
+        sa.ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("kind", sa.String(16), nullable=False),
+    sa.Column("filename", sa.String(200), nullable=False),
+    sa.Column("content_type", sa.String(127), nullable=False),
+    sa.Column("byte_size", sa.Integer, nullable=False),
+    sa.Column("storage_key", sa.Text, sa.ForeignKey("blobs.storage_key"), nullable=False),
+    sa.Index("ix_comment_attachments_comment_id", "comment_id"),
+    sa.CheckConstraint("kind IN ('image', 'file')", name="ck_comment_attachments_kind"),
+)
+
 content_votes = table(
     "content_votes",
     uuid_pk(),

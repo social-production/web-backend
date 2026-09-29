@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
@@ -10,11 +10,19 @@ from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.crypto.messages import decrypt_message, encrypt_message
+from app.adapters.postgres.blob_store import PostgresBlobStore
+from app.crypto.messages import decrypt_message, encrypt_bytes, encrypt_message
 from app.models import (
     conversation_members,
     conversations,
+    message_attachments,
     messages,
+)
+from app.services.messages.attachments import (
+    PreparedAttachment,
+    attachments_by_message,
+    list_pins,
+    viewer_can_pin,
 )
 from app.services.messages.conversations import (
     _conversation_unread_count,
@@ -33,6 +41,7 @@ def _serialize_message(
     body: str,
     *,
     report: dict[str, object] | None = None,
+    attachments: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     moderation_state = str(row.get("moderation_state") or "visible")
     moderation_reason = row.get("moderation_reason")
@@ -51,6 +60,7 @@ def _serialize_message(
         "moderation_state": moderation_state,
         "moderation_reason": moderation_reason,
         "report": report,
+        "attachments": attachments or [],
     }
 
 
@@ -80,18 +90,24 @@ def send_message(
     current_user_id: UUID,
     conversation_id: UUID,
     body: str,
+    attachment: PreparedAttachment | None = None,
+    attachments: list[PreparedAttachment] | None = None,
 ) -> dict[str, object]:
     _get_conversation_row(db, conversation_id)
     _ensure_member(db, conversation_id, current_user_id)
 
+    prepared_attachments = list(attachments or [])
+    if attachment is not None:
+        prepared_attachments.append(attachment)
     plaintext = body.strip()
-    if not plaintext:
+    if not plaintext and not prepared_attachments:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Message body is required"
         )
 
     encrypted = encrypt_message(plaintext)
     now = datetime.now(UTC)
+    stored_attachments: list[dict[str, object]] = []
 
     try:
         created = (
@@ -116,6 +132,33 @@ def send_message(
             .one()
         )
 
+        for item in prepared_attachments:
+            storage_key = str(uuid4())
+            PostgresBlobStore(db).put(storage_key, encrypt_bytes(item.data))
+            attachment_row = (
+                db.execute(
+                    insert(message_attachments)
+                    .values(
+                        message_id=created["id"],
+                        kind=item.kind,
+                        filename=item.filename,
+                        content_type=item.content_type,
+                        byte_size=len(item.data),
+                        storage_key=storage_key,
+                    )
+                    .returning(
+                        message_attachments.c.id,
+                        message_attachments.c.kind,
+                        message_attachments.c.filename,
+                        message_attachments.c.content_type,
+                        message_attachments.c.byte_size,
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            stored_attachments.append(dict(attachment_row))
+
         db.execute(
             update(conversations)
             .where(conversations.c.id == conversation_id)
@@ -128,7 +171,7 @@ def send_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not send message"
         ) from exc
 
-    return {"message": _serialize_message(created, plaintext)}
+    return {"message": _serialize_message(created, plaintext, attachments=stored_attachments)}
 
 
 def get_messages_for_conversation(
@@ -139,7 +182,7 @@ def get_messages_for_conversation(
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, object]:
-    _get_conversation_row(db, conversation_id)
+    conversation = _get_conversation_row(db, conversation_id)
     _ensure_member(db, conversation_id, current_user_id)
 
     safe_limit = max(1, min(limit, 200))
@@ -164,12 +207,14 @@ def get_messages_for_conversation(
     )
 
     items = []
+    message_ids = [row["id"] for row in rows]
     reports_by_id = load_active_reports_for_targets(
         db,
         target_type="message",
-        target_ids=[row["id"] for row in rows],
+        target_ids=message_ids,
         current_user_id=current_user_id,
     )
+    attachment_rows = attachments_by_message(db, message_ids)
     for row in rows:
         try:
             plaintext = decrypt_message(row["encrypted_body"])
@@ -183,6 +228,7 @@ def get_messages_for_conversation(
                 row,
                 plaintext,
                 report=reports_by_id.get(row["id"]),
+                attachments=attachment_rows.get(row["id"], []),
             )
         )
 
@@ -192,6 +238,8 @@ def get_messages_for_conversation(
         "limit": safe_limit,
         "offset": safe_offset,
         "items": items,
+        "pins": list_pins(db, conversation_id),
+        "can_pin": viewer_can_pin(conversation, current_user_id),
     }
 
 

@@ -8,11 +8,15 @@ from app.services.messages.api import (
     list_conversations,
     mark_conversation_as_read,
     mark_linked_chat_read,
+    pin_message,
+    prepare_attachment,
+    read_message_attachment,
     remove_group_member,
     rename_group_conversation,
     search_message_contacts,
     send_message,
     start_direct_conversation,
+    unpin_message,
 )
 
 __all__ = [
@@ -25,9 +29,13 @@ __all__ = [
     "list_conversations",
     "mark_conversation_as_read",
     "mark_linked_chat_read",
+    "pin_message",
+    "prepare_attachment",
+    "read_message_attachment",
     "remove_group_member",
     "rename_group_conversation",
     "search_message_contacts",
     "send_message",
     "start_direct_conversation",
+    "unpin_message",
 ]
