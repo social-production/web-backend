@@ -51,5 +51,14 @@ def record_meaningful_action(
                 redis.delete(*keys)
             if cursor == 0:
                 break
+        cursor = 0
+        while True:
+            cursor, keys = redis.scan(
+                cursor, match="governance:weekly_active:established:*", count=100
+            )
+            if keys:
+                redis.delete(*keys)
+            if cursor == 0:
+                break
     except Exception:
         pass

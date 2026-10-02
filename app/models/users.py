@@ -85,3 +85,24 @@ meaningful_actions = table(
     sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
 )
+
+account_stances = table(
+    "account_stances",
+    sa.Column(
+        "source_user_id",
+        UUID,
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column(
+        "target_user_id",
+        UUID,
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("stance", sa.String(8), nullable=False),
+    created_at(),
+    updated_at(),
+    sa.CheckConstraint("source_user_id <> target_user_id", name="not_self"),
+    sa.CheckConstraint("stance IN ('vouch', 'bot')", name="kind"),
+)

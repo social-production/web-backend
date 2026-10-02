@@ -14,7 +14,11 @@ _REVOKED_MESSAGE_KEY_DIGESTS = frozenset(
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", ".env.local"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     app_env: str = "development"
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost/social_production"
@@ -40,6 +44,31 @@ class Settings(BaseSettings):
     geocoding_rate_limit: int = 30
     geocoding_rate_limit_window_seconds: int = 60
     geocoding_timeout_seconds: float = 8.0
+    # Instant switch: set SIGNUP_ENABLED=false and restart to refuse new accounts.
+    signup_enabled: bool = True
+    # Empty skips captcha. Set TURNSTILE_SECRET_KEY to require Cloudflare Turnstile on signup.
+    turnstile_secret_key: str = ""
+    # Governance warm-up. 0 leaves voting unchanged. Set both to require age and activity
+    # before an account can vote, count toward quorum, or volunteer as a moderator.
+    governance_min_account_age_hours: int = 0
+    governance_min_meaningful_actions: int = 0
+    governance_meaningful_action_types: str = (
+        "create-comment,create-post,create-thread,create-help-request,"
+        "create-project,create-event,submit-project-plan,submit-event-plan,"
+        "create-platform-feedback"
+    )
+    # Hours added to the warm-up start when the account's content is removed or hidden.
+    governance_removal_penalty_hours: int = 0
+    # Sybil attack. The ratio switch is off until this is true. Restart the API after changes.
+    # real_r is display-only. Stances, votes, quorum, and activity bands use effective_r.
+    governance_trust_ratio_enabled: bool = False
+    governance_min_bot_marks: int = 3
+    governance_mark_license_vouches: int = 5
+    governance_vote_threshold: float = 0.66
+    governance_limited_threshold: float = 0.30
+    governance_inert_threshold: float = 0.10
+    governance_bootstrap_markers: int = 10
+    governance_bootstrap_target: int = 20
 
     @field_validator("database_url", mode="before")
     @classmethod

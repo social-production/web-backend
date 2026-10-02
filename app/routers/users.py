@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -18,6 +19,7 @@ from app.services.users import (
     get_own_profile,
     get_profile_by_username,
     reject_follow_request,
+    set_account_stance,
     unfollow_user,
     update_own_profile_settings,
 )
@@ -33,11 +35,33 @@ class UserSummary(BaseModel):
     is_active: bool
 
 
+class AccountTrustOut(BaseModel):
+    real_r: float
+    vouch_weight: float
+    bot_weight: float
+    bootstrap_floor: bool
+    bootstrap_floor_value: float | None = None
+    vouchers: list[str]
+    bot_markers: list[str]
+    viewer_stance: str | None = None
+    viewer_can_vouch: bool = False
+    viewer_can_mark_bot: bool = False
+    viewer_can_clear: bool = False
+
+
+class StanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stance: Literal["vouch", "bot", "clear"]
+
+
 class PeopleSuggestionOut(BaseModel):
     id: UUID
     username: str
     bio: str | None = None
     profileImageUrl: str | None = None
+    realR: float | None = None
+    bootstrapFloor: bool = False
 
 
 class PeopleSuggestionsResponse(BaseModel):
@@ -72,6 +96,7 @@ class PublicProfileResponse(BaseModel):
     is_own_profile: bool
     can_view_personal_feed: bool
     can_view_public_profile_activity: bool
+    trust: AccountTrustOut
 
 
 class OwnProfileResponse(BaseModel):
@@ -113,6 +138,8 @@ class FollowResponse(BaseModel):
 
 class FollowUserSummary(UserSummary):
     follow_status: str
+    real_r: float | None = None
+    bootstrap_floor: bool = False
 
 
 class FollowListResponse(BaseModel):
@@ -199,14 +226,33 @@ def people_suggestions(
     limit: int = Query(default=12, ge=1, le=40),
     current_user_id: UUID = Depends(get_current_user_id),
     people: PeopleSuggestionsProvider = Depends(get_people_suggestions_provider),
+    db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return {
-        "items": people.suggest(
-            current_user_id,
-            query=q,
-            limit=limit,
-        )
-    }
+    items = people.suggest(
+        current_user_id,
+        query=q,
+        limit=limit,
+    )
+    from app.services.trust import trust_summaries
+
+    summaries = trust_summaries(db)
+    for item in items:
+        summary = summaries.get(item["id"])
+        if summary is None:
+            continue
+        item["realR"] = summary["real_r"]
+        item["bootstrapFloor"] = summary["bootstrap_floor"]
+    return {"items": items}
+
+
+@router.post("/{username}/stance", response_model=AccountTrustOut)
+def post_account_stance(
+    username: str,
+    payload: StanceRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return set_account_stance(db, current_user_id, username, payload.stance)
 
 
 @router.get("/{username}", response_model=PublicProfileResponse)

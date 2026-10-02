@@ -41,6 +41,7 @@ from app.services.events.phases.gates import _is_event_organizer, _is_organizer_
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.utils.usernames import username_matches
+from app.utils.votes import ensure_established_voter
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 
 
 def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
+    from app.services.trust import ensure_can_participate
+
+    ensure_can_participate(db, current_user_id)
     event_row = _get_event_by_slug_row(db, slug)
 
     existing = db.execute(
@@ -438,6 +442,7 @@ def vote_event_value_importance(
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
+    ensure_established_voter(db, current_user_id)
 
     if _is_organizer_controlled(event_row):
         raise HTTPException(

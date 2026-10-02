@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import InternalAppError, ValidationAppError
-from app.models import searchable_documents
+from app.models import searchable_documents, users
 from app.services.access_control import filter_search_results
 from app.unit_of_work import commit, rollback
 
@@ -206,5 +206,70 @@ def search_documents(
             if len(items) >= safe_limit:
                 break
 
+    _merge_account_matches(db, cleaned_query, items, safe_limit, normalized_types)
     filtered_items = filter_search_results(db, viewer_id, items)
     return {"total": len(filtered_items), "items": filtered_items}
+
+
+def _merge_account_matches(
+    db: Session,
+    query: str,
+    items: list[dict[str, object]],
+    limit: int,
+    entity_types: list[str],
+) -> None:
+    """Accounts are searchable by username even when they were never indexed."""
+    if entity_types and "user" not in entity_types:
+        return
+
+    pattern = f"%{query}%"
+    seen = {item["entity_id"] for item in items if item.get("entity_type") == "user"}
+    rows = db.execute(
+        select(
+            users.c.id,
+            users.c.username,
+            users.c.bio,
+            users.c.created_at,
+            users.c.updated_at,
+        )
+        .where(
+            users.c.is_active.is_(True),
+            or_(
+                users.c.username.ilike(pattern),
+                func.coalesce(users.c.bio, "").ilike(pattern),
+            ),
+        )
+        .order_by(users.c.username.asc())
+        .limit(limit)
+    ).all()
+    needle = query.casefold()
+    matches: list[dict[str, object]] = []
+    for user_id, username, bio, created_at, updated_at in rows:
+        if user_id in seen:
+            continue
+        name = str(username)
+        folded = name.casefold()
+        if folded == needle:
+            rank = 2.0
+        elif folded.startswith(needle):
+            rank = 1.0
+        else:
+            rank = 0.2
+        matches.append(
+            {
+                "id": user_id,
+                "entity_type": "user",
+                "entity_id": user_id,
+                "title": name,
+                "summary": bio or name,
+                "meta": "user",
+                "href": f"/profile/{name}",
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "rank": rank,
+            }
+        )
+    matches.sort(key=lambda item: (-float(item["rank"]), str(item["title"]).casefold()))
+    items[:0] = matches
+    if len(items) > limit:
+        del items[limit:]

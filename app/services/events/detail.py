@@ -186,12 +186,21 @@ async def get_event_detail(
     organizer_ids: set[UUID] = set(editor_ids)
     organizer_ids.add(row["created_by"])
 
+    from app.services.trust import trust_summaries
+
+    trust_by_user = trust_summaries(db)
+
     def _member_payload(user_id: UUID) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "id": str(user_id),
             "username": usernames.get(user_id, {}).get("username", "unknown"),
             "bio": usernames.get(user_id, {}).get("bio", ""),
         }
+        summary = trust_by_user.get(user_id)
+        if summary is not None:
+            payload["realR"] = summary["real_r"]
+            payload["bootstrapFloor"] = summary["bootstrap_floor"]
+        return payload
 
     # Organizers = creator (always) + promoted editors; creator listed first.
     ordered_organizer_ids: list[UUID] = [row["created_by"]]

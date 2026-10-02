@@ -45,6 +45,9 @@ def create_post(
     body: str,
     audience: str,
 ) -> dict[str, object]:
+    from app.services.trust import ensure_can_participate
+
+    ensure_can_participate(db, current_user_id)
     normalized_audience = audience.strip().lower()
     if normalized_audience not in VALID_AUDIENCE:
         raise HTTPException(

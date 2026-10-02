@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from app.auth.cookies import (
     set_auth_cookies,
 )
 from app.auth.dependencies import bearer_scheme, resolve_refresh_token
+from app.config import get_settings
 from app.dependencies import get_db
 from app.services.auth import (
     authenticate_user,
@@ -27,6 +28,8 @@ from app.services.auth import (
     refresh_auth_session,
     register_user,
 )
+from app.services.captcha import verify_turnstile_token
+from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -37,6 +40,7 @@ class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=32)
     password: str = Field(min_length=8, max_length=128)
     profile_bio: str | None = Field(default=None, max_length=500)
+    captcha_token: str | None = Field(default=None, max_length=2048)
 
 
 class LoginRequest(BaseModel):
@@ -101,6 +105,12 @@ def register(
     response: Response,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
+    if not get_settings().signup_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Signups are currently closed",
+        )
+    verify_turnstile_token(payload.captcha_token, get_client_ip(request))
     auth_payload = register_user(db, payload.username, payload.password, payload.profile_bio)
     _apply_auth_cookies(response, auth_payload)
     return public_auth_payload(request, auth_payload)

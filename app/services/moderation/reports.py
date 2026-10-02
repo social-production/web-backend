@@ -32,6 +32,43 @@ from app.services.moderation.serialize import (
     serialize_report_row,
 )
 from app.services.moderation.thresholds import REPORT_REASONS, REPORTABLE_TARGET_TYPES
+from app.utils.votes import CONTENT_REMOVED_ACTION
+
+_RESTRICTING_RESOLUTIONS = frozenset({"removed", "hidden"})
+
+
+def record_content_removal_penalty(
+    db: Session,
+    *,
+    previous_resolution: str,
+    new_resolution: str,
+    reported_author_id: UUID | None,
+    target_type: str,
+    target_id: UUID,
+    reason: str,
+) -> None:
+    """Extend the author's governance warm-up when their content is taken down.
+
+    Only the first transition into hidden or removed counts, so a later
+    confirming vote does not stack another penalty for the same report.
+    """
+    if new_resolution not in _RESTRICTING_RESOLUTIONS:
+        return
+    if previous_resolution in _RESTRICTING_RESOLUTIONS:
+        return
+    if reported_author_id is None:
+        return
+    record_meaningful_action(
+        db=db,
+        user_id=reported_author_id,
+        action_type=CONTENT_REMOVED_ACTION,
+        metadata={
+            "resolution": new_resolution,
+            "target_type": target_type,
+            "target_id": str(target_id),
+            "reason": reason,
+        },
+    )
 
 
 def _resolve_target_author_id(db: Session, target_type: str, target_id: UUID) -> UUID | None:
@@ -192,6 +229,15 @@ def submit_report(
                 reason=normalized_reason,
                 resolution=resolution,
             )
+            record_content_removal_penalty(
+                db,
+                previous_resolution="open",
+                new_resolution=resolution,
+                reported_author_id=reported_author_id,
+                target_type=normalized_target,
+                target_id=target_id,
+                reason=normalized_reason,
+            )
             created = dict(created)
             created["resolution"] = resolution
 
@@ -338,6 +384,15 @@ def vote_report(
             target_id=row["target_id"],
             reason=str(row["reason"]),
             resolution=new_resolution,
+        )
+        record_content_removal_penalty(
+            db,
+            previous_resolution=str(row["resolution"]),
+            new_resolution=new_resolution,
+            reported_author_id=row["reported_author_id"],
+            target_type=str(row["target_type"]),
+            target_id=row["target_id"],
+            reason=str(row["reason"]),
         )
         record_meaningful_action(
             db=db,

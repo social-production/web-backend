@@ -198,6 +198,9 @@ async def get_project_detail(
         db, member_ids | ({row["author_id"]} if row["author_id"] else set())
     )
 
+    from app.services.trust import trust_summaries
+
+    trust_by_user = trust_summaries(db)
     members = []
     for member_id, is_manager, is_manager_candidate in member_rows:
         payload = {
@@ -205,6 +208,10 @@ async def get_project_detail(
             "username": usernames.get(member_id, {}).get("username", "unknown"),
             "bio": usernames.get(member_id, {}).get("bio", ""),
         }
+        summary = trust_by_user.get(member_id)
+        if summary is not None:
+            payload["realR"] = summary["real_r"]
+            payload["bootstrapFloor"] = summary["bootstrap_floor"]
         members.append(payload)
 
     share_contact_rows = db.execute(

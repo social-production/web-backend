@@ -39,6 +39,7 @@ from app.services.projects.helpers import (
     _write_signal_counts_cache,
 )
 from app.utils.usernames import username_matches
+from app.utils.votes import ensure_established_voter
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,9 @@ PROJECT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
 
 
 def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, object]:
+    from app.services.trust import ensure_can_participate
+
+    ensure_can_participate(db, current_user_id)
     project_row = _get_project_by_slug_row(db, slug)
 
     inserted = False
@@ -208,6 +212,7 @@ def vote_project_value_importance(
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     _ensure_project_member(db, project_row["id"], current_user_id)
+    ensure_established_voter(db, current_user_id)
     if str(project_row["current_phase_id"]) != "phase-1":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

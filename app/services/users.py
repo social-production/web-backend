@@ -40,6 +40,20 @@ USER_SETTINGS_FIELDS = {
 USER_PROFILE_FIELDS = {"bio", "profile_image_url"}
 
 
+def _attach_trust_summaries(db: Session, items: list[dict[str, object]]) -> None:
+    if not items:
+        return
+    from app.services.trust import trust_summaries
+
+    summaries = trust_summaries(db)
+    for item in items:
+        summary = summaries.get(item["id"])
+        if summary is None:
+            continue
+        item["real_r"] = summary["real_r"]
+        item["bootstrap_floor"] = summary["bootstrap_floor"]
+
+
 def _serialize_user(row: Mapping[str, object]) -> dict[str, object]:
     return {
         "id": row["id"],
@@ -143,6 +157,8 @@ def get_profile_by_username(
         is_own_profile or viewer_is_following or not hide_public_profile
     )
 
+    from app.services.trust import account_trust_payload
+
     return {
         "user": _serialize_user(user_row),
         "viewer_is_following": viewer_is_following,
@@ -150,6 +166,7 @@ def get_profile_by_username(
         "is_own_profile": is_own_profile,
         "can_view_personal_feed": can_view_personal_feed,
         "can_view_public_profile_activity": can_view_public_profile_activity,
+        "trust": account_trust_payload(db, user_row["id"], current_user_id),
     }
 
 
@@ -253,7 +270,22 @@ def update_own_profile_settings(
             detail="Could not update profile settings",
         ) from exc
 
-    return get_own_profile(db, current_user_id)
+    updated = get_own_profile(db, current_user_id)
+    if "bio" in profile_updates:
+        from app.services.search import index_document
+
+        user = updated["user"]
+        summary = str(user["bio"] or "").strip() or str(user["username"])
+        index_document(
+            db=db,
+            entity_type="user",
+            entity_id=current_user_id,
+            title=str(user["username"]),
+            summary=summary,
+            meta="user",
+            href=f"/profile/{user['username']}",
+        )
+    return updated
 
 
 def follow_user(db: Session, current_user_id: UUID, username: str) -> dict[str, object]:
@@ -355,6 +387,18 @@ def follow_user(db: Session, current_user_id: UUID, username: str) -> dict[str, 
     }
 
 
+def set_account_stance(
+    db: Session,
+    current_user_id: UUID,
+    username: str,
+    stance: str,
+) -> dict[str, object]:
+    target = _get_user_by_username(db, username)
+    from app.services.trust import apply_account_stance
+
+    return apply_account_stance(db, current_user_id, target["id"], stance)
+
+
 def unfollow_user(db: Session, current_user_id: UUID, username: str) -> dict[str, object]:
     target_user = _get_user_by_username(db, username)
     target_user_id = target_user["id"]
@@ -422,6 +466,7 @@ def get_followers(
         }
         for row in rows
     ]
+    _attach_trust_summaries(db, items)
     accepted_total = db.execute(
         select(func.count())
         .select_from(user_follows)
@@ -485,6 +530,7 @@ def get_following(
         }
         for row in rows
     ]
+    _attach_trust_summaries(db, items)
     accepted_total = db.execute(
         select(func.count())
         .select_from(user_follows)

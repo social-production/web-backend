@@ -452,6 +452,9 @@ def add_comment(
     attachment: object | None = None,
     attachments: list | None = None,
 ) -> dict[str, object]:
+    from app.services.trust import ensure_can_participate
+
+    ensure_can_participate(db, current_user_id)
     normalized_subject_type = subject_type.strip().lower()
     if normalized_subject_type not in COMMENTABLE_SUBJECT_TYPES:
         raise HTTPException(

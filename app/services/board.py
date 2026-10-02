@@ -5,23 +5,20 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from redis import Redis as SyncRedis
 from sqlalchemy import case, delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.cache import get_sync_redis_client
-from app.models import board_standing_votes, meaningful_actions, platform_board_memberships, users
+from app.config import get_settings
+from app.models import board_standing_votes, platform_board_memberships, users
 from app.services.meaningful_actions import record_meaningful_action
-from app.utils.votes import required_votes
+from app.utils.votes import ensure_established_voter, required_votes, weekly_active_users_global
 
 BOARD_STATE_MEMBER = "member"
 BOARD_STATE_CANDIDATE = "candidate"
 VALID_BOARD_STATES = frozenset({BOARD_STATE_MEMBER, BOARD_STATE_CANDIDATE})
 MIN_APPROVAL_RATIO = 0.66
 VOTE_VALUE_MAP = {"yes": 1, "no": -1}
-WEEKLY_ACTIVE_CACHE_KEY = "board:weekly_active"
-WEEKLY_ACTIVE_CACHE_TTL_SECONDS = 3600
 GRACE_PERIOD_DAYS = 7
 
 STANDING_ACTIVE = "active"
@@ -30,35 +27,9 @@ STANDING_BELOW_THRESHOLD = "below-threshold"
 STANDING_QUALIFYING = "qualifying"
 
 
-def _redis_client() -> SyncRedis:
-    return get_sync_redis_client()
-
-
 def _weekly_active_users(db: Session) -> int:
-    try:
-        cached = _redis_client().get(WEEKLY_ACTIVE_CACHE_KEY)
-        if cached is not None:
-            return max(0, int(cached))
-    except Exception:
-        pass
-
-    week_ago = datetime.now(UTC) - timedelta(days=7)
-    try:
-        total = db.execute(
-            select(func.count(meaningful_actions.c.user_id.distinct())).where(
-                meaningful_actions.c.occurred_at >= week_ago
-            )
-        ).scalar_one()
-        computed = int(total or 0)
-    except Exception:
-        computed = 0
-
-    try:
-        _redis_client().setex(WEEKLY_ACTIVE_CACHE_KEY, WEEKLY_ACTIVE_CACHE_TTL_SECONDS, computed)
-    except Exception:
-        pass
-
-    return computed
+    """Board quorum uses the same established weekly-active population as other votes."""
+    return weekly_active_users_global(db)
 
 
 def _vote_stats_map(db: Session, target_user_ids: list[UUID]) -> dict[UUID, dict[str, object]]:
@@ -366,6 +337,16 @@ def list_active_board_member_ids(db: Session) -> list[UUID]:
 
 
 def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, object]:
+    ensure_established_voter(db, current_user_id)
+    if get_settings().governance_trust_ratio_enabled:
+        from app.services.trust import moderator_weight_detail, user_vouch_weight
+
+        weight = user_vouch_weight(db, current_user_id)
+        if weight + 1e-12 < get_settings().governance_vote_threshold:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=moderator_weight_detail(),
+            )
     existing = (
         db.execute(
             select(
@@ -471,6 +452,7 @@ def cast_standing_vote(
     target_user_id: UUID,
     vote: str,
 ) -> dict[str, object]:
+    ensure_established_voter(db, current_user_id)
     normalized_vote = vote.strip().lower()
     if normalized_vote == "neutral":
         try:
