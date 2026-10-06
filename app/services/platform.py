@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
-from sqlalchemy import Integer, literal, or_, select, union_all
+from sqlalchemy import Integer, insert, literal, or_, select, union_all, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -17,6 +18,49 @@ from app.services.board import list_board_standing
 
 VALID_SORTS = frozenset({"popular", "recent"})
 _ZERO_INT = literal(0, Integer)
+PLATFORM_SLUG = "platform"
+PLATFORM_CHANNEL_DESCRIPTION = (
+    "The channel for the whole network. Follow it to see platform-wide projects, events, and governance."
+)
+
+
+def ensure_platform_channel(db: Session) -> None:
+    """Create the platform channel when a deploy has no seeded row.
+
+    Without this row the platform page has an empty description and follow
+    stays disabled, because membership is stored on the channel.
+    """
+    from app.models import channels
+
+    existing = (
+        db.execute(
+            select(channels.c.id, channels.c.description).where(channels.c.slug == PLATFORM_SLUG)
+        )
+        .mappings()
+        .first()
+    )
+    if existing is not None:
+        if not str(existing["description"] or "").strip():
+            db.execute(
+                update(channels)
+                .where(channels.c.id == existing["id"])
+                .values(description=PLATFORM_CHANNEL_DESCRIPTION)
+            )
+            db.commit()
+        return
+
+    try:
+        db.execute(
+            insert(channels).values(
+                slug=PLATFORM_SLUG,
+                name="Platform",
+                description=PLATFORM_CHANNEL_DESCRIPTION,
+                created_by=None,
+            )
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
 
 
 def _get_platform_channel(db: Session) -> Mapping[str, object] | None:
@@ -162,6 +206,7 @@ def get_platform_page(
     bounded_limit = max(1, min(limit, 100))
     bounded_offset = max(0, offset)
 
+    ensure_platform_channel(db)
     channel = _get_platform_channel(db)
     channel_id = channel["id"] if channel is not None else None
     board = list_board_standing(db, viewer_user_id=viewer_user_id)

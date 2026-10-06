@@ -583,6 +583,10 @@ def create_community(
 def get_channel_by_slug(
     db: Session, slug: str, current_user_id: UUID | None = None
 ) -> dict[str, object]:
+    if slug.lower() == "platform":
+        from app.services.platform import ensure_platform_channel
+
+        ensure_platform_channel(db)
     row = _get_channel_row(db, slug)
     member_rows = db.execute(
         select(scope_memberships.c.user_id).where(
