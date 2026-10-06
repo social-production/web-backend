@@ -344,6 +344,7 @@ def list_discoverable_scopes(
     current_user_id: UUID | None,
     kind: str,
     limit: int = 200,
+    query: str = "",
 ) -> dict[str, object]:
     normalized_kind = (kind or "").strip().lower()
     if normalized_kind not in (CHANNEL_SCOPE_KIND, COMMUNITY_SCOPE_KIND):
@@ -386,8 +387,13 @@ def list_discoverable_scopes(
         )
 
     conditions = []
+    cleaned_query = query.strip()
+    if cleaned_query:
+        pattern = f"%{cleaned_query}%"
+        conditions.append(or_(table.c.name.ilike(pattern), table.c.slug.ilike(pattern)))
     if normalized_kind == CHANNEL_SCOPE_KIND:
-        conditions.append(channels.c.slug.not_in(RESERVED_CHANNEL_SLUGS))
+        if not cleaned_query:
+            conditions.append(channels.c.slug.not_in(RESERVED_CHANNEL_SLUGS))
     elif viewer_membership is not None:
         conditions.append(
             or_(

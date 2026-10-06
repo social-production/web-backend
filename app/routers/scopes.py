@@ -174,10 +174,13 @@ def get_taggable_scopes(
 def get_discoverable_scopes(
     kind: str,
     limit: int = 200,
+    q: str = "",
     current_user_id: UUID | None = Depends(get_optional_current_user_id),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return list_discoverable_scopes(db=db, current_user_id=current_user_id, kind=kind, limit=limit)
+    return list_discoverable_scopes(
+        db=db, current_user_id=current_user_id, kind=kind, limit=limit, query=q
+    )
 
 
 @router.get("/channels/{slug}", response_model=ChannelResponse)

@@ -7,9 +7,10 @@ from sqlalchemy import func, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.schema import Table
 
 from app.errors import InternalAppError, ValidationAppError
-from app.models import searchable_documents, users
+from app.models import channels, communities, searchable_documents, users
 from app.services.access_control import filter_search_results
 from app.unit_of_work import commit, rollback
 
@@ -207,6 +208,7 @@ def search_documents(
                 break
 
     _merge_account_matches(db, cleaned_query, items, safe_limit, normalized_types)
+    _merge_scope_matches(db, cleaned_query, items, safe_limit, normalized_types)
     filtered_items = filter_search_results(db, viewer_id, items)
     return {"total": len(filtered_items), "items": filtered_items}
 
@@ -269,6 +271,74 @@ def _merge_account_matches(
                 "rank": rank,
             }
         )
+    matches.sort(key=lambda item: (-float(item["rank"]), str(item["title"]).casefold()))
+    items[:0] = matches
+    if len(items) > limit:
+        del items[limit:]
+
+
+def _scope_match_rank(name: str, slug: str, needle: str) -> float:
+    folded_name = name.casefold()
+    folded_slug = slug.casefold()
+    if needle in (folded_name, folded_slug):
+        return 2.0
+    if folded_name.startswith(needle) or folded_slug.startswith(needle):
+        return 1.0
+    return 0.2
+
+
+def _merge_scope_matches(
+    db: Session,
+    query: str,
+    items: list[dict[str, object]],
+    limit: int,
+    entity_types: list[str],
+) -> None:
+    """Channels and communities stay searchable even when they were never indexed."""
+    tables: list[tuple[str, Table, str]] = []
+    if not entity_types or "channel" in entity_types:
+        tables.append(("channel", channels, "/channels"))
+    if not entity_types or "community" in entity_types:
+        tables.append(("community", communities, "/communities"))
+    if not tables or len(query) < 2:
+        return
+
+    pattern = f"%{query}%"
+    needle = query.casefold()
+    matches: list[dict[str, object]] = []
+    for entity_type, table, prefix in tables:
+        seen = {item["entity_id"] for item in items if item.get("entity_type") == entity_type}
+        rows = db.execute(
+            select(
+                table.c.id,
+                table.c.slug,
+                table.c.name,
+                table.c.description,
+                table.c.created_at,
+                table.c.updated_at,
+            )
+            .where(or_(table.c.name.ilike(pattern), table.c.slug.ilike(pattern)))
+            .order_by(table.c.name.asc())
+            .limit(limit)
+        ).all()
+        for scope_id, slug, name, description, created_at, updated_at in rows:
+            if scope_id in seen:
+                continue
+            title = str(name)
+            matches.append(
+                {
+                    "id": scope_id,
+                    "entity_type": entity_type,
+                    "entity_id": scope_id,
+                    "title": title,
+                    "summary": description or title,
+                    "meta": entity_type,
+                    "href": f"{prefix}/{slug}",
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "rank": _scope_match_rank(title, str(slug), needle),
+                }
+            )
     matches.sort(key=lambda item: (-float(item["rank"]), str(item["title"]).casefold()))
     items[:0] = matches
     if len(items) > limit:
