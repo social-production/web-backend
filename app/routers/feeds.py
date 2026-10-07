@@ -136,6 +136,7 @@ def public_feed(
     sort: str = Query(default="trending", pattern=_SORT_PATTERN),
     window: str = Query(default="all", pattern=_WINDOW_PATTERN),
     filter: str = Query(default="all", pattern=_FILTER_PATTERN),
+    tz: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     feeds: FeedProvider = Depends(get_feed_provider),
@@ -148,6 +149,7 @@ def public_feed(
         current_user_id=current_user_id,
         window=window,
         entity_filter=filter,
+        timezone_name=tz,
     )
 
 
@@ -156,6 +158,7 @@ def home_feed(
     sort: str = Query(default="trending", pattern=_SORT_PATTERN),
     window: str = Query(default="all", pattern=_WINDOW_PATTERN),
     filter: str = Query(default="all", pattern=_FILTER_PATTERN),
+    tz: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user_id: UUID = Depends(get_current_user_id),
@@ -168,6 +171,7 @@ def home_feed(
         offset=offset,
         window=window,
         entity_filter=filter,
+        timezone_name=tz,
     )
 
 
@@ -177,6 +181,7 @@ def personal_feed(
     window: str = Query(default="all", pattern=_WINDOW_PATTERN),
     filter: str = Query(default="all", pattern=_FILTER_PATTERN),
     scope: str = Query(default="following"),
+    tz: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user_id: UUID = Depends(get_current_user_id),
@@ -190,6 +195,7 @@ def personal_feed(
         scope=scope,
         window=window,
         entity_filter=filter,
+        timezone_name=tz,
     )
 
 
@@ -200,6 +206,7 @@ def scope_feed(
     sort: str = Query(default="trending", pattern=_SORT_PATTERN),
     window: str = Query(default="all", pattern=_WINDOW_PATTERN),
     filter: str = Query(default="all", pattern=_FILTER_PATTERN),
+    tz: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -215,6 +222,7 @@ def scope_feed(
         current_user_id=current_user_id,
         window=window,
         entity_filter=filter,
+        timezone_name=tz,
     )
 
 
@@ -224,6 +232,7 @@ def user_feed(
     sort: str = Query(default="trending", pattern=_SORT_PATTERN),
     window: str = Query(default="all", pattern=_WINDOW_PATTERN),
     filter: str = Query(default="all", pattern=_FILTER_PATTERN),
+    tz: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     viewer_user_id: UUID | None = Depends(get_optional_current_user_id),
@@ -238,6 +247,7 @@ def user_feed(
         offset=offset,
         window=window,
         entity_filter=filter,
+        timezone_name=tz,
     )
 
 

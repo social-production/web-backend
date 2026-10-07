@@ -32,6 +32,8 @@ USER_SETTINGS_FIELDS = {
     "require_follow_approval",
     "preferred_language",
     "display_timezone",
+    "combine_feeds",
+    "text_size",
     "default_location_id",
     "notification_categories",
 }
@@ -84,6 +86,10 @@ def _serialize_settings(row: Mapping[str, object]) -> dict[str, object]:
         "require_follow_approval": row["require_follow_approval"],
         "preferred_language": row["preferred_language"],
         "display_timezone": row["display_timezone"],
+        "combine_feeds": bool(row["combine_feeds"]),
+        "text_size": row["text_size"]
+        if row["text_size"] in {"small", "medium", "large"}
+        else "medium",
         "default_location_id": row["default_location_id"],
         "notification_categories": normalize_notification_categories(
             row.get("notification_categories")
@@ -208,6 +214,15 @@ def update_own_profile_settings(
                 detail="invalid_preferred_language",
             )
         settings_updates["preferred_language"] = language
+
+    if "text_size" in settings_updates:
+        text_size = str(settings_updates["text_size"]).strip().lower()
+        if text_size not in {"small", "medium", "large"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="invalid_text_size",
+            )
+        settings_updates["text_size"] = text_size
 
     if "display_timezone" in settings_updates:
         timezone_value = settings_updates["display_timezone"]

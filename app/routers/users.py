@@ -35,14 +35,19 @@ class UserSummary(BaseModel):
     is_active: bool
 
 
+class TrustPersonOut(BaseModel):
+    username: str
+    profile_image_url: str | None = None
+
+
 class AccountTrustOut(BaseModel):
     real_r: float
     vouch_weight: float
     bot_weight: float
     bootstrap_floor: bool
     bootstrap_floor_value: float | None = None
-    vouchers: list[str]
-    bot_markers: list[str]
+    vouchers: list[TrustPersonOut]
+    bot_markers: list[TrustPersonOut]
     viewer_stance: str | None = None
     viewer_can_vouch: bool = False
     viewer_can_mark_bot: bool = False
@@ -85,6 +90,8 @@ class UserSettings(BaseModel):
     require_follow_approval: bool
     preferred_language: str
     display_timezone: str | None = None
+    combine_feeds: bool = False
+    text_size: str = "medium"
     default_location_id: UUID | None = None
     notification_categories: list[str]
 
@@ -125,6 +132,8 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     require_follow_approval: bool | None = None
     preferred_language: str | None = None
     display_timezone: str | None = None
+    combine_feeds: bool | None = None
+    text_size: str | None = None
     default_location_id: UUID | None = None
     notification_categories: list[str] | None = None
 

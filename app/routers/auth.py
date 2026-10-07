@@ -16,11 +16,13 @@ from app.auth.cookies import (
     refresh_cookie_max_age_seconds,
     set_auth_cookies,
 )
-from app.auth.dependencies import bearer_scheme, resolve_refresh_token
+from app.auth.dependencies import bearer_scheme, get_current_user_id, resolve_refresh_token
 from app.config import get_settings
 from app.dependencies import get_db
 from app.services.auth import (
     authenticate_user,
+    change_password,
+    deactivate_account,
     enforce_auth_rate_limit,
     logout_refresh_token,
     logout_user,
@@ -131,9 +133,11 @@ def login(
 @router.post(
     "/refresh", response_model=RefreshResponse, dependencies=[Depends(enforce_auth_rate_limit)]
 )
-async def refresh(request: Request, response: Response) -> dict[str, object]:
+async def refresh(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> dict[str, object]:
     refresh_token = resolve_refresh_token(request)
-    auth_payload = await refresh_auth_session(refresh_token)
+    auth_payload = await refresh_auth_session(refresh_token, db=db)
     _apply_auth_cookies(response, auth_payload)
     return public_auth_payload(request, auth_payload)
 
@@ -162,3 +166,34 @@ async def logout(
             pass
     clear_auth_cookies(response)
     return {"ok": True}
+
+
+class PasswordChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class DeactivateAccountRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/password", response_model=LogoutResponse)
+def update_password(
+    payload: PasswordChangeRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    return change_password(db, current_user_id, payload.current_password, payload.new_password)
+
+
+@router.post("/deactivate", response_model=LogoutResponse)
+def deactivate(
+    payload: DeactivateAccountRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    return deactivate_account(db, current_user_id, payload.password)

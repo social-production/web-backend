@@ -19,9 +19,7 @@ from app.services.board import list_board_standing
 VALID_SORTS = frozenset({"popular", "recent"})
 _ZERO_INT = literal(0, Integer)
 PLATFORM_SLUG = "platform"
-PLATFORM_CHANNEL_DESCRIPTION = (
-    "The channel for the whole network. Follow it to see platform-wide projects, events, and governance."
-)
+PLATFORM_CHANNEL_DESCRIPTION = "The channel for the whole network. Follow it to see platform-wide projects, events, and governance."
 
 
 def ensure_platform_channel(db: Session) -> None:

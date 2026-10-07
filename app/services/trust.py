@@ -77,6 +77,7 @@ class TrustAccount:
     username: str
     completed_at: datetime | None
     layer2_active: bool
+    profile_image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,8 @@ class TrustAccountView:
     layer2_active: bool
     voucher_usernames: tuple[str, ...]
     bot_marker_usernames: tuple[str, ...]
+    voucher_image_urls: tuple[str | None, ...] = ()
+    bot_marker_image_urls: tuple[str | None, ...] = ()
 
 
 def trust_vote_detail() -> str:
@@ -131,12 +134,13 @@ def compute_trust_graph(
 ) -> dict[UUID, TrustAccountView]:
     by_id = {account.user_id: account for account in accounts}
     names = {account.user_id: account.username for account in accounts}
+    images = {account.user_id: account.profile_image_url for account in accounts}
     vouch_from: dict[UUID, list[UUID]] = defaultdict(list)
     bot_from: dict[UUID, list[UUID]] = defaultdict(list)
     vouch_to: dict[UUID, list[UUID]] = defaultdict(list)
     bot_to: dict[UUID, list[UUID]] = defaultdict(list)
-    voucher_names: dict[UUID, list[str]] = defaultdict(list)
-    marker_names: dict[UUID, list[str]] = defaultdict(list)
+    voucher_people: dict[UUID, list[tuple[str, str | None]]] = defaultdict(list)
+    marker_people: dict[UUID, list[tuple[str, str | None]]] = defaultdict(list)
     incoming: set[UUID] = set()
 
     for stance in stances:
@@ -147,12 +151,16 @@ def compute_trust_graph(
         if stance.kind == "vouch":
             vouch_from[stance.source_id].append(stance.target_id)
             vouch_to[stance.target_id].append(stance.source_id)
-            voucher_names[stance.target_id].append(names[stance.source_id])
+            voucher_people[stance.target_id].append(
+                (names[stance.source_id], images.get(stance.source_id))
+            )
             incoming.add(stance.target_id)
         elif stance.kind == "bot":
             bot_from[stance.source_id].append(stance.target_id)
             bot_to[stance.target_id].append(stance.source_id)
-            marker_names[stance.target_id].append(names[stance.source_id])
+            marker_people[stance.target_id].append(
+                (names[stance.source_id], images.get(stance.source_id))
+            )
             incoming.add(stance.target_id)
 
     completed = sorted(
@@ -212,8 +220,18 @@ def compute_trust_graph(
             can_mark_bot=can_mark,
             participation=raw.participation,
             layer2_active=account.layer2_active,
-            voucher_usernames=tuple(sorted(voucher_names.get(account.user_id, []))),
-            bot_marker_usernames=tuple(sorted(marker_names.get(account.user_id, []))),
+            voucher_usernames=tuple(
+                name for name, _image in sorted(voucher_people.get(account.user_id, []))
+            ),
+            bot_marker_usernames=tuple(
+                name for name, _image in sorted(marker_people.get(account.user_id, []))
+            ),
+            voucher_image_urls=tuple(
+                image for _name, image in sorted(voucher_people.get(account.user_id, []))
+            ),
+            bot_marker_image_urls=tuple(
+                image for _name, image in sorted(marker_people.get(account.user_id, []))
+            ),
         )
     return result
 
@@ -484,7 +502,9 @@ def _load_accounts(db: Session) -> list[TrustAccount]:
 
     settings = get_settings()
     now = datetime.now(UTC)
-    rows = db.execute(select(users.c.id, users.c.username, users.c.created_at)).all()
+    rows = db.execute(
+        select(users.c.id, users.c.username, users.c.created_at, users.c.profile_image_url)
+    ).all()
     guardrails = governance_guardrails_enabled()
     min_actions = settings.governance_min_meaningful_actions if guardrails else 0
     min_age = timedelta(
@@ -515,11 +535,11 @@ def _load_accounts(db: Session) -> list[TrustAccount]:
                 action_times[user_id].append(when)
 
     accounts: list[TrustAccount] = []
-    for user_id, username, created_at in rows:
+    for user_id, username, created_at, profile_image_url in rows:
         created = _aware(created_at)
         times = sorted(action_times.get(user_id, []))
         if not guardrails:
-            accounts.append(TrustAccount(user_id, username, created, True))
+            accounts.append(TrustAccount(user_id, username, created, True, profile_image_url))
             continue
         if min_actions <= 0:
             action_ready: datetime | None = created
@@ -544,7 +564,7 @@ def _load_accounts(db: Session) -> list[TrustAccount]:
         )
         if completed is None:
             active = False
-        accounts.append(TrustAccount(user_id, username, completed, active))
+        accounts.append(TrustAccount(user_id, username, completed, active, profile_image_url))
     return accounts
 
 
@@ -634,6 +654,16 @@ def trust_summaries(db: Session) -> dict[UUID, dict[str, object]]:
     }
 
 
+def _trust_people(
+    usernames: tuple[str, ...], images: tuple[str | None, ...]
+) -> list[dict[str, object]]:
+    people: list[dict[str, object]] = []
+    for index, username in enumerate(usernames):
+        image = images[index] if index < len(images) else None
+        people.append({"username": username, "profile_image_url": image})
+    return people
+
+
 def account_trust_payload(
     db: Session,
     target_id: UUID,
@@ -661,8 +691,8 @@ def account_trust_payload(
         "bootstrap_floor_value": (
             _round_ratio(view.floor) if view.bootstrap_floor_active else None
         ),
-        "vouchers": list(view.voucher_usernames),
-        "bot_markers": list(view.bot_marker_usernames),
+        "vouchers": _trust_people(view.voucher_usernames, view.voucher_image_urls),
+        "bot_markers": _trust_people(view.bot_marker_usernames, view.bot_marker_image_urls),
         "viewer_stance": stance,
         "viewer_can_vouch": bool(viewer and not same and viewer.can_vouch),
         "viewer_can_mark_bot": bool(viewer and not same and viewer.can_mark_bot),

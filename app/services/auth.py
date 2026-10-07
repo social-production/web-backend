@@ -4,10 +4,11 @@ import secrets
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import HTTPException, Request, status
 from redis.asyncio import Redis
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -213,7 +214,7 @@ def authenticate_user(db: Session, username: str, password: str) -> dict[str, ob
     return _issue_auth_bundle(user_row)
 
 
-async def refresh_auth_session(refresh_token: str) -> dict[str, object]:
+async def refresh_auth_session(refresh_token: str, db: Session | None = None) -> dict[str, object]:
     try:
         payload = verify_refresh_token(refresh_token)
     except Exception as exc:
@@ -238,6 +239,19 @@ async def refresh_auth_session(refresh_token: str) -> dict[str, object]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been revoked"
         )
+
+    if db is not None:
+        try:
+            user_id = UUID(subject)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+            ) from exc
+        active = db.execute(select(users.c.is_active).where(users.c.id == user_id)).scalar()
+        if not active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
+            )
 
     await _blacklist_token(jti, exp)
 
@@ -273,6 +287,59 @@ async def _is_token_blacklisted(jti: str) -> bool:
                 detail="Authentication service temporarily unavailable",
             )
         return False
+
+
+def _password_row(db: Session, user_id: UUID) -> Mapping[str, object]:
+    row = (
+        db.execute(
+            select(users.c.id, users.c.password_hash, users.c.is_active).where(
+                users.c.id == user_id
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None or not row["is_active"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
+        )
+    return row
+
+
+def _require_current_password(row: Mapping[str, object], password: str) -> None:
+    try:
+        matches = verify_password(password, row["password_hash"])
+    except ValueError:
+        matches = False
+    if not matches:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
+        )
+
+
+def change_password(
+    db: Session, user_id: UUID, current_password: str, new_password: str
+) -> dict[str, bool]:
+    if len(new_password) < 8 or len(new_password) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Password must be 8 to 128 characters",
+        )
+    row = _password_row(db, user_id)
+    _require_current_password(row, current_password)
+    db.execute(
+        update(users).where(users.c.id == user_id).values(password_hash=hash_password(new_password))
+    )
+    db.commit()
+    return {"ok": True}
+
+
+def deactivate_account(db: Session, user_id: UUID, password: str) -> dict[str, bool]:
+    row = _password_row(db, user_id)
+    _require_current_password(row, password)
+    db.execute(update(users).where(users.c.id == user_id).values(is_active=False))
+    db.commit()
+    return {"ok": True}
 
 
 async def logout_user(token: str) -> dict[str, bool]:

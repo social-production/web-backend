@@ -36,7 +36,7 @@ class JwtAuthProvider:
         )
 
     async def refresh(self, *, refresh_token: str) -> dict[str, object]:
-        return await auth_service.refresh_auth_session(refresh_token=refresh_token)
+        return await auth_service.refresh_auth_session(refresh_token=refresh_token, db=self._db)
 
     async def revoke_access(self, *, jti: str, ttl_seconds: int) -> None:
         store = get_token_revocation_store()

@@ -175,6 +175,7 @@ class FeedProvider(Protocol):
         current_user_id: UUID | None = None,
         window: str = "all",
         entity_filter: str = "all",
+        timezone_name: str | None = None,
     ) -> dict[str, object]: ...
 
     def get_home_feed(
@@ -186,6 +187,7 @@ class FeedProvider(Protocol):
         offset: int = 0,
         window: str = "all",
         entity_filter: str = "all",
+        timezone_name: str | None = None,
     ) -> dict[str, object]: ...
 
     def get_personal_feed(
@@ -198,4 +200,5 @@ class FeedProvider(Protocol):
         scope: str = "following",
         window: str = "all",
         entity_filter: str = "all",
+        timezone_name: str | None = None,
     ) -> dict[str, object]: ...

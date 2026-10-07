@@ -19,6 +19,11 @@ from app.services.content import (
     get_thread_by_slug,
     uncommit_help_request_role,
 )
+from app.services.content.shares import (
+    share_help_request_with_user,
+    share_post_with_user,
+    share_thread_with_user,
+)
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -187,6 +192,12 @@ class HelpRequestActionResponse(BaseModel):
     role_id: UUID
 
 
+class ShareTargetRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    username: str = Field(min_length=1, max_length=64)
+
+
 class HelpRequestResponse(BaseModel):
     help_request: HelpRequestOut
 
@@ -288,3 +299,33 @@ def uncommit_help_request_role_endpoint(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return uncommit_help_request_role(db, current_user_id, help_request_id, role_id)
+
+
+@router.post("/posts/{post_id}/share")
+def share_post(
+    post_id: UUID,
+    payload: ShareTargetRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return share_post_with_user(db, current_user_id, post_id, payload.username)
+
+
+@router.post("/threads/{slug}/share")
+def share_thread(
+    slug: str,
+    payload: ShareTargetRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return share_thread_with_user(db, current_user_id, slug, payload.username)
+
+
+@router.post("/help-requests/{help_request_id}/share")
+def share_help_request(
+    help_request_id: UUID,
+    payload: ShareTargetRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return share_help_request_with_user(db, current_user_id, help_request_id, payload.username)

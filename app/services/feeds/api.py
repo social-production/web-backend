@@ -93,6 +93,7 @@ def get_public_feed(
     current_user_id: UUID | None = None,
     window: str = "all",
     entity_filter: str = "all",
+    timezone_name: str | None = None,
 ) -> dict[str, object]:
     safe_sort = normalize_sort(sort)
     safe_window = normalize_window(window)
@@ -106,6 +107,7 @@ def get_public_feed(
         public_only=True,
         window=safe_window,
         entity_filter=safe_filter,
+        timezone_name=timezone_name,
     )
 
 
@@ -117,6 +119,7 @@ def get_home_feed(
     offset: int = 0,
     window: str = "all",
     entity_filter: str = "all",
+    timezone_name: str | None = None,
 ) -> dict[str, object]:
     safe_sort = normalize_sort(sort)
     safe_window = normalize_window(window)
@@ -132,6 +135,7 @@ def get_home_feed(
         current_user_id=current_user_id,
         window=safe_window,
         entity_filter=safe_filter,
+        timezone_name=timezone_name,
     )
 
 
@@ -144,6 +148,7 @@ def get_personal_feed(
     scope: str = "following",
     window: str = "all",
     entity_filter: str = "all",
+    timezone_name: str | None = None,
 ) -> dict[str, object]:
     safe_sort = normalize_sort(sort)
     safe_window = normalize_window(window)
@@ -224,7 +229,7 @@ def get_personal_feed(
     combined = union_all(*parts).subquery("personal_feed")
 
     stmt = select(combined)
-    stmt = _apply_schedule_window_filter(stmt, combined, safe_window)
+    stmt = _apply_schedule_window_filter(stmt, combined, safe_window, timezone_name)
     stmt = (
         stmt.order_by(*sort_order_columns(combined, safe_sort))
         .limit(bounded_limit)
@@ -280,6 +285,7 @@ def get_user_feed(
     offset: int = 0,
     window: str = "all",
     entity_filter: str = "all",
+    timezone_name: str | None = None,
 ) -> dict[str, object]:
     safe_sort = normalize_sort(sort)
     safe_window = normalize_window(window)
@@ -550,7 +556,7 @@ def get_user_feed(
     combined = union_all(*parts).subquery("user_feed")
 
     stmt = select(combined)
-    stmt = _apply_schedule_window_filter(stmt, combined, safe_window)
+    stmt = _apply_schedule_window_filter(stmt, combined, safe_window, timezone_name)
     stmt = (
         stmt.order_by(*sort_order_columns(combined, safe_sort))
         .limit(bounded_limit)
@@ -607,6 +613,7 @@ def get_scope_feed(
     current_user_id: UUID | None = None,
     window: str = "all",
     entity_filter: str = "all",
+    timezone_name: str | None = None,
 ) -> dict[str, object]:
     safe_sort = normalize_sort(sort)
     safe_window = normalize_window(window)
@@ -639,6 +646,7 @@ def get_scope_feed(
             current_user_id=current_user_id,
             window=safe_window,
             entity_filter=safe_filter,
+            timezone_name=timezone_name,
         )
 
     if scope_kind == "community":
@@ -661,6 +669,7 @@ def get_scope_feed(
             current_user_id=current_user_id,
             window=safe_window,
             entity_filter=safe_filter,
+            timezone_name=timezone_name,
         )
 
     return empty_response

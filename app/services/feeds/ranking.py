@@ -164,7 +164,16 @@ def apply_schedule_window_filter(query, combined, window: str, timezone_name: st
         thread_bounds.append(combined.c.last_activity_at < end)
     thread_clause = and_(combined.c.entity_type == "thread", *thread_bounds)
 
-    return query.where(or_(scheduled_clause, thread_clause))
+    posted_at = func.coalesce(combined.c.created_at, combined.c.last_activity_at)
+    posted_bounds = [posted_at >= start]
+    if end is not None:
+        posted_bounds.append(posted_at < end)
+    posted_clause = and_(
+        combined.c.entity_type.in_(("post", "comment_activity")),
+        *posted_bounds,
+    )
+
+    return query.where(or_(scheduled_clause, thread_clause, posted_clause))
 
 
 def trending_score_column(combined: Subquery):

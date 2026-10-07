@@ -22,6 +22,7 @@ class PostgresFeedProvider:
         current_user_id: UUID | None = None,
         window: str = "all",
         entity_filter: str = "all",
+        timezone_name: str | None = None,
     ) -> dict[str, object]:
         return get_public_feed(
             self._db,
@@ -31,6 +32,7 @@ class PostgresFeedProvider:
             current_user_id=current_user_id,
             window=window,
             entity_filter=entity_filter,
+            timezone_name=timezone_name,
         )
 
     def get_home_feed(
@@ -42,6 +44,7 @@ class PostgresFeedProvider:
         offset: int = 0,
         window: str = "all",
         entity_filter: str = "all",
+        timezone_name: str | None = None,
     ) -> dict[str, object]:
         return get_home_feed(
             self._db,
@@ -51,6 +54,7 @@ class PostgresFeedProvider:
             offset=offset,
             window=window,
             entity_filter=entity_filter,
+            timezone_name=timezone_name,
         )
 
     def get_personal_feed(
@@ -63,6 +67,7 @@ class PostgresFeedProvider:
         scope: str = "following",
         window: str = "all",
         entity_filter: str = "all",
+        timezone_name: str | None = None,
     ) -> dict[str, object]:
         return get_personal_feed(
             self._db,
@@ -73,4 +78,5 @@ class PostgresFeedProvider:
             scope=scope,
             window=window,
             entity_filter=entity_filter,
+            timezone_name=timezone_name,
         )
