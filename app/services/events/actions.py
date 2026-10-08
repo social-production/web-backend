@@ -20,6 +20,7 @@ from app.models import (
     event_value_importance_votes,
     event_values,
     events,
+    subject_chat_reads,
     users,
 )
 from app.services.access_control import COMMUNITY_SCOPE_KIND, is_scope_member
@@ -110,6 +111,15 @@ def join_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, objec
             user_id=current_user_id,
             action_type="join-event",
             metadata={"event_id": str(event_row["id"]), "event_slug": event_row["slug"]},
+        )
+        db.execute(
+            update(subject_chat_reads)
+            .where(
+                subject_chat_reads.c.user_id == current_user_id,
+                subject_chat_reads.c.subject_type == "event",
+                subject_chat_reads.c.subject_id == event_row["id"],
+            )
+            .values(hidden_at=None)
         )
         try:
             db.commit()

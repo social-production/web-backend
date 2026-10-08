@@ -20,6 +20,7 @@ from app.models import (
     project_value_importance_votes,
     project_values,
     projects,
+    subject_chat_reads,
     users,
 )
 from app.services.activity_history import (
@@ -85,6 +86,15 @@ def join_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, obj
             user_id=current_user_id,
             action_type="join-project",
             metadata={"project_id": str(project_row["id"]), "project_slug": project_row["slug"]},
+        )
+        db.execute(
+            update(subject_chat_reads)
+            .where(
+                subject_chat_reads.c.user_id == current_user_id,
+                subject_chat_reads.c.subject_type == "project",
+                subject_chat_reads.c.subject_id == project_row["id"],
+            )
+            .values(hidden_at=None)
         )
         try:
             db.commit()

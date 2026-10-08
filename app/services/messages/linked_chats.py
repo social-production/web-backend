@@ -18,6 +18,7 @@ from app.models import (
     project_memberships,
     projects,
     subject_chat_reads,
+    users,
 )
 from app.services.messages.util import _iso
 
@@ -209,6 +210,17 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
                 current_user_id,
                 last_read_at,
             )
+            member_names = [
+                username
+                for (username,) in db.execute(
+                    select(users.c.username)
+                    .select_from(
+                        project_memberships.join(users, users.c.id == project_memberships.c.user_id)
+                    )
+                    .where(project_memberships.c.project_id == row["id"])
+                    .order_by(users.c.username.asc())
+                ).all()
+            ]
 
             items.append(
                 {
@@ -222,6 +234,8 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
                     if last_comment
                     else _iso(row["last_activity_at"]),
                     "comment_count": row["comment_count"],
+                    "member_count": len(member_names),
+                    "members": member_names,
                     "unread_count": unread_count,
                 }
             )

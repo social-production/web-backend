@@ -170,6 +170,8 @@ class LinkedChatOut(BaseModel):
     preview: str
     last_message_at: str
     comment_count: int
+    member_count: int = 0
+    members: list[str] = []
     unread_count: int = 0
     list_pinned: bool = False
     muted: bool = False
