@@ -1,14 +1,29 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 from starlette.formparsers import MultiPartException
 
-from app.auth.dependencies import get_current_user_id
+from app.auth.cookies import ACCESS_COOKIE
+from app.auth.dependencies import _is_blacklisted_jti, get_current_user_id
+from app.auth.jwt import JWTError, get_access_token_payload
+from app.cache import get_redis_client
+from app.db import SessionLocal
 from app.dependencies import get_db, get_messaging_provider
 from app.ports import MessagingProvider
 from app.services.messages import (
@@ -31,6 +46,7 @@ from app.services.messages import (
     start_direct_conversation,
     unpin_message,
 )
+from app.services.messages.calls import RedisCallStore, handle_call_signal
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
@@ -526,3 +542,85 @@ def update_linked_chat_preferences(
         muted=payload.muted,
         hidden=payload.hidden,
     )
+
+
+async def _websocket_user_id(websocket: WebSocket) -> UUID | None:
+    token = websocket.cookies.get(ACCESS_COOKIE)
+    if not token:
+        authorization = websocket.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+    if not token:
+        return None
+    try:
+        payload = get_access_token_payload(token)
+    except JWTError:
+        return None
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti or await _is_blacklisted_jti(jti):
+        return None
+    subject = payload.get("sub")
+    if not isinstance(subject, str):
+        return None
+    try:
+        return UUID(subject)
+    except ValueError:
+        return None
+
+
+@router.websocket("/calls/ws")
+async def call_signals(websocket: WebSocket) -> None:
+    """Authenticated signal socket. Only direct-conversation members may signal."""
+    user_id = await _websocket_user_id(websocket)
+    await websocket.accept()
+    if user_id is None:
+        await websocket.close(code=4401)
+        return
+
+    store = RedisCallStore(get_redis_client())
+    user_key = str(user_id)
+    await store.join_presence(user_key)
+    pubsub = get_redis_client().pubsub()
+    await pubsub.subscribe(store.channel(user_key))
+
+    async def pump() -> None:
+        async for message in pubsub.listen():
+            if message.get("type") != "message":
+                continue
+            data = message.get("data")
+            if isinstance(data, str):
+                await websocket.send_text(data)
+
+    async def keepalive() -> None:
+        while True:
+            await asyncio.sleep(10)
+            await store.refresh_presence(user_key)
+
+    pump_task = asyncio.create_task(pump())
+    keepalive_task = asyncio.create_task(keepalive())
+    try:
+        while True:
+            raw_text = await websocket.receive_text()
+            try:
+                raw = json.loads(raw_text)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict) or raw.get("type") == "ping":
+                await store.refresh_presence(user_key)
+                continue
+            db = SessionLocal()
+            try:
+                deliveries = await handle_call_signal(db, store, user_id, raw)
+            finally:
+                db.close()
+            for delivery in deliveries:
+                await store.publish(str(delivery.user_id), delivery.envelope)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pump_task.cancel()
+        keepalive_task.cancel()
+        await asyncio.gather(pump_task, keepalive_task, return_exceptions=True)
+        await pubsub.unsubscribe(store.channel(user_key))
+        await pubsub.aclose()
+        await store.leave_presence(user_key)
