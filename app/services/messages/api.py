@@ -16,10 +16,17 @@ from app.services.messages.conversations import (
     list_conversations,
     remove_group_member,
     rename_group_conversation,
+    set_conversation_preferences,
     start_direct_conversation,
 )
-from app.services.messages.linked_chats import get_linked_chats, mark_linked_chat_read
+from app.services.messages.linked_chats import (
+    get_linked_chats,
+    mark_linked_chat_read,
+    set_linked_chat_preferences,
+)
 from app.services.messages.messaging import (
+    delete_message,
+    edit_message,
     get_messages_for_conversation,
     get_total_unread_message_count,
     mark_conversation_as_read,
@@ -35,6 +42,8 @@ __all__ = [
     "get_total_unread_message_count",
     "list_conversations",
     "mark_conversation_as_read",
+    "delete_message",
+    "edit_message",
     "mark_linked_chat_read",
     "pin_message",
     "prepare_attachment",
@@ -43,6 +52,8 @@ __all__ = [
     "rename_group_conversation",
     "search_message_contacts",
     "send_message",
+    "set_conversation_preferences",
+    "set_linked_chat_preferences",
     "start_direct_conversation",
     "unpin_message",
 ]

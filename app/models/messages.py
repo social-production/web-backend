@@ -26,6 +26,9 @@ conversation_members = table(
     sa.Column("user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("joined_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("last_read_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("list_pinned_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("muted_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("hidden_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 messages = table(
@@ -40,6 +43,8 @@ messages = table(
     user_fk("sender_id", nullable=True, ondelete="SET NULL"),
     sa.Column("encrypted_body", sa.Text, nullable=False),
     sa.Column("encryption_version", sa.SmallInteger, nullable=False, server_default="1"),
+    sa.Column("reply_to_id", UUID, sa.ForeignKey("messages.id", ondelete="SET NULL"), nullable=True),
+    sa.Column("edited_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
     sa.Column("moderation_reason", sa.String(24), nullable=True),
     created_at(),
@@ -52,6 +57,9 @@ subject_chat_reads = table(
     sa.Column("subject_type", sa.String(length=16), primary_key=True),
     sa.Column("subject_id", UUID, primary_key=True),
     sa.Column("last_read_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("list_pinned_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("muted_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("hidden_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 blobs = table(

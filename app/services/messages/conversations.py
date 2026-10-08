@@ -27,6 +27,8 @@ def _serialize_conversation(
     *,
     preview: str = "",
     unread_count: int = 0,
+    list_pinned: bool = False,
+    muted: bool = False,
 ) -> dict[str, object]:
     return {
         "id": row["id"],
@@ -38,6 +40,8 @@ def _serialize_conversation(
         "last_message_at": row["last_message_at"],
         "preview": preview,
         "unread_count": unread_count,
+        "list_pinned": list_pinned,
+        "muted": muted,
         "participants": participants,
     }
 
@@ -369,15 +373,25 @@ def create_group_conversation(
 def list_conversations(db: Session, current_user_id: UUID) -> dict[str, object]:
     rows = (
         db.execute(
-            select(conversations, conversation_members.c.last_read_at)
+            select(
+                conversations,
+                conversation_members.c.last_read_at,
+                conversation_members.c.list_pinned_at,
+                conversation_members.c.muted_at,
+                conversation_members.c.hidden_at,
+            )
             .select_from(
                 conversations.join(
                     conversation_members,
                     conversations.c.id == conversation_members.c.conversation_id,
                 )
             )
-            .where(conversation_members.c.user_id == current_user_id)
+            .where(
+                conversation_members.c.user_id == current_user_id,
+                conversation_members.c.hidden_at.is_(None),
+            )
             .order_by(
+                conversation_members.c.list_pinned_at.desc().nullslast(),
                 conversations.c.last_message_at.desc().nullslast(),
                 conversations.c.created_at.desc(),
             )
@@ -403,10 +417,55 @@ def list_conversations(db: Session, current_user_id: UUID) -> dict[str, object]:
                 participants,
                 preview=preview,
                 unread_count=unread_count,
+                list_pinned=row["list_pinned_at"] is not None,
+                muted=row["muted_at"] is not None,
             )
         )
 
     return {"total": len(items), "items": items}
+
+
+def set_conversation_preferences(
+    db: Session,
+    current_user_id: UUID,
+    conversation_id: UUID,
+    *,
+    pinned: bool | None = None,
+    muted: bool | None = None,
+    hidden: bool | None = None,
+) -> dict[str, object]:
+    conversation_row = _get_conversation_row(db, conversation_id)
+    _ensure_member(db, conversation_id, current_user_id)
+    now = datetime.now(UTC)
+
+    if hidden and conversation_row["kind"] == "group":
+        db.execute(
+            delete(conversation_members).where(
+                conversation_members.c.conversation_id == conversation_id,
+                conversation_members.c.user_id == current_user_id,
+            )
+        )
+        db.commit()
+        return {"ok": True, "left": True}
+
+    values: dict[str, object] = {}
+    if pinned is not None:
+        values["list_pinned_at"] = now if pinned else None
+    if muted is not None:
+        values["muted_at"] = now if muted else None
+    if hidden is not None:
+        values["hidden_at"] = now if hidden else None
+    if values:
+        db.execute(
+            update(conversation_members)
+            .where(
+                conversation_members.c.conversation_id == conversation_id,
+                conversation_members.c.user_id == current_user_id,
+            )
+            .values(**values)
+        )
+    db.commit()
+    return {"ok": True, "left": False}
 
 
 def rename_group_conversation(

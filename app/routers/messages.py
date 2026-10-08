@@ -14,6 +14,8 @@ from app.ports import MessagingProvider
 from app.services.messages import (
     add_group_member,
     create_group_conversation,
+    delete_message,
+    edit_message,
     get_linked_chats,
     get_messages_for_conversation,
     list_conversations,
@@ -24,6 +26,8 @@ from app.services.messages import (
     remove_group_member,
     rename_group_conversation,
     send_message,
+    set_conversation_preferences,
+    set_linked_chat_preferences,
     start_direct_conversation,
     unpin_message,
 )
@@ -49,6 +53,8 @@ class ConversationOut(BaseModel):
     last_message_at: object
     preview: str = ""
     unread_count: int = 0
+    list_pinned: bool = False
+    muted: bool = False
     participants: list[ParticipantOut]
 
 
@@ -90,6 +96,19 @@ class SendMessageRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     body: str = Field(min_length=1)
+    reply_to_id: UUID | None = None
+
+
+class EditMessageRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    body: str = Field(min_length=1)
+
+
+class ChatListPreferencesRequest(BaseModel):
+    pinned: bool | None = None
+    muted: bool | None = None
+    hidden: bool | None = None
 
 
 class AttachmentOut(BaseModel):
@@ -107,6 +126,10 @@ class MessageOut(BaseModel):
     body: str
     created_at: object
     updated_at: object
+    edited_at: object | None = None
+    reply_to_id: UUID | None = None
+    reply_author: str | None = None
+    reply_preview: str | None = None
     attachments: list[AttachmentOut] = Field(default_factory=list)
 
 
@@ -148,6 +171,8 @@ class LinkedChatOut(BaseModel):
     last_message_at: str
     comment_count: int
     unread_count: int = 0
+    list_pinned: bool = False
+    muted: bool = False
 
 
 class LinkedChatsListResponse(BaseModel):
@@ -231,6 +256,7 @@ async def send_conversation_message(
 ) -> dict[str, object]:
     content_type = request.headers.get("content-type", "")
     attachments: list = []
+    reply_to_id: UUID | None = None
     if "multipart/form-data" in content_type:
         try:
             form = await request.form(max_part_size=MAX_UPLOAD_PART_BYTES)
@@ -244,6 +270,15 @@ async def send_conversation_message(
         from app.services.messages.attachments import prepare_form_uploads
 
         attachments = await prepare_form_uploads(form)
+        raw_reply = form.get("reply_to_id")
+        if isinstance(raw_reply, str) and raw_reply.strip():
+            try:
+                reply_to_id = UUID(raw_reply.strip())
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Reply target is invalid",
+                ) from exc
     else:
         try:
             payload = SendMessageRequest.model_validate(await request.json())
@@ -253,6 +288,7 @@ async def send_conversation_message(
                 detail="Message body is required",
             ) from exc
         body = payload.body
+        reply_to_id = payload.reply_to_id
 
     return send_message(
         db=db,
@@ -260,6 +296,58 @@ async def send_conversation_message(
         conversation_id=conversation_id,
         body=body,
         attachments=attachments,
+        reply_to_id=reply_to_id,
+    )
+
+
+@router.patch(
+    "/conversations/{conversation_id}/messages/{message_id}", response_model=MessageResponse
+)
+def edit_conversation_message(
+    conversation_id: UUID,
+    message_id: UUID,
+    payload: EditMessageRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return edit_message(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        body=payload.body,
+    )
+
+
+@router.delete("/conversations/{conversation_id}/messages/{message_id}", response_model=PinActionResponse)
+def delete_conversation_message(
+    conversation_id: UUID,
+    message_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return delete_message(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        message_id=message_id,
+    )
+
+
+@router.patch("/conversations/{conversation_id}/preferences", response_model=PinActionResponse)
+def update_conversation_preferences(
+    conversation_id: UUID,
+    payload: ChatListPreferencesRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return set_conversation_preferences(
+        db=db,
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        pinned=payload.pinned,
+        muted=payload.muted,
+        hidden=payload.hidden,
     )
 
 
@@ -416,4 +504,23 @@ def mark_linked_chat_read_route(
         current_user_id=current_user_id,
         subject_type=subject_type,
         subject_id=subject_id,
+    )
+
+
+@router.patch("/linked-chats/{subject_type}/{subject_id}/preferences", response_model=PinActionResponse)
+def update_linked_chat_preferences(
+    subject_type: str,
+    subject_id: UUID,
+    payload: ChatListPreferencesRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return set_linked_chat_preferences(
+        db=db,
+        current_user_id=current_user_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        pinned=payload.pinned,
+        muted=payload.muted,
+        hidden=payload.hidden,
     )

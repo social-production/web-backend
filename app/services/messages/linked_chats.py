@@ -315,8 +315,81 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
                 }
             )
 
-    items.sort(key=lambda x: x["last_message_at"], reverse=True)
-    return {"total": len(items), "items": items}
+    pref_rows = (
+        db.execute(
+            select(subject_chat_reads).where(subject_chat_reads.c.user_id == current_user_id)
+        )
+        .mappings()
+        .all()
+    )
+    prefs = {(row["subject_type"], str(row["subject_id"])): row for row in pref_rows}
+    visible = []
+    for item in items:
+        pref = prefs.get((item["kind"], item["entity_id"]))
+        if pref is not None and pref["hidden_at"] is not None:
+            continue
+        item["list_pinned"] = pref is not None and pref["list_pinned_at"] is not None
+        item["muted"] = pref is not None and pref["muted_at"] is not None
+        visible.append(item)
+    visible.sort(key=lambda item: item["last_message_at"], reverse=True)
+    visible.sort(key=lambda item: 0 if item["list_pinned"] else 1)
+    return {"total": len(visible), "items": visible}
+
+
+def set_linked_chat_preferences(
+    db: Session,
+    current_user_id: UUID,
+    subject_type: str,
+    subject_id: UUID,
+    *,
+    pinned: bool | None = None,
+    muted: bool | None = None,
+    hidden: bool | None = None,
+) -> dict[str, object]:
+    normalized_subject_type = subject_type.strip().lower()
+    if normalized_subject_type not in {"project", "event", "help_request"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="subject_type must be project, event, or help_request",
+        )
+
+    now = datetime.now(UTC)
+    existing = db.execute(
+        select(subject_chat_reads.c.user_id).where(
+            subject_chat_reads.c.user_id == current_user_id,
+            subject_chat_reads.c.subject_type == normalized_subject_type,
+            subject_chat_reads.c.subject_id == subject_id,
+        )
+    ).first()
+    values: dict[str, object] = {}
+    if pinned is not None:
+        values["list_pinned_at"] = now if pinned else None
+    if muted is not None:
+        values["muted_at"] = now if muted else None
+    if hidden is not None:
+        values["hidden_at"] = now if hidden else None
+    if existing is None:
+        db.execute(
+            insert(subject_chat_reads).values(
+                user_id=current_user_id,
+                subject_type=normalized_subject_type,
+                subject_id=subject_id,
+                last_read_at=now,
+                **values,
+            )
+        )
+    elif values:
+        db.execute(
+            update(subject_chat_reads)
+            .where(
+                subject_chat_reads.c.user_id == current_user_id,
+                subject_chat_reads.c.subject_type == normalized_subject_type,
+                subject_chat_reads.c.subject_id == subject_id,
+            )
+            .values(**values)
+        )
+    db.commit()
+    return {"ok": True}
 
 
 def mark_linked_chat_read(
