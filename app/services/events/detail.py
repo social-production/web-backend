@@ -573,6 +573,8 @@ async def get_event_detail(
         else:
             live_activities.append(activity_payload)
 
+    live_activities.reverse()
+
     ended_activity_ids = [UUID(activity["id"]) for activity in ended_activity_payloads]
     event_ratings_by_activity = load_event_ratings_by_activity(db, ended_activity_ids, usernames)
     activity_history, history_needs_commit = build_event_history_items(

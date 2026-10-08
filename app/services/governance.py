@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from uuid import UUID
 
@@ -37,6 +38,9 @@ from app.services.moderation.thresholds import (
 from app.services.notifications import create_notification
 
 logger = logging.getLogger(__name__)
+
+MENTION_PATTERN = re.compile(r"(?<![\w])@([A-Za-z0-9_-]{1,32})")
+MENTION_SUBJECT_TYPES = {"project", "event", "thread", "post"}
 
 COMMENTABLE_SUBJECT_TYPES = frozenset({"thread", "post", "event", "project", "help_request"})
 VOTABLE_TARGET_TYPES = frozenset({"thread", "post", "comment", "help_request", "platform_feedback"})
@@ -289,6 +293,16 @@ def _comment_notification_body(subject_type: str, *, is_reply: bool) -> str:
     return labels.get(subject_type, "Someone commented on content you follow.")
 
 
+def _mentioned_user_ids(db: Session, body: str, author_id: UUID) -> list[UUID]:
+    names = {match.group(1).lower() for match in MENTION_PATTERN.finditer(body)}
+    if not names:
+        return []
+    rows = db.execute(
+        select(users.c.id, users.c.username).where(func.lower(users.c.username).in_(list(names)))
+    ).all()
+    return [row[0] for row in rows if row[0] != author_id]
+
+
 def _notify_comment_recipients(
     db: Session,
     *,
@@ -297,6 +311,7 @@ def _notify_comment_recipients(
     subject_id: UUID,
     comment_id: UUID,
     parent_id: UUID | None,
+    body: str,
 ) -> None:
     context = _comment_notification_context(db, subject_type, subject_id)
     if context is None:
@@ -342,6 +357,24 @@ def _notify_comment_recipients(
             target_id=comment_id,
             title=title,
             body=notification_body,
+            href=href,
+        )
+
+    if subject_type not in MENTION_SUBJECT_TYPES:
+        return
+
+    for recipient_id in _mentioned_user_ids(db, body, current_user_id):
+        create_notification(
+            db=db,
+            recipient_id=recipient_id,
+            actor_id=current_user_id,
+            kind="mention",
+            surface=subject_type,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            target_id=comment_id,
+            title=title,
+            body="You were mentioned.",
             href=href,
         )
 
@@ -550,6 +583,7 @@ def add_comment(
             subject_id=subject_id,
             comment_id=created["id"],
             parent_id=parent_id,
+            body=stripped_body,
         )
     except Exception:
         logger.exception(
