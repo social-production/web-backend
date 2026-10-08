@@ -280,17 +280,9 @@ def _comment_notification_context(
     return None
 
 
-def _comment_notification_body(subject_type: str, *, is_reply: bool) -> str:
-    if is_reply:
-        return "Someone replied to your comment."
-    labels = {
-        "thread": "Someone commented on your thread.",
-        "post": "Someone commented on your post.",
-        "project": "Someone commented on your project.",
-        "event": "Someone commented on your event.",
-        "help_request": "Someone commented on your help request.",
-    }
-    return labels.get(subject_type, "Someone commented on content you follow.")
+def _comment_notification_body(comment_body: str, *, is_reply: bool) -> str:
+    prefix = "reply-comment" if is_reply else "reply-subject"
+    return f"{prefix}\n{comment_body.strip()}"
 
 
 def _mentioned_user_ids(db: Session, body: str, author_id: UUID) -> list[UUID]:
@@ -341,7 +333,7 @@ def _notify_comment_recipients(
                 recipient_ids.append(parent_author_id)
 
     notification_body = _comment_notification_body(
-        subject_type,
+        body,
         is_reply=parent_id is not None,
     )
 

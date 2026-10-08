@@ -9,7 +9,7 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import notifications, user_settings, users
+from app.models import comments, notifications, user_settings, users
 from app.services.notification_preferences import (
     allowed_notification_kinds,
     recipient_allows_notification,
@@ -22,6 +22,19 @@ def _iso(value: object | None) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _reply_body_with_comment(row: Mapping[str, object], comments_by_id: dict) -> dict[str, object]:
+    data = dict(row)
+    body = str(data.get("body") or "")
+    if data.get("kind") != "reply" or body.startswith(("reply-comment\n", "reply-subject\n")):
+        return data
+    comment = comments_by_id.get(data.get("target_id"))
+    if comment is None:
+        return data
+    prefix = "reply-comment" if comment["parent_id"] is not None else "reply-subject"
+    data["body"] = f"{prefix}\n{str(comment['body']).strip()}"
+    return data
 
 
 def _serialize_notification(row: Mapping[str, object]) -> dict[str, object]:
@@ -150,7 +163,28 @@ def list_notifications(
         .mappings()
         .all()
     )
-    items = [_serialize_notification(row) for row in rows]
+    comment_ids = [
+        row["target_id"]
+        for row in rows
+        if row["kind"] == "reply"
+        and row["target_id"] is not None
+        and not str(row["body"]).startswith(("reply-comment\n", "reply-subject\n"))
+    ]
+    comments_by_id = {}
+    if comment_ids:
+        comment_rows = (
+            db.execute(
+                select(comments.c.id, comments.c.body, comments.c.parent_id).where(
+                    comments.c.id.in_(comment_ids)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        comments_by_id = {comment["id"]: comment for comment in comment_rows}
+    items = [
+        _serialize_notification(_reply_body_with_comment(row, comments_by_id)) for row in rows
+    ]
 
     return {
         "total": len(items),
