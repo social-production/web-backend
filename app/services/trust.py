@@ -683,7 +683,13 @@ def account_trust_payload(
             )
         ).scalar_one_or_none()
     same = viewer_id is not None and viewer_id == target_id
+    from app.services.standing import FULL, next_step, standing_for
+
+    target_standing = standing_for(db, target_id)
+    viewer_full = viewer_id is not None and standing_for(db, viewer_id).level == FULL
     return {
+        "standing": target_standing.level,
+        "standing_next_step": next_step(db, target_id) if same else None,
         "real_r": _round_ratio(view.real_r),
         "vouch_weight": _round_ratio(view.vouch_weight),
         "bot_weight": _round_ratio(view.bot_weight),
@@ -694,8 +700,8 @@ def account_trust_payload(
         "vouchers": _trust_people(view.voucher_usernames, view.voucher_image_urls),
         "bot_markers": _trust_people(view.bot_marker_usernames, view.bot_marker_image_urls),
         "viewer_stance": stance,
-        "viewer_can_vouch": bool(viewer and not same and viewer.can_vouch),
-        "viewer_can_mark_bot": bool(viewer and not same and viewer.can_mark_bot),
+        "viewer_can_vouch": bool(viewer and not same and (viewer.can_vouch or viewer_full)),
+        "viewer_can_mark_bot": bool(viewer and not same and (viewer.can_mark_bot or viewer_full)),
         "viewer_can_clear": stance is not None,
     }
 

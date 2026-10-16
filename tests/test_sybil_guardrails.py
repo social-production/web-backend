@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import (
+    account_stances,
     event_memberships,
     events,
     meaningful_actions,
@@ -24,7 +25,6 @@ from app.services.moderation.reports import record_content_removal_penalty
 from app.services.projects.actions import commit_project_activity_role
 from app.utils.votes import (
     CONTENT_REMOVED_ACTION,
-    WARMUP_DETAIL,
     ensure_established_voter,
     is_established_voter,
     weekly_active_event_members,
@@ -96,7 +96,7 @@ def test_new_account_is_refused_when_warmup_is_on(
     with pytest.raises(HTTPException) as raised:
         ensure_established_voter(db_transaction, user_id)
     assert raised.value.status_code == 403
-    assert raised.value.detail == WARMUP_DETAIL
+    assert str(raised.value.detail).startswith("Voting opens after")
 
 
 def test_old_account_with_counted_actions_is_accepted(
@@ -246,6 +246,23 @@ def test_quorum_excludes_unestablished_accounts(
     _record(db_transaction, ready_id, "create-comment")
     _record(db_transaction, fresh_id, "join-project")
     _clear_population_cache()
+    # Warm but not yet full: votes count half, but not toward quorum.
+    assert weekly_active_project_members(db_transaction, project_id) == 0
+
+    # One founding account (the oldest) starts full and can vouch.
+    monkeypatch.setattr(get_settings(), "governance_bootstrap_markers", 1)
+    founder_id, _founder_name = seed_user(db_transaction, username_prefix="sybil-founder")
+    _age_account(db_transaction, founder_id, hours=1_000_000)
+    db_transaction.execute(
+        insert(account_stances).values(
+            source_user_id=founder_id,
+            target_user_id=ready_id,
+            stance="vouch",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    _clear_population_cache()
     assert weekly_active_project_members(db_transaction, project_id) == 1
     assert weekly_active_event_members(db_transaction, event_id) == 1
     assert weekly_active_users_global(db_transaction) == before_global + 1
@@ -352,7 +369,7 @@ def test_new_account_cannot_volunteer_but_can_take_an_activity_role(
     with pytest.raises(HTTPException) as raised:
         volunteer_as_candidate(db_transaction, user_id)
     assert raised.value.status_code == 403
-    assert raised.value.detail == WARMUP_DETAIL
+    assert str(raised.value.detail).startswith("Voting opens after")
 
     monkeypatch.setattr(Session, "commit", lambda self: self.flush())
     result = commit_project_activity_role(

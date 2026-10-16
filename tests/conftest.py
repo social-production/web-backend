@@ -10,6 +10,11 @@ from cryptography.fernet import Fernet
 if not os.environ.get("MESSAGE_ENCRYPTION_KEY", "").strip():
     os.environ["MESSAGE_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
+# Most tests seed brand-new accounts and vote straight away; standing tests switch the
+# warm-up back on with monkeypatch.
+os.environ.setdefault("GOVERNANCE_MIN_ACCOUNT_AGE_HOURS", "0")
+os.environ.setdefault("GOVERNANCE_MIN_MEANINGFUL_ACTIONS", "0")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import insert, update

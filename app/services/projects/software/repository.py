@@ -172,6 +172,7 @@ def vote_repository_replacement(
             )
 
         vote_summary, passes, can_still_pass = _compute_vote_summary(
+            db,
             _vote_rows(db, project_repository_replacement_votes, request_id),
             resolve_project_vote_population(
                 db, project_row["id"], bool(project_row.get("is_platform_tagged"))

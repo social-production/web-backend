@@ -148,6 +148,7 @@ def vote_merge_capability_change(
             )
 
         vote_summary, passes, can_still_pass = _compute_vote_summary(
+            db,
             _vote_rows(db, project_merge_capability_change_votes, request_id),
             resolve_project_vote_population(
                 db, project_row["id"], bool(project_row.get("is_platform_tagged"))

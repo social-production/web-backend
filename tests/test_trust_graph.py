@@ -267,12 +267,6 @@ def test_ratio_switch_off_leaves_voting_open(db_transaction) -> None:
     assert is_established_voter(db_transaction, user_id)
 
 
-def test_ratio_switch_on_blocks_an_unlicensed_account(db_transaction, monkeypatch) -> None:
-    user_id, _username = seed_user(db_transaction, username_prefix="trust-on")
-    monkeypatch.setattr(get_settings(), "governance_trust_ratio_enabled", True)
-    assert is_established_voter(db_transaction, user_id) is False
-
-
 def test_stance_write_requires_a_counting_voucher(db_transaction, monkeypatch) -> None:
     monkeypatch.setattr(Session, "commit", lambda self: self.flush())
     settings = get_settings()

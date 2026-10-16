@@ -51,6 +51,7 @@ def build_software_history_entries(
 
     for row in pr_rows:
         vote_summary, passes, can_still = _compute_vote_summary(
+            db,
             _vote_rows(db, project_pull_request_votes, row["id"]),
             vote_context_population,
             current_user_id,
@@ -120,6 +121,7 @@ def build_software_history_entries(
     )
     for row in merge_rows:
         vote_summary, passes, can_still = _compute_vote_summary(
+            db,
             _vote_rows(db, project_merge_capability_change_votes, row["id"]),
             vote_context_population,
             current_user_id,
@@ -166,6 +168,7 @@ def build_software_history_entries(
     )
     for row in repo_rows:
         vote_summary, passes, can_still = _compute_vote_summary(
+            db,
             _vote_rows(db, project_repository_replacement_votes, row["id"]),
             vote_context_population,
             current_user_id,

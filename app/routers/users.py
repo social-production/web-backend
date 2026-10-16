@@ -41,6 +41,8 @@ class TrustPersonOut(BaseModel):
 
 
 class AccountTrustOut(BaseModel):
+    standing: str = "full"
+    standing_next_step: str | None = None
     real_r: float
     vouch_weight: float
     bot_weight: float

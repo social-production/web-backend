@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     turnstile_secret_key: str = ""
     # Governance warm-up. 0 leaves voting unchanged. Set both to require age and activity
     # before an account can vote, count toward quorum, or volunteer as a moderator.
-    governance_min_account_age_hours: int = 0
-    governance_min_meaningful_actions: int = 0
+    governance_min_account_age_hours: int = 168
+    governance_min_meaningful_actions: int = 3
     governance_meaningful_action_types: str = (
         "create-comment,create-post,create-thread,create-help-request,"
         "create-project,create-event,submit-project-plan,submit-event-plan,"
@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     governance_limited_threshold: float = 0.30
     governance_inert_threshold: float = 0.10
     governance_bootstrap_markers: int = 10
+    # Standing (app/services/standing.py): weight of a warm voter's vote before they earn full standing.
+    standing_warm_weight: float = 0.5
     governance_bootstrap_target: int = 20
 
     @field_validator("database_url", mode="before")

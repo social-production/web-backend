@@ -112,7 +112,12 @@ def _message_preview(db: Session, message_id: UUID, encrypted_body: str) -> str:
 def _conversation_preview(db: Session, conversation_id: UUID) -> str:
     last_message = (
         db.execute(
-            select(messages.c.id, messages.c.encrypted_body)
+            select(
+                messages.c.id,
+                messages.c.encrypted_body,
+                messages.c.kind,
+                messages.c.call_outcome,
+            )
             .where(messages.c.conversation_id == conversation_id)
             .order_by(messages.c.created_at.desc())
             .limit(1)
@@ -122,6 +127,8 @@ def _conversation_preview(db: Session, conversation_id: UUID) -> str:
     )
     if last_message is None:
         return ""
+    if last_message["kind"] == "call":
+        return "📞 Voice call" if last_message["call_outcome"] == "completed" else "📞 Missed call"
     return _message_preview(db, last_message["id"], last_message["encrypted_body"])
 
 

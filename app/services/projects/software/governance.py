@@ -28,10 +28,12 @@ from app.services.projects.software.helpers import (
     _stage_label,
     _vote_rows,
 )
+from app.services.standing import weights_for
 from app.utils.votes import resolve_project_vote_population
 
 
 def _compute_vote_summary(
+    db: Session,
     vote_rows: list[Mapping[str, object]],
     member_count: int,
     current_user_id: UUID | None,
@@ -41,6 +43,7 @@ def _compute_vote_summary(
         member_count,
         current_user_id,
         approval_threshold_ratio=APPROVAL_THRESHOLD_RATIO,
+        voter_weights=weights_for(db, [row["voter_id"] for row in vote_rows]),
     )
 
 
@@ -135,6 +138,7 @@ def _governance_payload(
     replaceable_pull_requests: list[dict[str, object]] = []
     for row in pr_rows:
         vote_summary, passes, can_still_pass = _compute_vote_summary(
+            db,
             _vote_rows(db, project_pull_request_votes, row["id"]),
             vote_context_population,
             current_user_id if viewer_is_member else None,
@@ -196,6 +200,7 @@ def _governance_payload(
     merge_change_requests: list[dict[str, object]] = []
     for row in merge_request_rows:
         vote_summary, passes, can_still_pass = _compute_vote_summary(
+            db,
             _vote_rows(db, project_merge_capability_change_votes, row["id"]),
             vote_context_population,
             current_user_id if viewer_is_member else None,
@@ -241,6 +246,7 @@ def _governance_payload(
     repository_history: list[dict[str, object]] = []
     for row in repo_request_rows:
         vote_summary, passes, can_still_pass = _compute_vote_summary(
+            db,
             _vote_rows(db, project_repository_replacement_votes, row["id"]),
             vote_context_population,
             current_user_id if viewer_is_member else None,

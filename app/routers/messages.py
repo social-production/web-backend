@@ -47,6 +47,7 @@ from app.services.messages import (
     unpin_message,
 )
 from app.services.messages.calls import RedisCallStore, handle_call_signal
+from app.services.messages.messaging import log_call
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
@@ -147,6 +148,9 @@ class MessageOut(BaseModel):
     reply_author: str | None = None
     reply_preview: str | None = None
     attachments: list[AttachmentOut] = Field(default_factory=list)
+    kind: str = "text"
+    call_outcome: str | None = None
+    call_duration_seconds: int | None = None
 
 
 class PinOut(BaseModel):
@@ -442,6 +446,29 @@ def unpin_conversation_message(
         current_user_id=current_user_id,
         conversation_id=conversation_id,
         message_id=message_id,
+    )
+
+
+class CallLogRequest(BaseModel):
+    call_id: UUID
+    outcome: str = Field(pattern="^(completed|missed|declined)$")
+    duration_seconds: int = Field(default=0, ge=0)
+
+
+@router.post("/conversations/{conversation_id}/call-log", response_model=MessageResponse)
+def log_call_route(
+    conversation_id: UUID,
+    payload: CallLogRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return log_call(
+        db,
+        current_user_id,
+        conversation_id,
+        payload.call_id,
+        payload.outcome,
+        payload.duration_seconds,
     )
 
 

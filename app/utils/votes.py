@@ -193,41 +193,33 @@ def _layer2_allows(db: Session, user_id: UUID) -> bool:
 
 
 def is_established_voter(db: Session, user_id: UUID) -> bool:
-    """Layer 2, and when the ratio switch is on, a licensed effective ratio."""
+    """Warm or full standing (see app/services/standing.py)."""
     if not _layer2_allows(db, user_id):
         return False
-    if not get_settings().governance_trust_ratio_enabled:
-        return True
-    from app.services.trust import user_can_vote
+    from app.services.standing import standing_for
 
-    return user_can_vote(db, user_id)
+    return standing_for(db, user_id).can_vote
 
 
 def ensure_established_voter(db: Session, user_id: UUID) -> None:
     if not _layer2_allows(db, user_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=WARMUP_DETAIL)
-    if not get_settings().governance_trust_ratio_enabled:
-        return
-    from app.services.trust import trust_vote_detail, user_can_vote
+        from app.services.standing import next_step
 
-    if user_can_vote(db, user_id):
-        return
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=trust_vote_detail())
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=next_step(db, user_id))
+    from app.services.standing import next_step, standing_for
+
+    if not standing_for(db, user_id).can_vote:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=next_step(db, user_id))
 
 
 def _append_voter_filters(db: Session, filters: list, user_id_column) -> None:
-    clause = _established_clause(user_id_column)
-    if clause is not None:
-        filters.append(clause)
-    if not get_settings().governance_trust_ratio_enabled:
+    """Quorum population counts full members only, so fresh accounts can't fake or block quorum."""
+    if not governance_guardrails_enabled():
         return
-    from app.services.trust import voting_user_ids
+    from app.services.standing import full_member_ids
 
-    voter_ids = voting_user_ids(db)
-    if voter_ids:
-        filters.append(user_id_column.in_(voter_ids))
-    else:
-        filters.append(sql_false())
+    member_ids = full_member_ids(db)
+    filters.append(user_id_column.in_(member_ids) if member_ids else sql_false())
 
 
 def weekly_active_users_global(db: Session) -> int:

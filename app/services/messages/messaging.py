@@ -68,6 +68,9 @@ def _serialize_message(
         "moderation_reason": moderation_reason,
         "report": report,
         "attachments": attachments or [],
+        "kind": str(row.get("kind") or "text"),
+        "call_outcome": row.get("call_outcome"),
+        "call_duration_seconds": row.get("call_duration_seconds"),
     }
 
 
@@ -260,6 +263,62 @@ def send_message(
             created, plaintext, attachments=stored_attachments, reply=reply
         )
     }
+
+
+CALL_OUTCOMES = frozenset({"completed", "missed", "declined"})
+
+
+def log_call(
+    db: Session,
+    current_user_id: UUID,
+    conversation_id: UUID,
+    call_id: UUID,
+    outcome: str,
+    duration_seconds: int,
+) -> dict[str, object]:
+    """Add one 'Voice call · 4:12' line to the chat. Either phone may report; the first wins."""
+    _get_conversation_row(db, conversation_id)
+    _ensure_member(db, conversation_id, current_user_id)
+    if outcome not in CALL_OUTCOMES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown call outcome"
+        )
+    existing = db.execute(select(messages).where(messages.c.call_id == call_id)).mappings().first()
+    if existing is not None:
+        return {"message": _serialize_message(existing, "")}
+    now = datetime.now(UTC)
+    try:
+        created = (
+            db.execute(
+                insert(messages)
+                .values(
+                    conversation_id=conversation_id,
+                    sender_id=current_user_id,
+                    encrypted_body=encrypt_message(""),
+                    encryption_version=1,
+                    kind="call",
+                    call_id=call_id,
+                    call_outcome=outcome,
+                    call_duration_seconds=max(0, min(int(duration_seconds), 24 * 3600)),
+                )
+                .returning(messages)
+            )
+            .mappings()
+            .one()
+        )
+        db.execute(
+            update(conversations)
+            .where(conversations.c.id == conversation_id)
+            .values(last_message_at=now)
+        )
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = (
+            db.execute(select(messages).where(messages.c.call_id == call_id)).mappings().one()
+        )
+        return {"message": _serialize_message(existing, "")}
+    return {"message": _serialize_message(created, "")}
 
 
 def get_messages_for_conversation(

@@ -49,6 +49,11 @@ messages = table(
     sa.Column("edited_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("moderation_state", sa.String(24), nullable=False, server_default="visible"),
     sa.Column("moderation_reason", sa.String(24), nullable=True),
+    # "text" or "call" (a finished voice call shown as a line in the chat).
+    sa.Column("kind", sa.String(16), nullable=False, server_default="text"),
+    sa.Column("call_id", UUID, nullable=True, unique=True),
+    sa.Column("call_outcome", sa.String(16), nullable=True),
+    sa.Column("call_duration_seconds", sa.Integer, nullable=True),
     created_at(),
     updated_at(),
 )

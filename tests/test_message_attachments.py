@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -212,3 +213,38 @@ def test_sender_sees_when_the_other_person_has_read(client: TestClient) -> None:
     peer_read_at = after.json()["peer_read_at"]
     assert peer_read_at is not None
     assert peer_read_at >= after.json()["items"][-1]["created_at"][:19]
+
+
+def test_a_finished_call_is_logged_once_in_the_chat(client: TestClient) -> None:
+    owner, member, outsider = _seed_pair("calllog")
+    conversation_id = _direct(client, owner, member[1])
+    call_id = str(uuid4())
+    payload = {"call_id": call_id, "outcome": "completed", "duration_seconds": 252}
+
+    first = client.post(
+        f"/messages/conversations/{conversation_id}/call-log", headers=_auth(owner[0]), json=payload
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["message"]["kind"] == "call"
+    assert first.json()["message"]["call_duration_seconds"] == 252
+
+    again = client.post(
+        f"/messages/conversations/{conversation_id}/call-log",
+        headers=_auth(member[0]),
+        json=payload,
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["message"]["id"] == first.json()["message"]["id"]
+
+    blocked = client.post(
+        f"/messages/conversations/{conversation_id}/call-log",
+        headers=_auth(outsider[0]),
+        json={**payload, "call_id": str(uuid4())},
+    )
+    assert blocked.status_code in (403, 404), blocked.text
+
+    thread = client.get(
+        f"/messages/conversations/{conversation_id}/messages", headers=_auth(member[0])
+    )
+    items = thread.json()["items"]
+    assert [item["kind"] for item in items].count("call") == 1

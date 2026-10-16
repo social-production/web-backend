@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.services.standing import weights_for
 from app.utils.votes import required_votes
 
 APPROVAL_THRESHOLD = 0.66
@@ -22,26 +23,35 @@ def compute_vote_summary(
     id_column: str = "request_id",
 ) -> dict[str, object]:
     id_col = getattr(vote_table.c, id_column)
-    rows = db.execute(select(vote_table.c.vote).where(id_col == request_id)).all()
+    rows = db.execute(
+        select(vote_table.c.voter_id, vote_table.c.vote).where(id_col == request_id)
+    ).all()
 
+    weights = weights_for(db, [voter_id for voter_id, _vote in rows])
     yes_count = 0
     no_count = 0
-    for (vote,) in rows:
+    yes_weight = 0.0
+    no_weight = 0.0
+    for voter_id, vote in rows:
         if vote == "yes":
             yes_count += 1
+            yes_weight += weights.get(voter_id, 0.0)
         elif vote == "no":
             no_count += 1
+            no_weight += weights.get(voter_id, 0.0)
 
+    # Head counts are shown; standing-weighted totals decide approval and quorum.
     total_votes = yes_count + no_count
-    approval_ratio = (yes_count / total_votes) if total_votes > 0 else 0.0
+    total_weight = yes_weight + no_weight
+    approval_ratio = (yes_weight / total_weight) if total_weight > 0 else 0.0
     votes_required = required_votes(member_count)
-    meets_quorum = total_votes >= votes_required
+    meets_quorum = total_weight + 1e-9 >= votes_required
     meets_approval = approval_ratio >= approval_threshold
     is_passing = meets_quorum and meets_approval
 
-    remaining_eligible = max(0, member_count - total_votes)
-    max_yes = yes_count + remaining_eligible
-    max_total = total_votes + remaining_eligible
+    remaining_eligible = max(0.0, member_count - total_weight)
+    max_yes = yes_weight + remaining_eligible
+    max_total = total_weight + remaining_eligible
     can_meet_quorum = max_total >= votes_required
     can_meet_approval = (
         (max_yes / max_total * 100.0) >= (approval_threshold * 100.0) if max_total > 0 else False
@@ -89,32 +99,40 @@ def compute_software_vote_summary(
     current_user_id: UUID | None,
     *,
     approval_threshold_ratio: float = SOFTWARE_APPROVAL_THRESHOLD_RATIO,
+    voter_weights: dict | None = None,
 ) -> tuple[dict[str, object], bool, bool]:
     yes_count = 0
     no_count = 0
+    yes_weight = 0.0
+    no_weight = 0.0
     active_vote: str | None = None
+    weights = voter_weights or {}
 
     for row in vote_rows:
         vote_value = str(row["vote"]).lower()
+        weight = weights.get(row["voter_id"], 1.0)
         if vote_value == "yes":
             yes_count += 1
+            yes_weight += weight
         elif vote_value == "no":
             no_count += 1
+            no_weight += weight
 
         if current_user_id is not None and row["voter_id"] == current_user_id:
             active_vote = vote_value
 
     total_votes = yes_count + no_count
+    total_weight = yes_weight + no_weight
     eligible_voter_count = max(member_count, 0)
     votes_required = required_votes(eligible_voter_count)
-    approval_ratio = (yes_count / total_votes) if total_votes > 0 else 0.0
+    approval_ratio = (yes_weight / total_weight) if total_weight > 0 else 0.0
     approval_percent = approval_ratio * 100.0
-    meets_quorum = total_votes >= votes_required
+    meets_quorum = total_weight + 1e-9 >= votes_required
     passes = meets_quorum and approval_ratio >= approval_threshold_ratio
 
-    remaining_eligible_votes = max(0, eligible_voter_count - total_votes)
-    max_yes = yes_count + remaining_eligible_votes
-    max_total = total_votes + remaining_eligible_votes
+    remaining_eligible_votes = max(0.0, eligible_voter_count - total_weight)
+    max_yes = yes_weight + remaining_eligible_votes
+    max_total = total_weight + remaining_eligible_votes
     can_meet_approval = (
         (max_yes / max_total) >= approval_threshold_ratio if max_total > 0 else False
     )
