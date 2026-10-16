@@ -205,3 +205,39 @@ def test_comment_attachment_limits_and_private_event_access(client: TestClient) 
 
     hidden = client.get(f"/governance/attachments/{attachment_id}", headers=_auth(outsider[0]))
     assert hidden.status_code == 404, hidden.text
+
+
+def test_author_can_delete_a_photo_comment_and_others_cannot(client: TestClient) -> None:
+    db = SessionLocal()
+    try:
+        owner = seed_user(db, username_prefix="cmt-del")
+        other = seed_user(db, username_prefix="cmt-other")
+        project_id = _seed_project(db, owner[0])
+        db.commit()
+    finally:
+        db.close()
+
+    sent = client.post(
+        "/governance/comments",
+        headers=_auth(owner[0]),
+        data={"subject_type": "project", "subject_id": str(project_id), "body": ""},
+        files={"file": ("dot.png", TINY_PNG, "image/png")},
+    )
+    assert sent.status_code == 200, sent.text
+    comment = sent.json()["comment"]
+    attachment_id = comment["attachments"][0]["id"]
+
+    refused = client.delete(f"/governance/comments/{comment['id']}", headers=_auth(other[0]))
+    assert refused.status_code == 403, refused.text
+
+    removed = client.delete(f"/governance/comments/{comment['id']}", headers=_auth(owner[0]))
+    assert removed.status_code == 200, removed.text
+
+    listed = client.get(
+        "/governance/comments",
+        headers=_auth(owner[0]),
+        params={"subject_type": "project", "subject_id": str(project_id)},
+    )
+    assert all(item["id"] != comment["id"] for item in listed.json()["items"])
+    gone = client.get(f"/governance/attachments/{attachment_id}", headers=_auth(owner[0]))
+    assert gone.status_code == 404, gone.text

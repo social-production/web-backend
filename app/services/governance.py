@@ -825,3 +825,42 @@ def vote_report(
         report_id=report_id,
         vote=vote,
     )
+
+
+def delete_own_comment(db: Session, current_user_id: UUID, comment_id: UUID) -> dict[str, object]:
+    """Let the author take back a chat comment, photos and files included.
+
+    Replies from other people stay: a comment with replies keeps its place as "Deleted message".
+    """
+    from app.adapters.postgres.blob_store import PostgresBlobStore
+    from app.models import comment_attachments, comments
+
+    row = db.execute(select(comments).where(comments.c.id == comment_id)).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found")
+    if row["author_id"] != current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="You can only delete your own comment"
+        )
+    keys = list(
+        db.execute(
+            select(comment_attachments.c.storage_key).where(
+                comment_attachments.c.comment_id == comment_id
+            )
+        ).scalars()
+    )
+    db.execute(delete(comment_attachments).where(comment_attachments.c.comment_id == comment_id))
+    store = PostgresBlobStore(db)
+    for key in keys:
+        store.delete(key)
+    has_replies = db.execute(
+        select(comments.c.id).where(comments.c.parent_id == comment_id).limit(1)
+    ).first()
+    if has_replies:
+        db.execute(
+            update(comments).where(comments.c.id == comment_id).values(body="Deleted message")
+        )
+    else:
+        db.execute(delete(comments).where(comments.c.id == comment_id))
+    db.commit()
+    return {"ok": True}

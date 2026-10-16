@@ -226,6 +226,17 @@ def download_comment_attachment(
     )
 
 
+@router.delete("/comments/{comment_id}")
+def delete_comment_route(
+    comment_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.governance import delete_own_comment
+
+    return delete_own_comment(db, current_user_id, comment_id)
+
+
 @router.get("/comments", response_model=CommentsListResponse)
 def list_comments(
     subject_type: str = Query(pattern="^(thread|post|event|project|help_request)$"),
