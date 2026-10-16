@@ -47,6 +47,8 @@ def _enable_warmup(
     monkeypatch.setattr(settings, "governance_min_account_age_hours", age)
     monkeypatch.setattr(settings, "governance_min_meaningful_actions", actions)
     monkeypatch.setattr(settings, "governance_removal_penalty_hours", penalty)
+    # No founding accounts by default, so results don't depend on how empty the database is.
+    monkeypatch.setattr(settings, "governance_bootstrap_markers", 0)
 
 
 def _age_account(db: Session, user_id, *, hours: int) -> None:

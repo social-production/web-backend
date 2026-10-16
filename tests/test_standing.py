@@ -81,6 +81,7 @@ def _stance(db: Session, source, target, stance: str) -> None:
 
 
 def test_new_account_can_take_part_but_not_vote(db_transaction: Session, warmup_on) -> None:
+    _founder(db_transaction)
     user_id, _name = seed_user(db_transaction, username_prefix="standing-new")
     assert standing_for(db_transaction, user_id).level == NEW
     with pytest.raises(HTTPException) as raised:
@@ -90,6 +91,7 @@ def test_new_account_can_take_part_but_not_vote(db_transaction: Session, warmup_
 
 
 def test_warm_account_votes_at_half_weight(db_transaction: Session, warmup_on) -> None:
+    _founder(db_transaction)
     user_id = _warm_user(db_transaction, "standing-warm")
     standing = standing_for(db_transaction, user_id)
     assert standing.level == WARM
