@@ -712,6 +712,9 @@ def update_project_details(
     slug: str,
     title: str,
     description: str,
+    location_label: str | None = None,
+    location_id: UUID | None = None,
+    is_online: bool = False,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     if project_row["project_mode"] != "personal-service":
@@ -732,12 +735,20 @@ def update_project_details(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="description is required"
         )
 
-    try:
-        db.execute(
-            update(projects)
-            .where(projects.c.id == project_row["id"])
-            .values(title=normalized_title, description=normalized_description)
+    values: dict[str, object] = {"title": normalized_title, "description": normalized_description}
+    cleaned_location = (location_label or "").strip()
+    if cleaned_location:
+        from app.services.locations.resolve import ensure_location_id
+
+        values["location_id"], values["location_label"] = ensure_location_id(
+            db,
+            location_id=location_id,
+            location_label=cleaned_location,
+            is_online=is_online,
         )
+
+    try:
+        db.execute(update(projects).where(projects.c.id == project_row["id"]).values(**values))
         db.commit()
     except IntegrityError as exc:
         db.rollback()

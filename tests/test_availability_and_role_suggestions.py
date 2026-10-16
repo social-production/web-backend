@@ -315,3 +315,130 @@ def test_online_activity_meeting_link_is_for_members(db_transaction, isolated_cl
         },
     )
     assert rejected.status_code == 422
+
+
+def test_one_off_slot_request_flow_for_both_people(db_transaction, isolated_client):
+    creator_id, _ = seed_user(db_transaction, username_prefix="oneoff-creator")
+    requester_id, _ = seed_user(db_transaction, username_prefix="oneoff-req")
+    _channel_id, channel_slug = seed_channel_with_membership(db_transaction, creator_id=creator_id)
+    db_transaction.flush()
+    creator = _auth_header(creator_id)
+    requester = _auth_header(requester_id)
+
+    created = isolated_client.post(
+        "/projects",
+        headers=creator,
+        json={
+            "title": "Bike repair",
+            "description": "Fix flats",
+            "project_mode": "personal-service",
+            "location_label": "Online",
+            "channel_slugs": [channel_slug],
+            "request_mode": "calendar",
+        },
+    )
+    assert created.status_code == 200, created.text
+    slug = created.json()["project"]["slug"]
+
+    start = datetime.now(UTC) + timedelta(days=3)
+    one_off = isolated_client.post(
+        f"/projects/{slug}/activities",
+        headers=creator,
+        json={
+            "title": "Available",
+            "scheduled_at": start.isoformat(),
+            "ends_at": (start + timedelta(hours=2)).isoformat(),
+            "location_label": "Online",
+            "note": "Open slot",
+            "role_requirements": [{"label": "Service lead", "required_count": 1}],
+        },
+    )
+    assert one_off.status_code == 200, one_off.text
+
+    request_resp = isolated_client.post(
+        f"/projects/{slug}/service-requests",
+        headers=requester,
+        json={
+            "title": "Flat tyre",
+            "body": "Rear wheel",
+            "scheduled_at": start.isoformat(),
+            "ends_at": (start + timedelta(hours=1)).isoformat(),
+        },
+    )
+    assert request_resp.status_code == 200, request_resp.text
+    request_id = request_resp.json()["request"]["id"]
+
+    off_schedule = isolated_client.post(
+        f"/projects/{slug}/service-requests",
+        headers=requester,
+        json={
+            "title": "Off hours",
+            "body": "Night",
+            "scheduled_at": (start + timedelta(days=1)).isoformat(),
+            "ends_at": (start + timedelta(days=1, hours=1)).isoformat(),
+        },
+    )
+    assert off_schedule.status_code == 422, off_schedule.text
+
+    requester_view = isolated_client.get(f"/projects/{slug}", headers=requester).json()
+    statuses = {
+        item["id"]: item["status"]
+        for item in requester_view["lifecycle"]["requestSystem"]["requests"]
+    }
+    assert statuses == {request_id: "open"}
+
+    declined = isolated_client.patch(
+        f"/projects/{slug}/service-requests/{request_id}",
+        headers=creator,
+        json={"status": "declined", "reason": "Away that week"},
+    )
+    assert declined.status_code == 200, declined.text
+    assert declined.json()["request"]["decline_reason"] == "Away that week"
+
+    requester_kinds = [
+        item["kind"]
+        for item in isolated_client.get("/notifications", headers=requester).json()["items"]
+    ]
+    assert "svc-request" in requester_kinds
+
+    cancel_declined = isolated_client.patch(
+        f"/projects/{slug}/service-requests/{request_id}",
+        headers=requester,
+        json={"status": "cancelled"},
+    )
+    assert cancel_declined.status_code == 409
+
+
+def test_personal_service_creator_can_move_the_location(db_transaction, isolated_client):
+    creator_id, _ = seed_user(db_transaction, username_prefix="move-creator")
+    _channel_id, channel_slug = seed_channel_with_membership(db_transaction, creator_id=creator_id)
+    db_transaction.flush()
+    creator = _auth_header(creator_id)
+
+    created = isolated_client.post(
+        "/projects",
+        headers=creator,
+        json={
+            "title": "Sewing help",
+            "description": "Hems and patches",
+            "project_mode": "personal-service",
+            "location_label": "Online",
+            "channel_slugs": [channel_slug],
+            "request_mode": "direct",
+        },
+    )
+    assert created.status_code == 200, created.text
+    slug = created.json()["project"]["slug"]
+
+    moved = isolated_client.patch(
+        f"/projects/{slug}/details",
+        headers=creator,
+        json={
+            "title": "Sewing help",
+            "description": "Hems and patches",
+            "location_label": "Brunswick Library, Melbourne",
+        },
+    )
+    assert moved.status_code == 200, moved.text
+    detail = isolated_client.get(f"/projects/{slug}", headers=creator).json()
+    assert detail["locationLabel"].startswith("Brunswick Library")

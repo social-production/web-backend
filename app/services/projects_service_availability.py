@@ -291,7 +291,7 @@ def expand_availability_slots(
                 "startAt": start.isoformat(),
                 "endAt": end.isoformat(),
                 "scheduledAt": start.isoformat(),
-                "held": False,
+                "held": True,
                 "bookings": [],
                 "statusTone": "green",
             }
@@ -309,7 +309,7 @@ def request_fits_open_slot(
     ends_at: datetime,
 ) -> bool:
     for slot in expand_availability_slots(db, project_id=project_id, viewer_is_creator=False):
-        if slot.get("source") != "rule" or slot.get("held"):
+        if slot.get("source") == "request" or slot.get("held"):
             continue
         start = datetime.fromisoformat(str(slot["startAt"]))
         end = datetime.fromisoformat(str(slot["endAt"]))

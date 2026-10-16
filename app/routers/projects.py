@@ -229,6 +229,9 @@ class ProjectDetailsUpdateRequest(BaseModel):
 
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
+    location_label: str | None = Field(default=None, max_length=160)
+    location_id: UUID | None = None
+    is_online: bool = False
 
 
 class ShareTargetRequest(BaseModel):
@@ -514,6 +517,9 @@ async def update_project_details_route(
         slug=slug,
         title=payload.title,
         description=payload.description,
+        location_label=payload.location_label,
+        location_id=payload.location_id,
+        is_online=payload.is_online,
     )
 
 
