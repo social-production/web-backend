@@ -36,11 +36,14 @@ def _serialize_user(row: Mapping[str, object]) -> dict[str, object]:
 
 
 def _serialize_channel(row: Mapping[str, object]) -> dict[str, object]:
+    from app.services.scope_governance import image_url
+
     return {
         "id": row["id"],
         "slug": row["slug"],
         "name": row["name"],
         "description": row["description"],
+        "image_url": image_url("channel", row),
         "created_by": row["created_by"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -48,12 +51,16 @@ def _serialize_channel(row: Mapping[str, object]) -> dict[str, object]:
 
 
 def _serialize_community(row: Mapping[str, object]) -> dict[str, object]:
+    from app.services.scope_governance import image_url
+
     return {
         "id": row["id"],
         "slug": row["slug"],
         "name": row["name"],
         "description": row["description"],
         "join_policy": row["join_policy"],
+        "governance": row.get("governance") or "collaborative",
+        "image_url": image_url("community", row),
         "created_by": row["created_by"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -513,6 +520,7 @@ def create_community(
     name: str,
     description: str,
     join_policy: str = "open",
+    governance: str = "collaborative",
 ) -> dict[str, object]:
     display_name = validate_handle(name, field_label="Community name")
     canonical_slug = canonicalize_handle(display_name)
@@ -544,6 +552,12 @@ def create_community(
                     description=description.strip(),
                     join_policy=normalized_join_policy,
                     created_by=current_user_id,
+                    # Only private communities can be organizer-run; open ones are always voted.
+                    governance=(
+                        "organizer"
+                        if normalized_join_policy == "closed" and governance == "organizer"
+                        else "collaborative"
+                    ),
                 )
                 .returning(
                     communities.c.id,
@@ -603,10 +617,13 @@ def get_channel_by_slug(
     viewer_is_member = False
     if current_user_id is not None:
         viewer_is_member = any(str(r[0]) == str(current_user_id) for r in member_rows)
+    from app.services.scope_governance import open_vote_count
+
     return {
         "channel": _serialize_channel(row),
         "member_count": len(member_rows),
         "viewer_is_member": viewer_is_member,
+        "open_votes": open_vote_count(db, current_user_id, "channel", row["id"]),
     }
 
 
@@ -625,10 +642,13 @@ def get_community_by_slug(
     if current_user_id is not None:
         viewer_is_member = any(str(r[0]) == str(current_user_id) for r in member_rows)
 
+    from app.services.scope_governance import open_vote_count
+
     result: dict[str, object] = {
         "community": _serialize_community(row),
         "member_count": len(member_rows),
         "viewer_is_member": viewer_is_member,
+        "open_votes": open_vote_count(db, current_user_id, "community", row["id"]),
     }
     return result
 

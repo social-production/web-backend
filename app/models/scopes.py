@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from app.models.base import (
+    JSONB,
     UUID,
     created_at,
     table,
@@ -18,6 +19,8 @@ channels = table(
     sa.Column("name", sa.String(120), nullable=False),
     sa.Column("description", sa.Text, nullable=False),
     user_fk("created_by", nullable=True, ondelete="SET NULL"),
+    sa.Column("image_storage_key", sa.Text, nullable=True),
+    sa.Column("image_content_type", sa.String(127), nullable=True),
     created_at(),
     updated_at(),
 )
@@ -30,6 +33,10 @@ communities = table(
     sa.Column("description", sa.Text, nullable=False),
     sa.Column("join_policy", sa.String(16), nullable=False),
     user_fk("created_by", nullable=True, ondelete="SET NULL"),
+    sa.Column("image_storage_key", sa.Text, nullable=True),
+    sa.Column("image_content_type", sa.String(127), nullable=True),
+    # "collaborative" (members vote) or "organizer" (organizers edit; private communities only).
+    sa.Column("governance", sa.String(16), nullable=False, server_default="collaborative"),
     created_at(),
     updated_at(),
 )
@@ -72,4 +79,36 @@ scope_confidence_votes = table(
     created_at(),
     updated_at(),
     sa.CheckConstraint("target_user_id <> voter_id", name="scope_confidence_votes_not_self"),
+)
+
+
+# Member-voted changes to a channel or community (app/services/scope_governance.py).
+scope_proposals = table(
+    "scope_proposals",
+    uuid_pk(),
+    sa.Column("scope_kind", sa.String(16), nullable=False),
+    sa.Column("scope_id", UUID, nullable=False),
+    sa.Column("kind", sa.String(24), nullable=False),
+    sa.Column("payload", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+    user_fk("proposer_id", nullable=True, ondelete="SET NULL"),
+    sa.Column("status", sa.String(16), nullable=False, server_default="open"),
+    sa.Column(
+        "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    ),
+    sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+scope_proposal_votes = table(
+    "scope_proposal_votes",
+    sa.Column(
+        "proposal_id",
+        UUID,
+        sa.ForeignKey("scope_proposals.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("vote", sa.String(8), nullable=False),
+    sa.Column(
+        "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    ),
 )

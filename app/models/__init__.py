@@ -115,6 +115,8 @@ from app.models.scopes import (
     scope_confidence_votes,
     scope_invites,
     scope_memberships,
+    scope_proposal_votes,
+    scope_proposals,
 )
 from app.models.search import searchable_documents
 from app.models.users import (
@@ -145,6 +147,8 @@ __all__ = [
     "channels",
     "communities",
     "scope_memberships",
+    "scope_proposal_votes",
+    "scope_proposals",
     "scope_invites",
     "scope_confidence_votes",
     "posts",

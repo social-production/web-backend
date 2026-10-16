@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,7 @@ class CommunityCreateRequest(BaseModel):
     name: str = Field(min_length=3, max_length=32)
     description: str = Field(min_length=1, max_length=2000)
     join_policy: str = Field(default="open", min_length=1, max_length=16)
+    governance: str = Field(default="collaborative", pattern="^(collaborative|organizer)$")
 
 
 class ScopeJoinResponse(BaseModel):
@@ -72,12 +73,14 @@ class ChannelResponse(BaseModel):
     channel: dict[str, object]
     member_count: int | None = None
     viewer_is_member: bool = False
+    open_votes: int = 0
 
 
 class CommunityResponse(BaseModel):
     community: dict[str, object]
     member_count: int | None = None
     viewer_is_member: bool = False
+    open_votes: int = 0
     invite_link: str | None = None
 
 
@@ -151,7 +154,13 @@ def create_new_community(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return create_community(
-        db, current_user_id, payload.slug, payload.name, payload.description, payload.join_policy
+        db,
+        current_user_id,
+        payload.slug,
+        payload.name,
+        payload.description,
+        payload.join_policy,
+        payload.governance,
     )
 
 
@@ -324,3 +333,166 @@ def create_scope_invite_route(
     if normalized_kind not in {"channel", "community"}:
         raise HTTPException(status_code=422, detail="scope_kind must be channel or community")
     return create_scope_invite(db, current_user_id, normalized_kind, slug)
+
+
+# ---- settings, pictures and member votes (app/services/scope_governance.py) -------------
+
+
+class ScopeEditRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=3, max_length=32)
+    description: str | None = Field(default=None, max_length=2000)
+    image_key: str | None = Field(default=None, max_length=80)
+    image_content_type: str | None = Field(default=None, max_length=127)
+    remove_image: bool | None = None
+
+
+class ScopeProposalRequest(BaseModel):
+    kind: str = Field(pattern="^(remove_member|to_collaborative|to_organizer)$")
+    target_username: str | None = None
+    organizer_usernames: list[str] = Field(default_factory=list)
+
+
+class ScopeVoteRequest(BaseModel):
+    vote: str = Field(pattern="^(yes|no)$")
+
+
+class ScopeOrganizerRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    organizer: bool
+
+
+def _scope_kind(plural: str) -> str:
+    if plural == "channels":
+        return "channel"
+    if plural == "communities":
+        return "community"
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+@router.get("/{plural}/{slug}/settings")
+def get_scope_settings(
+    plural: str,
+    slug: str,
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.scope_governance import settings_payload
+
+    return settings_payload(db, current_user_id, _scope_kind(plural), slug)
+
+
+@router.patch("/{plural}/{slug}/settings")
+def patch_scope_settings(
+    plural: str,
+    slug: str,
+    payload: ScopeEditRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.scope_governance import edit
+
+    return edit(db, current_user_id, _scope_kind(plural), slug, payload.model_dump())
+
+
+@router.post("/{plural}/{slug}/image")
+async def upload_scope_image(
+    plural: str,
+    slug: str,
+    file: UploadFile = File(...),
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.scope_governance import MAX_IMAGE_BYTES, store_image
+
+    data = await file.read(MAX_IMAGE_BYTES + 1)
+    return store_image(db, current_user_id, _scope_kind(plural), slug, file.content_type, data)
+
+
+@router.get("/{plural}/{slug}/image")
+def get_scope_image(
+    plural: str,
+    slug: str,
+    key: str | None = None,
+    current_user_id: UUID | None = Depends(get_optional_current_user_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    from app.services.scope_governance import read_image
+
+    data, content_type = read_image(db, current_user_id, _scope_kind(plural), slug, key)
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@router.post("/{plural}/{slug}/proposals")
+def post_scope_proposal(
+    plural: str,
+    slug: str,
+    payload: ScopeProposalRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from sqlalchemy import select
+
+    from app.models import users
+    from app.services.scope_governance import propose
+
+    body: dict[str, object] = {}
+    if payload.target_username:
+        target = db.execute(
+            select(users.c.id).where(users.c.username == payload.target_username)
+        ).scalar_one_or_none()
+        if target is None:
+            raise HTTPException(status_code=404, detail="Member not found")
+        body = {"target_user_id": str(target), "username": payload.target_username}
+    if payload.organizer_usernames:
+        ids = db.execute(
+            select(users.c.id).where(users.c.username.in_(payload.organizer_usernames))
+        ).scalars()
+        body["organizer_ids"] = [str(value) for value in ids]
+        body["organizer_usernames"] = payload.organizer_usernames
+    return propose(db, current_user_id, _scope_kind(plural), slug, payload.kind, body)
+
+
+@router.post("/proposals/{proposal_id}/vote")
+def post_scope_vote(
+    proposal_id: UUID,
+    payload: ScopeVoteRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.scope_governance import vote
+
+    return vote(db, current_user_id, proposal_id, payload.vote)
+
+
+@router.post("/{plural}/{slug}/organizers")
+def post_scope_organizer(
+    plural: str,
+    slug: str,
+    payload: ScopeOrganizerRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.scope_governance import set_organizer
+
+    return set_organizer(
+        db, current_user_id, _scope_kind(plural), slug, payload.username, payload.organizer
+    )
+
+
+@router.delete("/{plural}/{slug}/members/{username}")
+def delete_scope_member(
+    plural: str,
+    slug: str,
+    username: str,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.scope_governance import remove_member
+
+    return remove_member(db, current_user_id, _scope_kind(plural), slug, username)
