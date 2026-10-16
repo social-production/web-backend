@@ -108,3 +108,39 @@ account_stances = table(
     sa.CheckConstraint("source_user_id <> target_user_id", name="not_self"),
     sa.CheckConstraint("stance IN ('vouch', 'bot')", name="kind"),
 )
+
+# Public bot reviews (app/services/bot_reviews.py). Marks open one; full members decide.
+bot_reviews = table(
+    "bot_reviews",
+    uuid_pk(),
+    sa.Column(
+        "target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    ),
+    sa.Column("status", sa.String(16), nullable=False, server_default="open"),
+    sa.Column("is_appeal", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column(
+        "opened_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    ),
+    sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+bot_review_votes = table(
+    "bot_review_votes",
+    sa.Column(
+        "review_id", UUID, sa.ForeignKey("bot_reviews.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column("voter_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column("vote", sa.String(8), nullable=False),
+    sa.Column(
+        "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    ),
+)
+
+bot_mark_cooldowns = table(
+    "bot_mark_cooldowns",
+    sa.Column("marker_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    sa.Column(
+        "target_user_id", UUID, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    ),
+    sa.Column("until", sa.DateTime(timezone=True), nullable=False),
+)

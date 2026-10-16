@@ -46,6 +46,8 @@ KIND_TO_CATEGORY: dict[str, str] = {
     "prj-activity": "roles",
     "evt-activity": "roles",
     "prj-removed": "phase_done",
+    # Your account is under (or came out of) a bot review; always worth knowing.
+    "bot-review": "votes_needed",
     "svc-request": "roles",
     "prj-phase-vote": "votes_needed",
     "evt-phase-vote": "votes_needed",

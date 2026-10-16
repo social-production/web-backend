@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     turnstile_secret_key: str = ""
     # Governance warm-up. 0 leaves voting unchanged. Set both to require age and activity
     # before an account can vote, count toward quorum, or volunteer as a moderator.
-    governance_min_account_age_hours: int = 168
+    governance_min_account_age_hours: int = 24
     governance_min_meaningful_actions: int = 3
     governance_meaningful_action_types: str = (
         "create-comment,create-post,create-thread,create-help-request,"

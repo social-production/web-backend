@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,7 @@ class TrustPersonOut(BaseModel):
 class AccountTrustOut(BaseModel):
     standing: str = "full"
     standing_next_step: str | None = None
+    bot_review: dict | None = None
     real_r: float
     vouch_weight: float
     bot_weight: float
@@ -264,6 +265,50 @@ def post_account_stance(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return set_account_stance(db, current_user_id, username, payload.stance)
+
+
+class BotReviewVoteRequest(BaseModel):
+    vote: str = Field(pattern="^(bot|real)$")
+
+
+@router.post("/{username}/bot-review/vote", response_model=AccountTrustOut)
+def post_bot_review_vote(
+    username: str,
+    payload: BotReviewVoteRequest,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.bot_reviews import cast_vote
+    from app.services.trust import account_trust_payload
+
+    target_id = _user_id_for(db, username)
+    cast_vote(db, current_user_id, target_id, payload.vote)
+    return account_trust_payload(db, target_id, current_user_id)
+
+
+@router.post("/me/bot-review/re-review", response_model=AccountTrustOut)
+def post_bot_re_review(
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.bot_reviews import request_re_review
+    from app.services.trust import account_trust_payload
+
+    request_re_review(db, current_user_id)
+    return account_trust_payload(db, current_user_id, current_user_id)
+
+
+def _user_id_for(db: Session, username: str) -> UUID:
+    from sqlalchemy import select
+
+    from app.models import users
+
+    user_id = db.execute(
+        select(users.c.id).where(users.c.username == username)
+    ).scalar_one_or_none()
+    if user_id is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user_id
 
 
 @router.get("/{username}", response_model=PublicProfileResponse)

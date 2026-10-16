@@ -609,6 +609,9 @@ def user_vouch_weight(db: Session, user_id: UUID) -> float:
 
 
 def ensure_can_participate(db: Session, user_id: UUID) -> None:
+    from app.services.standing import ensure_not_paused
+
+    ensure_not_paused(db, user_id)
     if not get_settings().governance_trust_ratio_enabled:
         return
     view = load_trust_graph(db).get(user_id)
@@ -673,7 +676,6 @@ def account_trust_payload(
     view = graph.get(target_id)
     if view is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    viewer = graph.get(viewer_id) if viewer_id is not None else None
     stance = None
     if viewer_id is not None and viewer_id != target_id:
         stance = db.execute(
@@ -683,13 +685,17 @@ def account_trust_payload(
             )
         ).scalar_one_or_none()
     same = viewer_id is not None and viewer_id == target_id
+    from app.services.bot_reviews import marker_on_cooldown, review_payload, vouch_banned_until
     from app.services.standing import FULL, next_step, standing_for
 
     target_standing = standing_for(db, target_id)
     viewer_full = viewer_id is not None and standing_for(db, viewer_id).level == FULL
+    viewer_can_vouch = viewer_full and vouch_banned_until(db, viewer_id) is None
+    viewer_can_mark = viewer_full and not marker_on_cooldown(db, viewer_id, target_id)
     return {
         "standing": target_standing.level,
         "standing_next_step": next_step(db, target_id) if same else None,
+        "bot_review": review_payload(db, target_id, viewer_id),
         "real_r": _round_ratio(view.real_r),
         "vouch_weight": _round_ratio(view.vouch_weight),
         "bot_weight": _round_ratio(view.bot_weight),
@@ -700,8 +706,8 @@ def account_trust_payload(
         "vouchers": _trust_people(view.voucher_usernames, view.voucher_image_urls),
         "bot_markers": _trust_people(view.bot_marker_usernames, view.bot_marker_image_urls),
         "viewer_stance": stance,
-        "viewer_can_vouch": bool(viewer and not same and (viewer.can_vouch or viewer_full)),
-        "viewer_can_mark_bot": bool(viewer and not same and (viewer.can_mark_bot or viewer_full)),
+        "viewer_can_vouch": bool(not same and viewer_can_vouch),
+        "viewer_can_mark_bot": bool(not same and viewer_can_mark),
         "viewer_can_clear": stance is not None,
     }
 
@@ -726,19 +732,37 @@ def apply_account_stance(
             )
         )
     elif stance == "vouch":
-        if not actor.can_vouch:
+        from app.services.bot_reviews import vouch_banned_until
+        from app.services.standing import FULL, standing_for
+
+        if standing_for(db, actor_id).level != FULL:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=vouch_detail(get_settings().governance_mark_license_vouches),
+                detail="Vouching opens once your own votes count fully.",
+            )
+        if vouch_banned_until(db, actor_id) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Someone you vouched for was found to be a bot, so vouching is paused "
+                "for 30 days.",
             )
         _upsert_stance(db, actor_id, target_id, "vouch")
     elif stance == "bot":
-        if not actor.can_mark_bot:
+        from app.services.bot_reviews import marker_on_cooldown, maybe_open_review
+        from app.services.standing import FULL, standing_for
+
+        if standing_for(db, actor_id).level != FULL:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=mark_detail(get_settings().governance_mark_license_vouches),
+                detail="Marking an account as a bot opens once your own votes count fully.",
+            )
+        if marker_on_cooldown(db, actor_id, target_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="A review cleared this account recently, so you can't mark it again yet.",
             )
         _upsert_stance(db, actor_id, target_id, "bot")
+        maybe_open_review(db, target_id)
     else:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown stance"

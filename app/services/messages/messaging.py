@@ -160,6 +160,9 @@ def send_message(
 ) -> dict[str, object]:
     _get_conversation_row(db, conversation_id)
     _ensure_member(db, conversation_id, current_user_id)
+    from app.services.standing import ensure_not_paused
+
+    ensure_not_paused(db, current_user_id)
     if reply_to_id is not None:
         parent = db.execute(
             select(messages.c.id).where(

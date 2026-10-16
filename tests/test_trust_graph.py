@@ -6,8 +6,6 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.services.trust import (
@@ -16,7 +14,6 @@ from app.services.trust import (
     TrustStance,
     compute_trust_graph,
 )
-from app.services.users import set_account_stance
 from app.utils.votes import is_established_voter
 from tests.conftest import seed_user
 
@@ -265,36 +262,3 @@ def test_ratio_switch_off_leaves_voting_open(db_transaction) -> None:
     user_id, _username = seed_user(db_transaction, username_prefix="trust-off")
     assert get_settings().governance_trust_ratio_enabled is False
     assert is_established_voter(db_transaction, user_id)
-
-
-def test_stance_write_requires_a_counting_voucher(db_transaction, monkeypatch) -> None:
-    monkeypatch.setattr(Session, "commit", lambda self: self.flush())
-    settings = get_settings()
-    monkeypatch.setattr(settings, "governance_bootstrap_markers", 0)
-    actor_id, _actor = seed_user(db_transaction, username_prefix="trust-actor")
-    _target_id, target_name = seed_user(db_transaction, username_prefix="trust-target")
-
-    with pytest.raises(HTTPException) as exc:
-        set_account_stance(db_transaction, actor_id, target_name, "vouch")
-    assert exc.value.status_code == 403
-
-    with pytest.raises(HTTPException) as mark_exc:
-        set_account_stance(db_transaction, actor_id, target_name, "bot")
-    assert mark_exc.value.status_code == 403
-
-
-def test_bootstrap_can_vouch_before_the_license_of_five(db_transaction, monkeypatch) -> None:
-    monkeypatch.setattr(Session, "commit", lambda self: self.flush())
-    settings = get_settings()
-    monkeypatch.setattr(settings, "governance_bootstrap_markers", 100_000)
-    monkeypatch.setattr(settings, "governance_bootstrap_target", 100_000)
-    actor_id, _actor = seed_user(db_transaction, username_prefix="trust-boot")
-    _target_id, target_name = seed_user(db_transaction, username_prefix="trust-peer")
-
-    payload = set_account_stance(db_transaction, actor_id, target_name, "vouch")
-    assert payload["viewer_stance"] == "vouch"
-    assert payload["viewer_can_clear"] is True
-
-    with pytest.raises(HTTPException) as exc:
-        set_account_stance(db_transaction, actor_id, target_name, "bot")
-    assert exc.value.status_code == 403

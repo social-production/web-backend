@@ -117,7 +117,16 @@ from app.models.scopes import (
     scope_memberships,
 )
 from app.models.search import searchable_documents
-from app.models.users import account_stances, meaningful_actions, user_follows, user_settings, users
+from app.models.users import (
+    account_stances,
+    bot_mark_cooldowns,
+    bot_review_votes,
+    bot_reviews,
+    meaningful_actions,
+    user_follows,
+    user_settings,
+    users,
+)
 
 __all__ = [
     "Base",
@@ -130,6 +139,9 @@ __all__ = [
     "user_follows",
     "meaningful_actions",
     "account_stances",
+    "bot_mark_cooldowns",
+    "bot_review_votes",
+    "bot_reviews",
     "channels",
     "communities",
     "scope_memberships",
