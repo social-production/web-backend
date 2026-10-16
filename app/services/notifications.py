@@ -182,9 +182,7 @@ def list_notifications(
             .all()
         )
         comments_by_id = {comment["id"]: comment for comment in comment_rows}
-    items = [
-        _serialize_notification(_reply_body_with_comment(row, comments_by_id)) for row in rows
-    ]
+    items = [_serialize_notification(_reply_body_with_comment(row, comments_by_id)) for row in rows]
 
     return {
         "total": len(items),

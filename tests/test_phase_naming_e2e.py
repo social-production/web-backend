@@ -75,16 +75,28 @@ def run() -> None:
 
     assert display_stage_label("personal-service", None, "phase-1") == "Activity"
     assert display_stage_label("productive", None, "phase-1") == "Proposal"
-    assert visible_phase_ids_for_project("personal-service", None, "phase-1") == [
+    assert visible_phase_ids_for_project("personal-service", None, "phase-1") == ["phase-1"]
+    assert visible_phase_ids_for_project("personal-service", None, "phase-2") == [
         "phase-1",
         "phase-2",
     ]
-    assert visible_phase_ids_for_project("collective-service", None, "phase-3") == [
+    assert display_stage_label("collective-service", None, "phase-2") == "Operations Plan"
+    assert visible_phase_ids_for_project("collective-service", None, "phase-2") == [
         "phase-1",
         "phase-2",
         "phase-5",
         "phase-7",
     ]
+    assert visible_phase_ids_for_project("collective-service", None, "phase-3") == [
+        "phase-1",
+        "phase-2",
+        "phase-3",
+        "phase-5",
+        "phase-7",
+    ]
+    assert visible_phase_ids_for_project(
+        "collective-service", None, "phase-5", include_access=True
+    ) == ["phase-1", "phase-2", "phase-3", "phase-5", "phase-7"]
     assert visible_phase_ids_for_project("productive", "software", "phase-3") == [
         "phase-1",
         "phase-2",
@@ -115,10 +127,8 @@ def run() -> None:
         )
         assert personal_detail.status_code == 200, personal_detail.text
         personal_payload = personal_detail.json()
-        assert len(personal_payload["lifecycle"]["phases"]) == 2
         assert [phase["title"] for phase in personal_payload["lifecycle"]["phases"]] == [
             "Activity",
-            "Closed",
         ]
         assert personal_payload["stage"] == "Activity"
 

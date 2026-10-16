@@ -27,9 +27,17 @@ from app.services.activity_history import (
     project_activity_staffing_counts,
 )
 from app.services.messages import send_message, start_direct_conversation
+from app.services.notifications import create_notification
 from app.services.projects_service_availability import create_slot_hold, request_fits_open_slot
 
-VALID_SERVICE_REQUEST_STATUS = frozenset({"open", "planned", "accepted", "declined"})
+VALID_SERVICE_REQUEST_STATUS = frozenset({"open", "planned", "accepted", "declined", "cancelled"})
+SERVICE_REQUEST_STATUS_LABELS = {
+    "open": "Pending",
+    "planned": "Pending",
+    "accepted": "Accepted",
+    "declined": "Declined",
+    "cancelled": "Cancelled",
+}
 
 
 def _serialize_service_request(row: Mapping[str, object]) -> dict[str, object]:
@@ -40,6 +48,7 @@ def _serialize_service_request(row: Mapping[str, object]) -> dict[str, object]:
         "title": row["title"],
         "body": row["body"],
         "status": row["status"],
+        "decline_reason": row.get("decline_reason"),
         "scheduled_at": row["scheduled_at"],
         "ends_at": row["ends_at"],
         "linked_activity_id": row["linked_activity_id"],
@@ -126,6 +135,18 @@ def _ensure_can_submit_service_request(
         )
 
 
+def _status_label(status_value: str) -> str:
+    return SERVICE_REQUEST_STATUS_LABELS.get(status_value, status_value)
+
+
+def _request_identity_line(title: str, request_id: UUID, status_value: str) -> str:
+    return f'Request "{title}" · {_status_label(status_value)}'
+
+
+def _request_href(project_slug: str, request_id: UUID) -> str:
+    return f"/projects/{project_slug}?tab=participation&request={request_id}"
+
+
 def _format_personal_service_request_message(
     project_slug: str,
     request_id: UUID,
@@ -135,7 +156,7 @@ def _format_personal_service_request_message(
     ends_at: datetime | None,
 ) -> str:
     lines = [
-        f"New service request: {title}",
+        _request_identity_line(title, request_id, "open"),
         "",
         body.strip(),
     ]
@@ -143,8 +164,53 @@ def _format_personal_service_request_message(
     if scheduled_at is not None and ends_at is not None:
         lines.extend(["", f"When: {scheduled_at.isoformat()} – {ends_at.isoformat()}"])
 
-    lines.extend(["", f"View request: /projects/{project_slug}?request={request_id}"])
+    lines.extend(["", f"View request: {_request_href(project_slug, request_id)}"])
     return "\n".join(lines)
+
+
+def _format_status_line(
+    project_slug: str,
+    request_id: UUID,
+    title: str,
+    status_value: str,
+    decline_reason: str | None,
+) -> str:
+    lines = [_request_identity_line(title, request_id, status_value)]
+    if status_value == "declined" and decline_reason:
+        lines.extend(["", f"Reason: {decline_reason}"])
+    lines.extend(["", f"View request: {_request_href(project_slug, request_id)}"])
+    return "\n".join(lines)
+
+
+def _notify_service_request(
+    db: Session,
+    *,
+    project_row: Mapping[str, object],
+    request_id: UUID,
+    title: str,
+    status_value: str,
+    actor_id: UUID,
+    recipient_ids: set[UUID],
+) -> None:
+    label = _status_label(status_value)
+    href = _request_href(str(project_row["slug"]), request_id)
+    body = f"Request {label.lower()}: {title}"
+    for recipient_id in recipient_ids:
+        if recipient_id is None:
+            continue
+        create_notification(
+            db=db,
+            recipient_id=recipient_id,
+            actor_id=actor_id,
+            kind="svc-request",
+            surface="project",
+            subject_type="project",
+            subject_id=project_row["id"],
+            target_id=request_id,
+            title=str(project_row["title"]),
+            body=body,
+            href=href,
+        )
 
 
 def _open_personal_service_request_conversation(
@@ -185,7 +251,7 @@ def _ensure_requests_enabled(
     if not enabled:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Requests are currently turned off for this project",
+            detail="Not taking requests.",
         )
 
     if request_mode == "calendar" and (scheduled_at is None or ends_at is None):
@@ -207,9 +273,9 @@ def _ensure_requests_enabled(
     if (
         scheduled_at is not None
         and ends_at is not None
-        and request_mode == "calendar"
-        and project_row["project_mode"] == "personal-service"
         and not allow_off_schedule
+        and project_row["project_mode"] == "personal-service"
+        and request_mode in {"calendar", "both"}
         and not request_fits_open_slot(
             db,
             project_id=project_row["id"],
@@ -219,7 +285,7 @@ def _ensure_requests_enabled(
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="That time is not in an open availability slot",
+            detail="That time is outside the listed availability slots. Off-schedule requests are turned off.",
         )
 
 
@@ -302,6 +368,17 @@ def create_service_request(
             db.commit()
             created = {**dict(created), "conversation_id": conversation_id}
 
+    recipients = {project_row["author_id"]} - {current_user_id}
+    _notify_service_request(
+        db,
+        project_row=project_row,
+        request_id=created["id"],
+        title=str(created["title"]),
+        status_value="open",
+        actor_id=current_user_id,
+        recipient_ids={recipient for recipient in recipients if recipient is not None},
+    )
+
     return {
         "request": _serialize_service_request(created),
         "conversation_id": conversation_id,
@@ -321,6 +398,15 @@ def list_service_requests(
     query = select(project_service_requests).where(
         project_service_requests.c.project_id == project_row["id"]
     )
+    viewer_can_review = False
+    if viewer_id is not None:
+        membership = _get_project_membership(db, project_row["id"], viewer_id)
+        viewer_can_review = bool(membership and membership["is_manager"]) or (
+            project_row["project_mode"] == "personal-service"
+            and project_row["author_id"] == viewer_id
+        )
+    if viewer_id is not None and not viewer_can_review:
+        query = query.where(project_service_requests.c.requester_id == viewer_id)
 
     if status_filter:
         normalized = status_filter.strip().lower()
@@ -349,10 +435,10 @@ def update_service_request_status(
     request_id: UUID,
     status_value: str,
     hold_slot: bool = False,
+    decline_reason: str | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_service_project(project_row["project_mode"])
-    _ensure_request_reviewer(db, project_row, current_user_id)
 
     normalized_status = status_value.strip().lower()
     if normalized_status not in VALID_SERVICE_REQUEST_STATUS:
@@ -376,18 +462,41 @@ def update_service_request_status(
             status_code=status.HTTP_404_NOT_FOUND, detail="Service request not found"
         )
 
+    if normalized_status == "cancelled":
+        if request_row["requester_id"] != current_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the requester can cancel this request",
+            )
+        if request_row["status"] not in {"open", "planned"}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only a pending request can be cancelled",
+            )
+    else:
+        _ensure_request_reviewer(db, project_row, current_user_id)
+
+    cleaned_reason = decline_reason.strip() if decline_reason else ""
+    stored_reason = cleaned_reason or None if normalized_status == "declined" else None
+
     try:
         db.execute(
             update(project_service_requests)
             .where(project_service_requests.c.id == request_id)
-            .values(status=normalized_status)
+            .values(status=normalized_status, decline_reason=stored_reason)
         )
-        if (
-            hold_slot
-            and normalized_status == "accepted"
+        fits_slot = (
+            normalized_status == "accepted"
             and request_row["scheduled_at"] is not None
             and request_row["ends_at"] is not None
-        ):
+            and request_fits_open_slot(
+                db,
+                project_id=project_row["id"],
+                scheduled_at=request_row["scheduled_at"],
+                ends_at=request_row["ends_at"],
+            )
+        )
+        if fits_slot:
             create_slot_hold(
                 db,
                 project_id=project_row["id"],
@@ -409,6 +518,32 @@ def update_service_request_status(
         )
         .mappings()
         .one()
+    )
+
+    conversation_id = refreshed.get("conversation_id")
+    if conversation_id is not None:
+        send_message(
+            db,
+            current_user_id,
+            conversation_id,
+            _format_status_line(
+                project_slug=str(project_row["slug"]),
+                request_id=request_id,
+                title=str(refreshed["title"]),
+                status_value=normalized_status,
+                decline_reason=stored_reason,
+            ),
+        )
+
+    recipients = {refreshed["requester_id"], project_row["author_id"]} - {current_user_id}
+    _notify_service_request(
+        db,
+        project_row=project_row,
+        request_id=request_id,
+        title=str(refreshed["title"]),
+        status_value=normalized_status,
+        actor_id=current_user_id,
+        recipient_ids={recipient for recipient in recipients if recipient is not None},
     )
 
     return {"request": _serialize_service_request(refreshed)}

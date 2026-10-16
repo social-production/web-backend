@@ -36,6 +36,7 @@ class ProjectPlanVoteRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     vote: str = Field(pattern="^(yes|no|neutral)$")
+    comment: str | None = Field(default=None, max_length=2000)
 
 
 class ProjectPlanValueVoteRequest(BaseModel):
@@ -146,6 +147,7 @@ def vote_project_plan(
         project_slug=slug,
         plan_id=plan_id,
         vote=payload.vote,
+        comment=payload.comment,
     )
 
 

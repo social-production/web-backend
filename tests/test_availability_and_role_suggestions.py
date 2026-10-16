@@ -88,15 +88,17 @@ def test_personal_service_weekly_availability_and_slot_hold(db_transaction, isol
 
     after = isolated_client.get(f"/projects/{slug}", headers=requester)
     requester_slots = after.json()["lifecycle"]["personalService"]["availabilitySlots"]
-    assert all(item["id"] != slot["id"] or item.get("held") for item in requester_slots) or all(
-        item["id"] != slot["id"] for item in requester_slots
-    )
+    requester_match = [item for item in requester_slots if item["id"] == slot["id"]]
+    assert requester_match, requester_slots
+    assert requester_match[0].get("held") is True
+    assert requester_match[0].get("statusTone") == "green"
 
     creator_detail = isolated_client.get(f"/projects/{slug}", headers=creator)
     creator_slots = creator_detail.json()["lifecycle"]["personalService"]["availabilitySlots"]
     matching = [item for item in creator_slots if item["id"] == slot["id"]]
     assert matching
     assert matching[0].get("held") is True
+    assert matching[0].get("statusTone") == "green"
     assert matching[0]["bookings"]
 
 
@@ -248,3 +250,68 @@ def test_project_role_suggestion_notifies_user(db_transaction, isolated_client):
     after = isolated_client.get(f"/projects/{slug}", headers=creator)
     after_roles = after.json()["lifecycle"]["phaseFive"]["activities"][0]["roles"]
     assert after_roles[0]["suggestedUser"] is None
+
+
+def test_online_activity_meeting_link_is_for_members(db_transaction, isolated_client):
+    creator_id, _ = seed_user(db_transaction, username_prefix="meet-creator")
+    outsider_id, _ = seed_user(db_transaction, username_prefix="meet-outsider")
+    _channel_id, channel_slug = seed_channel_with_membership(db_transaction, creator_id=creator_id)
+    db_transaction.flush()
+    creator = _auth_header(creator_id)
+
+    created = isolated_client.post(
+        "/projects",
+        headers=creator,
+        json={
+            "title": "Remote workshop",
+            "description": "Teach soldering online",
+            "project_mode": "productive",
+            "location_label": "Online",
+            "channel_slugs": [channel_slug],
+        },
+    )
+    assert created.status_code == 200, created.text
+    slug = created.json()["project"]["slug"]
+    set_project_phase(db_transaction, slug, "phase-5")
+
+    start = datetime.now(UTC) + timedelta(days=2)
+    activity = isolated_client.post(
+        f"/projects/{slug}/activities",
+        headers=creator,
+        json={
+            "title": "Soldering call",
+            "scheduled_at": start.isoformat(),
+            "ends_at": (start + timedelta(hours=1)).isoformat(),
+            "is_online": True,
+            "location_label": "Online",
+            "meeting_url": "https://meet.example.org/solder",
+            "note": "Bring an iron",
+        },
+    )
+    assert activity.status_code == 200, activity.text
+
+    def _activity(headers):
+        detail = isolated_client.get(f"/projects/{slug}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        return detail.json()["lifecycle"]["phaseFive"]["activities"][0]
+
+    member_view = _activity(creator)
+    assert member_view["meetingUrl"] == "https://meet.example.org/solder"
+    outsider_view = _activity(_auth_header(outsider_id))
+    assert outsider_view["meetingUrl"] is None
+    assert outsider_view["hasMeetingUrl"] is True
+
+    rejected = isolated_client.post(
+        f"/projects/{slug}/activities",
+        headers=creator,
+        json={
+            "title": "Bad link",
+            "scheduled_at": start.isoformat(),
+            "ends_at": (start + timedelta(hours=1)).isoformat(),
+            "is_online": True,
+            "location_label": "Online",
+            "meeting_url": "javascript:alert(1)",
+            "note": "x",
+        },
+    )
+    assert rejected.status_code == 422

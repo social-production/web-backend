@@ -555,6 +555,10 @@ async def get_event_detail(
             "endAt": _iso(activity["ends_at"]),
             "isOnline": bool(activity.get("is_online", False)),
             "locationLabel": activity["location_label"],
+            "meetingUrl": (
+                activity.get("meeting_url") if viewer_is_member or viewer_assigned_label else None
+            ),
+            "hasMeetingUrl": bool(activity.get("meeting_url")),
             "minimumParticipants": minimum_participants,
             "maximumParticipants": maximum_participants,
             "committedCount": len(committed_users),

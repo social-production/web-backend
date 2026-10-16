@@ -361,6 +361,7 @@ def cast_project_plan_vote(
     project_slug: str,
     plan_id: UUID,
     vote: str,
+    comment: str | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_row_by_slug(db, project_slug)
     _ensure_can_cast_plan_vote(db, project_row, current_user_id)
@@ -439,6 +440,21 @@ def cast_project_plan_vote(
         )
         plan_is_leading = new_leader == plan_id
         leader_changed = new_leader is not None and new_leader != previous_leader
+
+        note = (comment or "").strip()
+        if note or normalized_vote == "neutral":
+            payload = dict(plan_row["plan_payload"] or {})
+            notes = dict(payload.get("assessmentComments") or {})
+            if note and normalized_vote != "neutral":
+                notes[str(current_user_id)] = note
+            else:
+                notes.pop(str(current_user_id), None)
+            payload["assessmentComments"] = notes
+            db.execute(
+                update(project_plans)
+                .where(project_plans.c.id == plan_id)
+                .values(plan_payload=payload)
+            )
 
         record_meaningful_action(
             db=db,

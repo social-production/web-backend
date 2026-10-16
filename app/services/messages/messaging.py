@@ -100,7 +100,9 @@ def _reply_snapshots(db: Session, reply_ids: list[UUID]) -> dict[UUID, dict[str,
     return snapshots
 
 
-def _require_own_message(db: Session, conversation_id: UUID, message_id: UUID, current_user_id: UUID):
+def _require_own_message(
+    db: Session, conversation_id: UUID, message_id: UUID, current_user_id: UUID
+):
     row = (
         db.execute(
             select(messages).where(
@@ -163,7 +165,9 @@ def send_message(
             )
         ).first()
         if parent is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reply target not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Reply target not found"
+            )
 
     prepared_attachments = list(attachments or [])
     if attachment is not None:
@@ -246,7 +250,11 @@ def send_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not send message"
         ) from exc
 
-    reply = _reply_snapshots(db, [reply_to_id] if reply_to_id else []).get(reply_to_id) if reply_to_id else None
+    reply = (
+        _reply_snapshots(db, [reply_to_id] if reply_to_id else []).get(reply_to_id)
+        if reply_to_id
+        else None
+    )
     return {
         "message": _serialize_message(
             created, plaintext, attachments=stored_attachments, reply=reply
@@ -295,9 +303,7 @@ def get_messages_for_conversation(
         current_user_id=current_user_id,
     )
     attachment_rows = attachments_by_message(db, message_ids)
-    replies = _reply_snapshots(
-        db, [row["reply_to_id"] for row in rows if row.get("reply_to_id")]
-    )
+    replies = _reply_snapshots(db, [row["reply_to_id"] for row in rows if row.get("reply_to_id")])
     for row in rows:
         try:
             plaintext = decrypt_message(row["encrypted_body"])
@@ -316,6 +322,16 @@ def get_messages_for_conversation(
             )
         )
 
+    peer_read_at = None
+    if conversation["kind"] == "direct":
+        peer = db.execute(
+            select(conversation_members.c.last_read_at).where(
+                conversation_members.c.conversation_id == conversation_id,
+                conversation_members.c.user_id != current_user_id,
+            )
+        ).scalar_one_or_none()
+        peer_read_at = peer
+
     return {
         "conversation_id": conversation_id,
         "total": int(total or 0),
@@ -324,6 +340,7 @@ def get_messages_for_conversation(
         "items": items,
         "pins": list_pins(db, conversation_id),
         "can_pin": viewer_can_pin(conversation, current_user_id),
+        "peer_read_at": peer_read_at.isoformat() if peer_read_at else None,
     }
 
 
@@ -335,7 +352,7 @@ def edit_message(
     body: str,
 ) -> dict[str, object]:
     _ensure_member(db, conversation_id, current_user_id)
-    row = _require_own_message(db, conversation_id, message_id, current_user_id)
+    _require_own_message(db, conversation_id, message_id, current_user_id)
     plaintext = body.strip()
     if not plaintext:
         raise HTTPException(

@@ -103,6 +103,9 @@ class ProjectEditRequestCreateIn(BaseModel):
 
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
+    location_label: str | None = Field(default=None, max_length=160)
+    location_id: UUID | None = None
+    is_online: bool = False
 
 
 class ProjectUpdateRequestOut(BaseModel):
@@ -120,6 +123,7 @@ class ProjectEditRequestOut(BaseModel):
     project_id: UUID
     title: str
     description: str
+    location_label: str | None = None
     author_id: UUID | None = None
     status: str
     created_at: object
@@ -243,6 +247,9 @@ def create_project_edit_request_route(
         project_slug=slug,
         title=payload.title,
         description=payload.description,
+        location_label=payload.location_label,
+        location_id=payload.location_id,
+        is_online=payload.is_online,
     )
 
 

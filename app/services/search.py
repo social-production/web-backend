@@ -10,12 +10,31 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.schema import Table
 
 from app.errors import InternalAppError, ValidationAppError
-from app.models import channels, communities, searchable_documents, users
-from app.services.access_control import filter_search_results
+from app.models import (
+    channels,
+    communities,
+    event_activities,
+    events,
+    project_activities,
+    projects,
+    searchable_documents,
+    users,
+)
+from app.services.access_control import can_view_entity, filter_search_results
 from app.unit_of_work import commit, rollback
 
 SEARCHABLE_ENTITY_TYPES = frozenset(
-    {"project", "thread", "event", "channel", "community", "user", "help_request", "post"}
+    {
+        "project",
+        "thread",
+        "event",
+        "channel",
+        "community",
+        "user",
+        "help_request",
+        "post",
+        "activity",
+    }
 )
 
 
@@ -210,6 +229,9 @@ def search_documents(
     _merge_account_matches(db, cleaned_query, items, safe_limit, normalized_types)
     _merge_scope_matches(db, cleaned_query, items, safe_limit, normalized_types)
     filtered_items = filter_search_results(db, viewer_id, items)
+    _merge_activity_matches(
+        db, cleaned_query, filtered_items, safe_limit, normalized_types, viewer_id
+    )
     return {"total": len(filtered_items), "items": filtered_items}
 
 
@@ -343,3 +365,68 @@ def _merge_scope_matches(
     items[:0] = matches
     if len(items) > limit:
         del items[limit:]
+
+
+def _merge_activity_matches(
+    db: Session,
+    query: str,
+    items: list[dict[str, object]],
+    limit: int,
+    entity_types: list[str],
+    viewer_id: UUID | None,
+) -> None:
+    """Activities are found by title, and only when the viewer can see their project or event."""
+    if (entity_types and "activity" not in entity_types) or len(query) < 2:
+        return
+
+    pattern = f"%{query}%"
+    needle = query.casefold()
+    sources = (
+        ("project", project_activities, project_activities.c.project_id, projects, "/projects"),
+        ("event", event_activities, event_activities.c.event_id, events, "/events"),
+    )
+    matches: list[dict[str, object]] = []
+    for parent_type, table, parent_fk, parent, prefix in sources:
+        rows = db.execute(
+            select(
+                table.c.id,
+                table.c.title,
+                table.c.location_label,
+                table.c.scheduled_at,
+                table.c.created_at,
+                parent.c.id.label("parent_id"),
+                parent.c.slug,
+                parent.c.title.label("parent_title"),
+            )
+            .select_from(table.join(parent, parent.c.id == parent_fk))
+            .where(
+                table.c.title.ilike(pattern),
+                parent.c.moderation_state != "removed",
+            )
+            .order_by(table.c.scheduled_at.desc())
+            .limit(limit)
+        ).mappings()
+        for row in rows:
+            if not can_view_entity(db, viewer_id, parent_type, row["parent_id"]):
+                continue
+            title = str(row["title"])
+            folded = title.casefold()
+            rank = 2.0 if folded == needle else 1.0 if folded.startswith(needle) else 0.2
+            matches.append(
+                {
+                    "id": row["id"],
+                    "entity_type": "activity",
+                    "entity_id": row["id"],
+                    "title": title,
+                    "summary": str(row["parent_title"]),
+                    "meta": str(row["location_label"] or "activity"),
+                    "href": f"{prefix}/{row['slug']}?activity={row['id']}",
+                    "created_at": row["created_at"],
+                    "updated_at": row["scheduled_at"],
+                    "rank": rank,
+                }
+            )
+    matches.sort(key=lambda item: (-float(item["rank"]), str(item["title"]).casefold()))
+    reserved = min(len(matches), max(3, limit - len(items)))
+    del items[max(0, limit - reserved) :]
+    items.extend(matches[:reserved])

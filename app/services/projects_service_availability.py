@@ -221,9 +221,6 @@ def expand_availability_slots(
                     if end > current:
                         held = hold_covers(start, end)
                         bookings = bookings_for(start, end) if viewer_is_creator else []
-                        if held and not viewer_is_creator:
-                            cursor += timedelta(days=1)
-                            continue
                         slots.append(
                             {
                                 "id": f"rule:{rule['id']}:{cursor.isoformat()}",
@@ -235,7 +232,7 @@ def expand_availability_slots(
                                 "scheduledAt": start.isoformat(),
                                 "held": held,
                                 "bookings": bookings,
-                                "statusTone": "muted" if held else "green",
+                                "statusTone": "green",
                             }
                         )
             cursor += timedelta(days=1)
@@ -250,8 +247,6 @@ def expand_availability_slots(
             end = end.replace(tzinfo=UTC)
         held = hold_covers(start, end)
         is_booking = linked_request_id is not None
-        if not viewer_is_creator and (is_booking or held):
-            continue
         bookings = bookings_for(start, end) if viewer_is_creator else []
         slots.append(
             {
@@ -264,7 +259,41 @@ def expand_availability_slots(
                 "scheduledAt": start.isoformat(),
                 "held": held or is_booking,
                 "bookings": bookings,
-                "statusTone": "yellow" if is_booking else ("muted" if held else "green"),
+                "statusTone": "green",
+            }
+        )
+
+    for request in accepted_requests:
+        start = request["scheduled_at"]
+        end = request["ends_at"]
+        if start is None or end is None:
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        if end <= current:
+            continue
+        contained = False
+        for slot in slots:
+            slot_start = datetime.fromisoformat(str(slot["startAt"]))
+            slot_end = datetime.fromisoformat(str(slot["endAt"]))
+            if _contained(start, end, slot_start, slot_end):
+                contained = True
+                break
+        if contained:
+            continue
+        slots.append(
+            {
+                "id": f"request:{request['id']}",
+                "source": "request",
+                "title": request["title"] if viewer_is_creator else "Taken",
+                "startAt": start.isoformat(),
+                "endAt": end.isoformat(),
+                "scheduledAt": start.isoformat(),
+                "held": False,
+                "bookings": [],
+                "statusTone": "green",
             }
         )
 
@@ -280,7 +309,7 @@ def request_fits_open_slot(
     ends_at: datetime,
 ) -> bool:
     for slot in expand_availability_slots(db, project_id=project_id, viewer_is_creator=False):
-        if slot.get("held"):
+        if slot.get("source") != "rule" or slot.get("held"):
             continue
         start = datetime.fromisoformat(str(slot["startAt"]))
         end = datetime.fromisoformat(str(slot["endAt"]))

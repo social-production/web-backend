@@ -24,6 +24,7 @@ from app.models import (
     project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
+    project_plans,
     project_revert_history,
     project_service_request_setting_change_votes,
     project_service_request_setting_changes,
@@ -207,6 +208,7 @@ async def get_project_detail(
             "id": str(member_id),
             "username": usernames.get(member_id, {}).get("username", "unknown"),
             "bio": usernames.get(member_id, {}).get("bio", ""),
+            "profileImageUrl": usernames.get(member_id, {}).get("profileImageUrl"),
         }
         summary = trust_by_user.get(member_id)
         if summary is not None:
@@ -491,6 +493,12 @@ async def get_project_detail(
             "endAt": _iso(activity["ends_at"]),
             "isOnline": bool(activity.get("is_online", False)),
             "locationLabel": activity["location_label"],
+            "meetingUrl": (
+                activity.get("meeting_url")
+                if viewer_is_member or viewer_is_author or viewer_assigned_label
+                else None
+            ),
+            "hasMeetingUrl": bool(activity.get("meeting_url")),
             "minimumParticipants": minimum_participants,
             "maximumParticipants": maximum_participants,
             "committedCount": len(committed_users),
@@ -604,6 +612,17 @@ async def get_project_detail(
     edit_requests = _build_request_list(
         project_edit_requests, project_edit_request_votes, ["title", "description"]
     )
+    edit_location_by_id = {
+        str(request_id): label
+        for request_id, label in db.execute(
+            select(project_edit_requests.c.id, project_edit_requests.c.location_label).where(
+                project_edit_requests.c.project_id == project_id,
+                project_edit_requests.c.status == "open",
+            )
+        ).all()
+    }
+    for item in edit_requests:
+        item["locationLabel"] = edit_location_by_id.get(str(item["id"]))
 
     phase_change_rows = (
         db.execute(
@@ -721,6 +740,18 @@ async def get_project_detail(
         .mappings()
         .all()
     )
+    requester_ids = {
+        item["requester_id"] for item in service_requests_rows if item.get("requester_id")
+    }
+    missing_requester_ids = requester_ids - set(usernames)
+    if missing_requester_ids:
+        usernames.update(_username_lookup(db, missing_requester_ids))
+    if not viewer_can_review_requests:
+        service_requests_rows = [
+            item
+            for item in service_requests_rows
+            if current_user_id is not None and item["requester_id"] == current_user_id
+        ]
     service_requests = [
         {
             "id": str(item["id"]),
@@ -729,6 +760,7 @@ async def get_project_detail(
             "requesterUsername": usernames.get(item["requester_id"], {}).get("username", "unknown"),
             "createdAt": _iso(item["created_at"]),
             "status": item["status"],
+            "declineReason": item.get("decline_reason") or None,
             "scheduledAt": _iso(item["scheduled_at"]) if item["scheduled_at"] else None,
             "endsAt": _iso(item["ends_at"]) if item["ends_at"] else None,
             "conversationId": str(item["conversation_id"]) if item.get("conversation_id") else None,
@@ -784,21 +816,6 @@ async def get_project_detail(
     phase_order = {phase_id: order for phase_id, order, _, _, _ in PROJECT_PHASES}
     current_order = phase_order.get(row["current_phase_id"], 1)
 
-    next_phase_id = next_phase_id_for_project(
-        str(row["project_mode"]),
-        str(row["project_subtype"]) if row["project_subtype"] else None,
-        str(row["current_phase_id"]),
-    )
-    next_phase_label = (
-        display_stage_label(
-            str(row["project_mode"]),
-            str(row["project_subtype"]) if row["project_subtype"] else None,
-            next_phase_id,
-        )
-        if next_phase_id
-        else None
-    )
-
     software_governance = None
     effective_subtype = _resolve_effective_project_subtype(db, project_id, row["project_subtype"])
     if effective_subtype and row["project_subtype"] != effective_subtype:
@@ -812,6 +829,28 @@ async def get_project_detail(
         software_governance = get_project_software_governance(
             db=db, project_slug=row["slug"], current_user_id=current_user_id
         )
+
+    include_access = (
+        db.execute(
+            select(project_plans.c.id)
+            .where(
+                project_plans.c.project_id == project_id,
+                project_plans.c.phase_kind == "access",
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+    phase_mode = str(row["project_mode"])
+    next_phase_id = next_phase_id_for_project(
+        phase_mode,
+        effective_subtype,
+        str(row["current_phase_id"]),
+        include_access=include_access,
+    )
+    next_phase_label = (
+        display_stage_label(phase_mode, effective_subtype, next_phase_id) if next_phase_id else None
+    )
 
     is_personal_service = row["project_mode"] == "personal-service"
     viewer_can_request_update = viewer_is_author if is_personal_service else viewer_is_member
@@ -904,9 +943,10 @@ async def get_project_detail(
         "voteContextPopulation": vote_context_population,
         "notes": [],
         "phases": _visible_lifecycle_phases(
-            str(row["project_mode"]),
-            str(row["project_subtype"]) if row["project_subtype"] else None,
+            phase_mode,
+            effective_subtype,
             str(row["current_phase_id"]),
+            include_access=include_access,
         ),
         "viewerCanRequestPhaseChanges": viewer_can_request_phase_changes,
         "viewerCanVoteOnPhaseChanges": viewer_can_vote_on_phase_changes,

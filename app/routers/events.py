@@ -217,6 +217,7 @@ class EventActivityCreateRequest(BaseModel):
     is_online: bool = False
     location_label: str = Field(min_length=1, max_length=160)
     location_id: UUID | None = None
+    meeting_url: str | None = Field(default=None, max_length=500, pattern=r"^(https?://\S+)?$")
     note: str = Field(min_length=1)
     role_requirements: list[EventActivityRoleRequirementIn] = Field(default_factory=list)
     linked_plan_id: UUID | None = None
@@ -417,6 +418,7 @@ async def create_event_activity_route(
         ends_at=payload.ends_at,
         is_online=payload.is_online,
         location_label=payload.location_label,
+        meeting_url=payload.meeting_url,
         note=payload.note,
         role_requirements=[item.model_dump() for item in payload.role_requirements],
         linked_plan_id=payload.linked_plan_id,

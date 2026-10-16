@@ -116,3 +116,50 @@ def test_search_hides_closed_community_only_projects_from_non_members() -> None:
     assert response.status_code == 200
     items = response.json().get("items", [])
     assert not any(item.get("href") == f"/projects/{slug}" for item in items)
+
+
+def test_search_lists_activities_by_title(isolated_client, db_transaction) -> None:
+    from datetime import timedelta
+
+    from app.models import project_activities
+    from tests.conftest import seed_user
+
+    author_id, _ = seed_user(db_transaction, username_prefix="act-search")
+    now = datetime.now(UTC)
+    project_id = uuid4()
+    slug = f"act-search-{uuid4().hex[:8]}"
+    db_transaction.execute(
+        insert(projects).values(
+            id=project_id,
+            slug=slug,
+            title="Harbour cleanup",
+            description="seed",
+            author_id=author_id,
+            project_mode="productive",
+            current_phase_id="phase-5",
+            stage_label="Activity",
+            location_label="Online",
+            last_activity_at=now,
+        )
+    )
+    activity_id = uuid4()
+    marker = f"Seawall{uuid4().hex[:6]}"
+    db_transaction.execute(
+        insert(project_activities).values(
+            id=activity_id,
+            project_id=project_id,
+            title=f"{marker} litter sweep",
+            author_id=author_id,
+            scheduled_at=now + timedelta(days=1),
+            ends_at=now + timedelta(days=1, hours=2),
+            location_label="North pier",
+            note="",
+        )
+    )
+
+    response = isolated_client.get("/search", params={"q": marker})
+    assert response.status_code == 200, response.text
+    hits = [item for item in response.json()["items"] if item["entity_type"] == "activity"]
+    assert len(hits) == 1
+    assert hits[0]["href"] == f"/projects/{slug}?activity={activity_id}"
+    assert hits[0]["summary"] == "Harbour cleanup"

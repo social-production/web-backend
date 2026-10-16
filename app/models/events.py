@@ -189,6 +189,7 @@ event_activities = table(
     sa.Column("ends_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("is_online", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("location_label", sa.String(160), nullable=False),
+    sa.Column("meeting_url", sa.String(500), nullable=True),
     sa.Column(
         "location_id",
         UUID,

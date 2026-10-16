@@ -32,8 +32,9 @@ class ServiceRequestCreateIn(BaseModel):
 class ServiceRequestStatusUpdateIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    status: str = Field(pattern="^(open|planned|accepted|declined)$")
+    status: str = Field(pattern="^(open|planned|accepted|declined|cancelled)$")
     hold_slot: bool = False
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class ServiceRequestOut(BaseModel):
@@ -43,6 +44,7 @@ class ServiceRequestOut(BaseModel):
     title: str
     body: str
     status: str
+    decline_reason: str | None = None
     scheduled_at: object
     ends_at: object
     linked_activity_id: UUID | None = None
@@ -111,6 +113,7 @@ def patch_project_service_request_status(
         request_id=request_id,
         status_value=payload.status,
         hold_slot=payload.hold_slot,
+        decline_reason=payload.reason,
     )
 
 

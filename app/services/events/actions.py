@@ -558,6 +558,7 @@ def create_event_activity(
     linked_plan_id: UUID | None = None,
     linked_plan_phase_id: str | None = None,
     location_id: UUID | None = None,
+    meeting_url: str | None = None,
 ) -> dict[str, object]:
     event_row = _get_event_by_slug_row(db, slug)
     _ensure_event_member(db, event_row["id"], current_user_id)
@@ -610,6 +611,7 @@ def create_event_activity(
                     is_online=is_online,
                     location_label=resolved_location_label,
                     location_id=resolved_location_id,
+                    meeting_url=(meeting_url or "").strip() or None if is_online else None,
                     note=note.strip(),
                 )
                 .returning(

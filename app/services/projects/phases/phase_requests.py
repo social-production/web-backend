@@ -177,6 +177,13 @@ def create_phase_change_request(
             .mappings()
             .one()
         )
+        db.execute(
+            insert(project_phase_change_votes).values(
+                request_id=created["id"],
+                voter_id=current_user_id,
+                vote="yes",
+            )
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -212,7 +219,7 @@ def create_phase_change_request(
             subject_type="phase-change",
             subject_id=created["id"],
             target_id=project_row["id"],
-            title="Project phase vote open",
+            title=str(project_row["title"]),
             body=f"Vote on advancing to {target_label}.",
             href=f"/projects/{project_row['slug']}?open=vote&voteKind=phase_change&voteTarget={created['id']}",
         )

@@ -48,6 +48,7 @@ from app.models import (
 from app.services.bootstrap.activity_rail import _viewer_assigned_activity_ids
 from app.services.bootstrap.summary import _small_iso
 from app.services.feeds import _truncate_update_body
+from app.services.projects.phases.labels import display_stage_label
 
 
 def _build_activity_rail_history(db: Session, current_user_id: UUID) -> list[dict[str, object]]:
@@ -556,6 +557,8 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
                 project_phase_change_requests.c.status,
                 projects.c.slug,
                 projects.c.title.label("parent_title"),
+                projects.c.project_mode,
+                projects.c.project_subtype,
             )
             .select_from(
                 project_phase_change_votes.join(
@@ -575,9 +578,16 @@ def _append_cast_votes(db: Session, current_user_id: UUID, items: list[dict[str,
             seen,
             appended,
             item_id=f"vote-project-phase-{row['request_id']}",
-            title=f"Phase change · {row['parent_title']}",
+            title=str(row["parent_title"]),
             href=_vote_href("projects", row["slug"], "phase_change", row["request_id"]),
-            meta=f"Advance to {_phase_label(row['target_phase_id'])}",
+            meta=(
+                "Advance to "
+                + display_stage_label(
+                    str(row["project_mode"]),
+                    str(row["project_subtype"]) if row["project_subtype"] else None,
+                    str(row["target_phase_id"]),
+                )
+            ),
             created_at=row["created_at"],
             vote=row["vote"],
             vote_kind="phase_change",

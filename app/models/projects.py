@@ -289,6 +289,7 @@ project_activities = table(
     sa.Column("ends_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("is_online", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("location_label", sa.String(160), nullable=False),
+    sa.Column("meeting_url", sa.String(500), nullable=True),
     sa.Column(
         "location_id",
         UUID,
@@ -368,6 +369,7 @@ project_service_requests = table(
     sa.Column("title", sa.String(200), nullable=False),
     sa.Column("body", sa.Text, nullable=False),
     sa.Column("status", sa.String(24), nullable=False),
+    sa.Column("decline_reason", sa.Text, nullable=True),
     sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("ends_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column(
@@ -481,6 +483,13 @@ project_edit_requests = table(
     project_fk("project_id", nullable=False),
     sa.Column("title", sa.String(200), nullable=False),
     sa.Column("description", sa.Text, nullable=False),
+    sa.Column("location_label", sa.String(160), nullable=True),
+    sa.Column(
+        "location_id",
+        UUID,
+        sa.ForeignKey("locations.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
     user_fk("author_id", nullable=True, ondelete="SET NULL"),
     sa.Column("status", sa.String(24), nullable=False, server_default="open"),
     created_at(),

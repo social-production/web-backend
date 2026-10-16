@@ -208,9 +208,16 @@ def run() -> None:
         project_edit_request = client.post(
             f"/projects/{project_slug}/edit-requests",
             headers=_auth_header(seeded["owner_token"]),
-            json={"title": "Actions Project Edited", "description": "Project after edit"},
+            json={
+                "title": "Actions Project Edited",
+                "description": "Project after edit",
+                "location_label": "Fitzroy Gardens, Melbourne",
+            },
         )
         assert project_edit_request.status_code == 200, project_edit_request.text
+        assert project_edit_request.json()["request"]["location_label"] == (
+            "Fitzroy Gardens, Melbourne"
+        )
         project_edit_request_id = project_edit_request.json()["request"]["id"]
 
         project_edit_vote_owner = client.post(
@@ -226,6 +233,11 @@ def run() -> None:
         )
         assert project_edit_vote_member.status_code == 200, project_edit_vote_member.text
         assert project_edit_vote_member.json()["executed"] is True
+        edited_project = client.get(
+            f"/projects/{project_slug}", headers=_auth_header(seeded["owner_token"])
+        )
+        assert edited_project.status_code == 200, edited_project.text
+        assert "Fitzroy Gardens" in str(edited_project.json())
 
         event_edit_request = client.post(
             f"/events/{event_slug}/edit-requests",

@@ -56,6 +56,7 @@ from app.services.bootstrap.summary import _small_iso
 from app.services.content import _help_request_role_summaries, _load_help_request_roles
 from app.services.feeds import _truncate_update_body
 from app.services.messages import find_direct_conversation_between
+from app.services.projects.phases.labels import display_stage_label
 from app.services.projects.software.helpers import _ensure_software_tables
 
 
@@ -129,7 +130,8 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
         for r in proj_activity_rows:
             aid = str(r["id"])
             signed = signups.get(aid, 0)
-            needed = minimums.get(aid, 0)
+            needed = max(0, minimums.get(aid, 0) - signed)
+            place = str(r["location_label"] or "").strip()
             items.append(
                 {
                     "kind": "project",
@@ -137,7 +139,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                     "subjectId": r["parent_slug"],
                     "title": r["title"],
                     "href": f"/projects/{r['parent_slug']}?activity={aid}",
-                    "meta": r["parent_title"],
+                    "meta": place,
                     "createdAt": _small_iso(r["scheduled_at"]),
                     "scheduledAt": _small_iso(r["scheduled_at"]),
                     "endsAt": _small_iso(r["ends_at"]),
@@ -208,7 +210,8 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
         for r in evt_activity_rows:
             aid = str(r["id"])
             signed = signups.get(aid, 0)
-            needed = minimums.get(aid, 0)
+            needed = max(0, minimums.get(aid, 0) - signed)
+            place = str(r["location_label"] or "").strip()
             items.append(
                 {
                     "kind": "event",
@@ -216,7 +219,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                     "subjectId": r["parent_slug"],
                     "title": r["title"],
                     "href": f"/events/{r['parent_slug']}?activity={aid}",
-                    "meta": r["parent_title"],
+                    "meta": place,
                     "createdAt": _small_iso(r["scheduled_at"]),
                     "scheduledAt": _small_iso(r["scheduled_at"]),
                     "endsAt": _small_iso(r["ends_at"]),
@@ -535,6 +538,8 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 projects.c.slug,
                 projects.c.title,
                 project_phase_change_requests.c.target_phase_id,
+                projects.c.project_mode,
+                projects.c.project_subtype,
             )
             .select_from(
                 project_phase_change_requests.join(
@@ -577,9 +582,11 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                 {
                     "kind": "vote",
                     "id": str(r["id"]),
-                    "title": f"Phase change: {r['title']}",
+                    "title": r["title"],
                     "href": _vote_href("projects", r["slug"], "phase_change", r["id"]),
-                    "meta": f"Advance to {str(r['target_phase_id']).replace('-', ' ').title()}?",
+                    "meta": (
+                        f"Advance to {display_stage_label(str(r['project_mode']), str(r['project_subtype']) if r['project_subtype'] else None, str(r['target_phase_id']))}?"
+                    ),
                     "createdAt": _small_iso(r["created_at"]),
                     "countLabel": _build_count_label(c["yes"], c["no"]),
                     "voteEntityKind": "project",

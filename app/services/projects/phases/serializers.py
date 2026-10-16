@@ -47,6 +47,7 @@ def _serialize_edit_request(
         "project_id": row["project_id"],
         "title": row["title"],
         "description": row["description"],
+        "location_label": row.get("location_label"),
         "author_id": row["author_id"],
         "status": row["status"],
         "created_at": row["created_at"],

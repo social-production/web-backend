@@ -32,10 +32,29 @@ def create_project_edit_request(
     project_slug: str,
     title: str,
     description: str,
+    location_label: str | None = None,
+    location_id: UUID | None = None,
+    is_online: bool = False,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug(db, project_slug)
     _ensure_governance_requests_allowed(project_row["project_mode"])
     _ensure_member(db, project_row["id"], current_user_id)
+
+    proposed_location_label = None
+    proposed_location_id = None
+    cleaned_location = (location_label or "").strip()
+    if cleaned_location and (
+        cleaned_location != str(project_row["location_label"] or "")
+        or location_id != project_row.get("location_id")
+    ):
+        from app.services.locations.resolve import ensure_location_id
+
+        proposed_location_id, proposed_location_label = ensure_location_id(
+            db,
+            location_id=location_id,
+            location_label=cleaned_location,
+            is_online=is_online,
+        )
 
     created = (
         db.execute(
@@ -44,6 +63,8 @@ def create_project_edit_request(
                 project_id=project_row["id"],
                 title=title.strip(),
                 description=description.strip(),
+                location_label=proposed_location_label,
+                location_id=proposed_location_id,
                 author_id=current_user_id,
                 status="open",
             )
@@ -52,6 +73,7 @@ def create_project_edit_request(
                 project_edit_requests.c.project_id,
                 project_edit_requests.c.title,
                 project_edit_requests.c.description,
+                project_edit_requests.c.location_label,
                 project_edit_requests.c.author_id,
                 project_edit_requests.c.status,
                 project_edit_requests.c.created_at,
@@ -148,13 +170,15 @@ def vote_project_edit_request(
                 .where(project_edit_requests.c.id == request_id)
                 .values(status="approved")
             )
+            applied_values = {
+                "title": request_row["title"],
+                "description": request_row["description"],
+            }
+            if request_row.get("location_label"):
+                applied_values["location_label"] = request_row["location_label"]
+                applied_values["location_id"] = request_row.get("location_id")
             db.execute(
-                update(projects)
-                .where(projects.c.id == project_row["id"])
-                .values(
-                    title=request_row["title"],
-                    description=request_row["description"],
-                )
+                update(projects).where(projects.c.id == project_row["id"]).values(**applied_values)
             )
             executed = True
         elif not summary.get("can_still_pass", True):

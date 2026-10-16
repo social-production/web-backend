@@ -20,6 +20,7 @@ from app.models import (
     project_memberships,
     project_phase_change_requests,
     project_phase_change_votes,
+    project_plan_votes,
     project_plans,
     project_service_request_settings,
     project_signals,
@@ -598,6 +599,8 @@ def _visible_lifecycle_phases(
     project_mode: str,
     project_subtype: str | None,
     current_phase_id: str,
+    *,
+    include_access: bool = False,
 ) -> list[dict[str, object]]:
     from app.services.lifecycle_copy import project_phase_copy
     from app.services.projects_phases import (
@@ -612,7 +615,9 @@ def _visible_lifecycle_phases(
         for phase_id, order, short_label, title, summary in PROJECT_PHASES
     }
     current_order = phase_order.get(effective_phase_id_for_progress(current_phase_id), 1)
-    visible_ids = visible_phase_ids_for_project(project_mode, project_subtype, current_phase_id)
+    visible_ids = visible_phase_ids_for_project(
+        project_mode, project_subtype, current_phase_id, include_access=include_access
+    )
 
     phases: list[dict[str, object]] = []
     for index, phase_id in enumerate(visible_ids, start=1):
@@ -650,13 +655,26 @@ def _build_project_history(
     history: list[tuple[object, dict[str, object]]] = []
     project_row = (
         db.execute(
-            select(projects.c.title, projects.c.description).where(projects.c.id == project_id)
+            select(
+                projects.c.title,
+                projects.c.description,
+                projects.c.location_label,
+                projects.c.project_mode,
+                projects.c.project_subtype,
+            ).where(projects.c.id == project_id)
         )
         .mappings()
         .first()
     )
     current_title = str(project_row["title"]) if project_row else ""
     current_description = str(project_row["description"]) if project_row else ""
+    current_location = str(project_row["location_label"] or "") if project_row else ""
+    history_mode = str(project_row["project_mode"]) if project_row else "productive"
+    history_subtype = (
+        str(project_row["project_subtype"])
+        if project_row and project_row["project_subtype"]
+        else None
+    )
 
     def _author_username(author_id):
         if author_id is None:
@@ -746,6 +764,17 @@ def _build_project_history(
                                 "before": current_description,
                                 "after": req["description"],
                             },
+                            *(
+                                [
+                                    {
+                                        "label": "Location",
+                                        "before": current_location,
+                                        "after": req["location_label"],
+                                    }
+                                ]
+                                if req.get("location_label")
+                                else []
+                            ),
                         ],
                     },
                 },
@@ -770,6 +799,15 @@ def _build_project_history(
         summary, passes, can_still = _vote_summary(
             vote_rows, vote_context_population, current_user_id
         )
+        from app.services.projects_phases import display_stage_label
+
+        to_label = display_stage_label(history_mode, history_subtype, str(req["target_phase_id"]))
+        if req["change_kind"] == "revert":
+            phase_decision_label = f"Return to {to_label}"
+        elif to_label == "Closed":
+            phase_decision_label = "Close project"
+        else:
+            phase_decision_label = f"Advance to {to_label}"
         history.append(
             (
                 req["created_at"],
@@ -777,7 +815,7 @@ def _build_project_history(
                     "id": str(req["id"]),
                     "entityKind": "project",
                     "kind": "project-phase-change",
-                    "kindLabel": "Phase decision",
+                    "kindLabel": phase_decision_label,
                     "createdAt": _iso(req["created_at"]),
                     "authorUsername": _author_username(req["author_id"]),
                     "status": req["status"],
@@ -794,10 +832,60 @@ def _build_project_history(
                             req["from_phase_id"], req["from_phase_id"]
                         ),
                         "toPhaseId": req["target_phase_id"],
-                        "toPhaseLabel": phase_title_map.get(
-                            req["target_phase_id"], req["target_phase_id"]
-                        ),
+                        "toPhaseLabel": to_label,
                         "reason": req["reason"],
+                    },
+                },
+            )
+        )
+
+    plan_rows = (
+        db.execute(
+            select(project_plans)
+            .where(project_plans.c.project_id == project_id)
+            .order_by(project_plans.c.created_at.desc())
+        )
+        .mappings()
+        .all()
+    )
+    for plan in plan_rows:
+        vote_rows = db.execute(
+            select(project_plan_votes.c.vote, project_plan_votes.c.voter_id).where(
+                project_plan_votes.c.plan_id == plan["id"]
+            )
+        ).all()
+        if not vote_rows:
+            continue
+        summary, passes, can_still = _vote_summary(
+            vote_rows, vote_context_population, current_user_id
+        )
+        phase_kind = str(plan["phase_kind"] or "")
+        if phase_kind in {"distribution", "access"}:
+            plan_decision_label = "Distribution plan"
+        elif phase_kind in {"production", "organisation"}:
+            plan_decision_label = "Production plan"
+        else:
+            plan_decision_label = "Plan"
+        history.append(
+            (
+                plan["created_at"],
+                {
+                    "id": str(plan["id"]),
+                    "entityKind": "project",
+                    "kind": "project-plan",
+                    "kindLabel": f"{plan_decision_label} · {plan['title']}",
+                    "createdAt": _iso(plan["created_at"]),
+                    "authorUsername": _author_username(plan["author_id"]),
+                    "status": plan["status"],
+                    "approvalThresholdPercent": 66,
+                    "voteSummary": summary,
+                    "passesApprovalThreshold": passes,
+                    "canStillPass": can_still,
+                    "canVote": plan["status"] == "open",
+                    "payload": {
+                        "type": "plan",
+                        "title": plan["title"],
+                        "phaseKind": phase_kind,
                     },
                 },
             )

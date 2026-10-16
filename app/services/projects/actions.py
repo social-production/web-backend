@@ -322,6 +322,7 @@ def create_project_activity(
     linked_plan_id: UUID | None = None,
     linked_plan_phase_id: str | None = None,
     location_id: UUID | None = None,
+    meeting_url: str | None = None,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
     if project_row["project_mode"] == "personal-service":
@@ -371,6 +372,7 @@ def create_project_activity(
                     is_online=is_online,
                     location_label=resolved_location_label,
                     location_id=resolved_location_id,
+                    meeting_url=(meeting_url or "").strip() or None if is_online else None,
                     note=note.strip(),
                     status="active",
                 )
@@ -446,6 +448,31 @@ def create_project_activity(
     except HTTPException:
         db.rollback()
         raise
+    member_ids = (
+        db.execute(
+            select(project_memberships.c.user_id).where(
+                project_memberships.c.project_id == project_row["id"],
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for member_id in member_ids:
+        if member_id == current_user_id:
+            continue
+        create_notification(
+            db=db,
+            recipient_id=member_id,
+            actor_id=current_user_id,
+            kind="prj-activity",
+            surface="project",
+            subject_type="project",
+            subject_id=project_row["id"],
+            target_id=created["id"],
+            title=str(project_row["title"]),
+            body=f"{created['title']} was added.",
+            href=f"/projects/{project_row['slug']}?activity={created['id']}",
+        )
     for role in role_items:
         suggested_user_id = role.get("suggested_user_id")
         if suggested_user_id is None:
@@ -458,7 +485,7 @@ def create_project_activity(
             subject_type="project",
             subject_id=project_row["id"],
             activity_id=created["id"],
-            title=f"Suggested for {role['label']}",
+            title=str(project_row["title"]),
             body=f"You've been suggested for {role['label']} on {created['title']}.",
             href=f"/projects/{project_row['slug']}?activity={created['id']}",
         )

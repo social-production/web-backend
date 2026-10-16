@@ -15,42 +15,52 @@ def effective_phase_id_for_progress(phase_id: str) -> str:
 
 
 def display_stage_label(project_mode: str, project_subtype: str | None, phase_id: str) -> str:
-    if project_mode == "personal-service":
-        if phase_id == "phase-1":
-            return "Activity"
-        if phase_id == "phase-2":
-            return "Closed"
-        return "Activity"
-
     normalized_phase_id = effective_phase_id_for_progress(phase_id)
-    return STAGE_LABEL_BY_PHASE_ID.get(normalized_phase_id, "Proposal")
+    if project_mode == "personal-service":
+        return "Closed" if normalized_phase_id == "phase-2" else "Activity"
+    if project_mode == "collective-service":
+        return {
+            "phase-1": "Proposal",
+            "phase-2": "Operations Plan",
+            "phase-3": "Access Plan",
+            "phase-5": "Activity",
+            "phase-7": "Closed",
+        }.get(normalized_phase_id, "Proposal")
+    return {
+        "phase-1": "Proposal",
+        "phase-2": "Production Plan",
+        "phase-3": "Distribution Plan",
+        "phase-5": "Activity",
+        "phase-7": "Closed",
+    }.get(normalized_phase_id, STAGE_LABEL_BY_PHASE_ID.get(normalized_phase_id, "Proposal"))
 
 
 def lifecycle_phase_title(project_mode: str, phase_id: str, default_title: str) -> str:
-    if project_mode == "personal-service":
-        if phase_id == "phase-1":
-            return "Activity"
-        if phase_id == "phase-2":
-            return "Closed"
-    if project_mode == "collective-service":
-        if phase_id == "phase-2":
-            return "Operations Plan"
-        if phase_id == "phase-3":
-            return "Access Plan"
-    return default_title
+    return display_stage_label(project_mode, None, phase_id) or default_title
 
 
 def _skips_distribution_phase(project_mode: str, project_subtype: str | None) -> bool:
-    return project_mode == "collective-service" or project_subtype == "software"
+    return project_subtype == "software"
 
 
 def visible_phase_ids_for_project(
     project_mode: str,
     project_subtype: str | None,
     current_phase_id: str,
+    *,
+    include_access: bool = False,
 ) -> list[str]:
     if project_mode == "personal-service":
-        return ["phase-1", "phase-2"]
+        if current_phase_id == "phase-2":
+            return ["phase-1", "phase-2"]
+        return ["phase-1"]
+
+    if project_mode == "collective-service":
+        phases = ["phase-1", "phase-2"]
+        if include_access or current_phase_id == "phase-3":
+            phases.append("phase-3")
+        phases.extend(["phase-5", "phase-7"])
+        return phases
 
     if _skips_distribution_phase(project_mode, project_subtype):
         return ["phase-1", "phase-2", "phase-5", "phase-7"]
@@ -62,6 +72,8 @@ def next_phase_id_for_project(
     project_mode: str,
     project_subtype: str | None,
     current_phase_id: str,
+    *,
+    include_access: bool = False,
 ) -> str | None:
     if project_mode == "personal-service":
         if current_phase_id == "phase-1":
@@ -83,7 +95,10 @@ def next_phase_id_for_project(
         if next_phase_id is None:
             return None
 
-        if next_phase_id == "phase-3" and _skips_distribution_phase(project_mode, project_subtype):
+        if next_phase_id == "phase-3" and (
+            _skips_distribution_phase(project_mode, project_subtype)
+            or (project_mode == "collective-service" and not include_access)
+        ):
             next_order += 1
             continue
 

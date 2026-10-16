@@ -21,6 +21,13 @@ from app.services.projects.helpers import _iso, _plan_leader_status, _vote_summa
 from app.services.projects_plans import _plan_subtype_from_payload, _subtype_label
 
 
+def _viewer_assessment_comment(plan_payload: dict, current_user_id: UUID | None) -> str:
+    raw_comments = plan_payload.get("assessmentComments") or {}
+    if current_user_id is None or not isinstance(raw_comments, dict):
+        return ""
+    return str(raw_comments.get(str(current_user_id)) or "")
+
+
 def load_project_plans(
     db: Session,
     *,
@@ -127,6 +134,8 @@ def load_project_plans(
                 "details": str(item.get("details") or ""),
                 "materialsLabel": str(item.get("materialsLabel") or ""),
                 "costLabel": str(item.get("costLabel") or ""),
+                "startDate": str(item.get("startDate") or "") or None,
+                "endDate": str(item.get("endDate") or "") or None,
             }
             for idx, item in enumerate(list(plan_payload.get("planPhases") or []))
         ]
@@ -151,6 +160,9 @@ def load_project_plans(
             "leaderStatus": leader_status,
             "locationId": str(plan["location_id"]) if plan["location_id"] else None,
             "locationLabel": location_label,
+            "licenseLabel": str(plan_payload.get("licenseLabel") or "") or None,
+            "recipients": str(plan_payload.get("recipients") or ""),
+            "viewerAssessmentComment": _viewer_assessment_comment(plan_payload, current_user_id),
         }
 
         if plan["phase_kind"] in {"production", "organisation"}:

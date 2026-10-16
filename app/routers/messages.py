@@ -337,7 +337,9 @@ def edit_conversation_message(
     )
 
 
-@router.delete("/conversations/{conversation_id}/messages/{message_id}", response_model=PinActionResponse)
+@router.delete(
+    "/conversations/{conversation_id}/messages/{message_id}", response_model=PinActionResponse
+)
 def delete_conversation_message(
     conversation_id: UUID,
     message_id: UUID,
@@ -525,7 +527,9 @@ def mark_linked_chat_read_route(
     )
 
 
-@router.patch("/linked-chats/{subject_type}/{subject_id}/preferences", response_model=PinActionResponse)
+@router.patch(
+    "/linked-chats/{subject_type}/{subject_id}/preferences", response_model=PinActionResponse
+)
 def update_linked_chat_preferences(
     subject_type: str,
     subject_id: UUID,
