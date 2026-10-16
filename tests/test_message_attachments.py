@@ -185,3 +185,30 @@ def test_pin_cap_and_group_creator_rule(client: TestClient) -> None:
     assert listed.json()["can_pin"] is False
     assert listed.json()["pins"][0]["message_id"] == group_message_id
     assert listed.json()["pins"][0]["preview"] == "group note"
+
+
+def test_sender_sees_when_the_other_person_has_read(client: TestClient) -> None:
+    owner, member, _ = _seed_pair("seen")
+    conversation_id = _direct(client, owner, member[1])
+    sent = client.post(
+        f"/messages/conversations/{conversation_id}/messages",
+        headers=_auth(owner[0]),
+        json={"body": "hello"},
+    )
+    assert sent.status_code == 200, sent.text
+
+    before = client.get(
+        f"/messages/conversations/{conversation_id}/messages", headers=_auth(owner[0])
+    )
+    assert before.status_code == 200, before.text
+    assert "peer_read_at" in before.json()
+
+    read = client.post(f"/messages/conversations/{conversation_id}/read", headers=_auth(member[0]))
+    assert read.status_code == 200, read.text
+
+    after = client.get(
+        f"/messages/conversations/{conversation_id}/messages", headers=_auth(owner[0])
+    )
+    peer_read_at = after.json()["peer_read_at"]
+    assert peer_read_at is not None
+    assert peer_read_at >= after.json()["items"][-1]["created_at"][:19]

@@ -165,6 +165,7 @@ class ConversationMessagesResponse(BaseModel):
     items: list[MessageOut]
     pins: list[PinOut] = Field(default_factory=list)
     can_pin: bool = False
+    peer_read_at: str | None = None
 
 
 class PinActionResponse(BaseModel):
