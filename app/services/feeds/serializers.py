@@ -31,6 +31,7 @@ from app.models import (
 from app.services.content import _help_request_role_summaries
 from app.services.moderation.serialize import load_active_reports_for_targets
 from app.services.projects_phases import display_stage_label as project_display_stage_label
+from app.services.scope_governance import scope_image_url
 
 VALID_SORTS = frozenset({"popular", "recent"})
 
@@ -422,25 +423,34 @@ def _fetch_tags_for_items(
     thread_ids: list[UUID],
     event_ids: list[UUID],
     help_request_ids: list[UUID] | None = None,
-) -> dict[str, dict[str, list[dict[str, str]]]]:
+) -> dict[str, dict[str, list[dict[str, str | None]]]]:
     """Returns {entity_id_str: {'channels': [...], 'communities': [...]}}."""
-    result: dict[str, dict[str, list[dict[str, str]]]] = {}
+    result: dict[str, dict[str, list[dict[str, str | None]]]] = {}
 
-    if project_ids:
+    sources = (
+        (project_tags, project_tags.c.project_id, project_ids),
+        (thread_tags, thread_tags.c.thread_id, thread_ids),
+        (event_tags, event_tags.c.event_id, event_ids),
+        (help_request_tags, help_request_tags.c.help_request_id, help_request_ids or []),
+    )
+    for table, id_column, ids in sources:
+        if not ids:
+            continue
         rows = (
             db.execute(
                 select(
-                    project_tags.c.project_id.label("entity_id"),
-                    project_tags.c.tag_kind,
+                    id_column.label("entity_id"),
                     channels.c.slug.label("channel_slug"),
                     channels.c.name.label("channel_name"),
+                    channels.c.image_storage_key.label("channel_image_key"),
                     communities.c.slug.label("community_slug"),
                     communities.c.name.label("community_name"),
+                    communities.c.image_storage_key.label("community_image_key"),
                 )
-                .select_from(project_tags)
-                .outerjoin(channels, channels.c.id == project_tags.c.channel_id)
-                .outerjoin(communities, communities.c.id == project_tags.c.community_id)
-                .where(project_tags.c.project_id.in_(project_ids))
+                .select_from(table)
+                .outerjoin(channels, channels.c.id == table.c.channel_id)
+                .outerjoin(communities, communities.c.id == table.c.community_id)
+                .where(id_column.in_(ids))
             )
             .mappings()
             .all()
@@ -450,119 +460,24 @@ def _fetch_tags_for_items(
             bucket = result.setdefault(key, {"channels": [], "communities": []})
             if row["channel_slug"]:
                 bucket["channels"].append(
-                    {"slug": row["channel_slug"], "label": row["channel_name"], "kind": "channel"}
-                )
-            if row["community_slug"]:
-                bucket["communities"].append(
                     {
-                        "slug": row["community_slug"],
-                        "label": row["community_name"],
-                        "kind": "community",
+                        "slug": row["channel_slug"],
+                        "label": row["channel_name"],
+                        "kind": "channel",
+                        "image_url": scope_image_url(
+                            "channel", row["channel_slug"], row["channel_image_key"]
+                        ),
                     }
                 )
-
-    if thread_ids:
-        rows = (
-            db.execute(
-                select(
-                    thread_tags.c.thread_id.label("entity_id"),
-                    thread_tags.c.tag_kind,
-                    channels.c.slug.label("channel_slug"),
-                    channels.c.name.label("channel_name"),
-                    communities.c.slug.label("community_slug"),
-                    communities.c.name.label("community_name"),
-                )
-                .select_from(thread_tags)
-                .outerjoin(channels, channels.c.id == thread_tags.c.channel_id)
-                .outerjoin(communities, communities.c.id == thread_tags.c.community_id)
-                .where(thread_tags.c.thread_id.in_(thread_ids))
-            )
-            .mappings()
-            .all()
-        )
-        for row in rows:
-            key = str(row["entity_id"])
-            bucket = result.setdefault(key, {"channels": [], "communities": []})
-            if row["channel_slug"]:
-                bucket["channels"].append(
-                    {"slug": row["channel_slug"], "label": row["channel_name"], "kind": "channel"}
-                )
             if row["community_slug"]:
                 bucket["communities"].append(
                     {
                         "slug": row["community_slug"],
                         "label": row["community_name"],
                         "kind": "community",
-                    }
-                )
-
-    if event_ids:
-        rows = (
-            db.execute(
-                select(
-                    event_tags.c.event_id.label("entity_id"),
-                    event_tags.c.tag_kind,
-                    channels.c.slug.label("channel_slug"),
-                    channels.c.name.label("channel_name"),
-                    communities.c.slug.label("community_slug"),
-                    communities.c.name.label("community_name"),
-                )
-                .select_from(event_tags)
-                .outerjoin(channels, channels.c.id == event_tags.c.channel_id)
-                .outerjoin(communities, communities.c.id == event_tags.c.community_id)
-                .where(event_tags.c.event_id.in_(event_ids))
-            )
-            .mappings()
-            .all()
-        )
-        for row in rows:
-            key = str(row["entity_id"])
-            bucket = result.setdefault(key, {"channels": [], "communities": []})
-            if row["channel_slug"]:
-                bucket["channels"].append(
-                    {"slug": row["channel_slug"], "label": row["channel_name"], "kind": "channel"}
-                )
-            if row["community_slug"]:
-                bucket["communities"].append(
-                    {
-                        "slug": row["community_slug"],
-                        "label": row["community_name"],
-                        "kind": "community",
-                    }
-                )
-
-    if help_request_ids:
-        rows = (
-            db.execute(
-                select(
-                    help_request_tags.c.help_request_id.label("entity_id"),
-                    help_request_tags.c.tag_kind,
-                    channels.c.slug.label("channel_slug"),
-                    channels.c.name.label("channel_name"),
-                    communities.c.slug.label("community_slug"),
-                    communities.c.name.label("community_name"),
-                )
-                .select_from(help_request_tags)
-                .outerjoin(channels, channels.c.id == help_request_tags.c.channel_id)
-                .outerjoin(communities, communities.c.id == help_request_tags.c.community_id)
-                .where(help_request_tags.c.help_request_id.in_(help_request_ids))
-            )
-            .mappings()
-            .all()
-        )
-        for row in rows:
-            key = str(row["entity_id"])
-            bucket = result.setdefault(key, {"channels": [], "communities": []})
-            if row["channel_slug"]:
-                bucket["channels"].append(
-                    {"slug": row["channel_slug"], "label": row["channel_name"], "kind": "channel"}
-                )
-            if row["community_slug"]:
-                bucket["communities"].append(
-                    {
-                        "slug": row["community_slug"],
-                        "label": row["community_name"],
-                        "kind": "community",
+                        "image_url": scope_image_url(
+                            "community", row["community_slug"], row["community_image_key"]
+                        ),
                     }
                 )
 

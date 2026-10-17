@@ -31,6 +31,7 @@ from app.models import (
     users,
 )
 from app.services.access_control import assert_can_view_scope
+from app.utils.handles import validate_handle
 from app.utils.votes import required_votes, weekly_active_users_global
 
 APPROVAL_SHARE = 0.66
@@ -88,10 +89,14 @@ def _memberships(db: Session, kind: str, scope_id: UUID) -> dict:
 
 
 def image_url(kind: str, row: Mapping[str, object]) -> str | None:
-    key = row.get("image_storage_key")
+    return scope_image_url(kind, str(row["slug"]), row.get("image_storage_key"))
+
+
+def scope_image_url(kind: str, slug: str, key: object) -> str | None:
+    """API path for a scope's picture, versioned so a new upload busts caches."""
     if not key:
         return None
-    return f"/scopes/{_plural(kind)}/{row['slug']}/image?v={str(key)[-8:]}"
+    return f"/scopes/{_plural(kind)}/{slug}/image?v={str(key)[-8:]}"
 
 
 # ---- images -------------------------------------------------------------------------------
@@ -406,6 +411,9 @@ def edit(db: Session, viewer_id: UUID, kind: str, slug: str, payload: dict) -> d
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nothing to change"
         )
+    if "name" in clean:
+        label = "Community name" if kind == "community" else "Channel name"
+        clean["name"] = validate_handle(str(clean["name"]), field_label=label)
     if _mode(kind, row) == "organizer":
         _ensure_organizer(db, kind, row, viewer_id)
         _apply_edit(db, kind, row, clean)

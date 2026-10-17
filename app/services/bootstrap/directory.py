@@ -11,6 +11,7 @@ from app.models import (
     scope_memberships,
 )
 from app.services.people_suggestions import get_ranked_people_suggestions
+from app.services.scope_governance import scope_image_url
 
 
 def _get_platform_directory_item(
@@ -18,7 +19,7 @@ def _get_platform_directory_item(
 ) -> dict[str, object] | None:
     row = (
         db.execute(
-            select(channels.c.id, channels.c.slug, channels.c.name)
+            select(channels.c.id, channels.c.slug, channels.c.name, channels.c.image_storage_key)
             .where(channels.c.slug.in_(["platform", "stewardship"]))
             .order_by(channels.c.slug.asc())
             .limit(1)
@@ -44,6 +45,7 @@ def _get_platform_directory_item(
         "label": row["name"],
         "href": "/platform",
         "visibility": "public",
+        "imageUrl": scope_image_url("channel", row["slug"], row["image_storage_key"]),
         "viewerIsMember": membership is not None,
     }
 
@@ -56,7 +58,7 @@ def _get_channel_directory_items(
 
     rows = (
         db.execute(
-            select(channels.c.slug, channels.c.name)
+            select(channels.c.slug, channels.c.name, channels.c.image_storage_key)
             .select_from(
                 scope_memberships.join(channels, channels.c.id == scope_memberships.c.scope_id)
             )
@@ -77,6 +79,7 @@ def _get_channel_directory_items(
             "label": row["name"],
             "href": f"/channels/{row['slug']}",
             "visibility": "public",
+            "imageUrl": scope_image_url("channel", row["slug"], row["image_storage_key"]),
         }
         for row in rows
     ]
@@ -90,7 +93,12 @@ def _get_community_directory_items(
 
     rows = (
         db.execute(
-            select(communities.c.slug, communities.c.name, communities.c.join_policy)
+            select(
+                communities.c.slug,
+                communities.c.name,
+                communities.c.join_policy,
+                communities.c.image_storage_key,
+            )
             .select_from(
                 scope_memberships.join(
                     communities, communities.c.id == scope_memberships.c.scope_id
@@ -112,6 +120,7 @@ def _get_community_directory_items(
             "label": row["name"],
             "href": f"/communities/{row['slug']}",
             "visibility": "private" if row["join_policy"] == "closed" else "public",
+            "imageUrl": scope_image_url("community", row["slug"], row["image_storage_key"]),
         }
         for row in rows
     ]

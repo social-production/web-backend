@@ -27,6 +27,7 @@ class TagRefOut(BaseModel):
     slug: str
     label: str
     kind: str
+    image_url: str | None = None
 
 
 class HelpRequestRoleFeedOut(BaseModel):

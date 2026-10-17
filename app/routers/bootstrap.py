@@ -41,6 +41,7 @@ class DirectoryItemOut(BaseModel):
     href: str
     visibility: str | None = None
     viewerIsMember: bool | None = None
+    imageUrl: str | None = None
 
 
 class DirectoryOut(BaseModel):

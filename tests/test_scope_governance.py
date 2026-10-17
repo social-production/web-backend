@@ -112,10 +112,10 @@ def test_organizers_edit_directly_and_switching_needs_their_vote(client: TestCli
     direct = client.patch(
         f"/scopes/communities/{slug}/settings",
         headers=_auth(owner[0]),
-        json={"name": "Garden Crew"},
+        json={"name": "Garden-Crew"},
     )
     assert direct.status_code == 200, direct.text
-    assert direct.json()["name"] == "Garden Crew"
+    assert direct.json()["name"] == "Garden-Crew"
     assert direct.json()["governance"] == "organizer"
 
     blocked = client.patch(
@@ -188,3 +188,33 @@ def test_picture_upload_and_serving(client: TestClient) -> None:
     assert served.status_code == 200, served.text
     assert served.content == TINY_PNG
     assert served.headers["content-type"].startswith("image/png")
+
+
+def test_rename_follows_the_creation_name_rules(client: TestClient) -> None:
+    (owner,) = _users("sgname", 1)
+    slug = _community(client, owner, private=True, governance="organizer")
+    spaced = client.patch(
+        f"/scopes/communities/{slug}/settings",
+        headers=_auth(owner[0]),
+        json={"name": "Garden Crew"},
+    )
+    assert spaced.status_code == 422, spaced.text
+    assert "cannot contain spaces" in spaced.json()["detail"]
+
+
+def test_left_rail_lists_carry_the_picture(client: TestClient) -> None:
+    (owner,) = _users("sgrail", 1)
+    slug = _community(client, owner, private=False, governance="collaborative")
+    uploaded = client.post(
+        f"/scopes/communities/{slug}/image",
+        headers=_auth(owner[0]),
+        files={"file": ("dot.png", TINY_PNG, "image/png")},
+    )
+    client.patch(
+        f"/scopes/communities/{slug}/settings",
+        headers=_auth(owner[0]),
+        json={"image_key": uploaded.json()["image_key"], "image_content_type": "image/png"},
+    )
+    directory = client.get("/bootstrap", headers=_auth(owner[0])).json()["directory"]
+    item = next(entry for entry in directory["communities"] if entry["slug"] == slug)
+    assert item["imageUrl"].startswith(f"/scopes/communities/{slug}/image")
