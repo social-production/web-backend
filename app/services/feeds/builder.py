@@ -59,11 +59,18 @@ def _build_feed(
     entity_filter: str = "all",
     timezone_name: str | None = None,
 ) -> dict[str, object]:
+    # Public feeds hide private-community items, except from that community's members.
+    viewer_community_ids: list[UUID] = []
+    if public_only and current_user_id is not None:
+        from app.services.feeds.scope import _get_user_scope_ids
+
+        _, viewer_community_ids = _get_user_scope_ids(db, current_user_id)
+    scoped = {"public_only": public_only, "viewer_community_ids": viewer_community_ids}
     selects_by_type = {
-        "project": _projects_select(channel_ids, community_ids, public_only=public_only),
-        "thread": _threads_select(channel_ids, community_ids, public_only=public_only),
-        "event": _events_select(channel_ids, community_ids, public_only=public_only),
-        "help_request": _help_requests_select(channel_ids, community_ids, public_only=public_only),
+        "project": _projects_select(channel_ids, community_ids, **scoped),
+        "thread": _threads_select(channel_ids, community_ids, **scoped),
+        "event": _events_select(channel_ids, community_ids, **scoped),
+        "help_request": _help_requests_select(channel_ids, community_ids, **scoped),
     }
 
     wanted_type = filter_entity_type(entity_filter)

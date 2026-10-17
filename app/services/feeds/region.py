@@ -204,11 +204,18 @@ def get_region_feed(
     bounded_offset = max(0, offset)
     min_lat, max_lat, min_lon, max_lon = bounding_box(center_lat, center_lon, safe_radius)
 
+    # Private-community items stay hidden except from that community's members.
+    viewer_community_ids: list[UUID] = []
+    if current_user_id is not None:
+        from app.services.feeds.scope import _get_user_scope_ids
+
+        _, viewer_community_ids = _get_user_scope_ids(db, current_user_id)
+    scoped = {"public_only": True, "viewer_community_ids": viewer_community_ids}
     selects_by_type = {
-        "project": _projects_select(None, None, public_only=True),
+        "project": _projects_select(None, None, **scoped),
         "thread": None,  # threads are not map/region physical entities
-        "event": _events_select(None, None, public_only=True),
-        "help_request": _help_requests_select(None, None, public_only=True),
+        "event": _events_select(None, None, **scoped),
+        "help_request": _help_requests_select(None, None, **scoped),
     }
     if not include_online:
         # Prefer entities with confirmed physical locations for the region list.

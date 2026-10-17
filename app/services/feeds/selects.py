@@ -117,6 +117,7 @@ def _projects_select(
     community_ids: list[UUID] | None,
     *,
     public_only: bool = False,
+    viewer_community_ids: list[UUID] | None = None,
 ):
     support_count, oppose_count = _project_signal_subqueries()
     q = select(
@@ -166,7 +167,11 @@ def _projects_select(
             .distinct()
         )
     if public_only:
-        q = q.where(~closed_community_only_tag_condition(project_tags, projects.c.id, "project_id"))
+        q = q.where(
+            ~closed_community_only_tag_condition(
+                project_tags, projects.c.id, "project_id", viewer_community_ids
+            )
+        )
     return q
 
 
@@ -175,6 +180,7 @@ def _threads_select(
     community_ids: list[UUID] | None,
     *,
     public_only: bool = False,
+    viewer_community_ids: list[UUID] | None = None,
 ):
     q = select(
         threads.c.id,
@@ -223,7 +229,11 @@ def _threads_select(
             .distinct()
         )
     if public_only:
-        q = q.where(~closed_community_only_tag_condition(thread_tags, threads.c.id, "thread_id"))
+        q = q.where(
+            ~closed_community_only_tag_condition(
+                thread_tags, threads.c.id, "thread_id", viewer_community_ids
+            )
+        )
     return q
 
 
@@ -232,6 +242,7 @@ def _events_select(
     community_ids: list[UUID] | None,
     *,
     public_only: bool = False,
+    viewer_community_ids: list[UUID] | None = None,
 ):
     total_support, total_oppose = _event_signal_subqueries()
     support_count, oppose_count = _event_signal_subqueries()
@@ -271,7 +282,9 @@ def _events_select(
             events.c.is_private.is_(False),
             and_(
                 events.c.audience == "private_community",
-                events.c.home_community_id.in_(community_ids or []),
+                events.c.home_community_id.in_(
+                    list(community_ids or []) + list(viewer_community_ids or [])
+                ),
             ),
         ),
     )
@@ -291,7 +304,11 @@ def _events_select(
             .distinct()
         )
     if public_only:
-        q = q.where(~closed_community_only_tag_condition(event_tags, events.c.id, "event_id"))
+        q = q.where(
+            ~closed_community_only_tag_condition(
+                event_tags, events.c.id, "event_id", viewer_community_ids
+            )
+        )
     return q
 
 
@@ -300,6 +317,7 @@ def _help_requests_select(
     community_ids: list[UUID] | None,
     *,
     public_only: bool = False,
+    viewer_community_ids: list[UUID] | None = None,
 ):
     q = (
         select(
@@ -353,7 +371,7 @@ def _help_requests_select(
     if public_only:
         q = q.where(
             ~closed_community_only_tag_condition(
-                help_request_tags, help_requests.c.id, "help_request_id"
+                help_request_tags, help_requests.c.id, "help_request_id", viewer_community_ids
             )
         )
     return q

@@ -346,8 +346,14 @@ def assert_can_view_scope(
         raise NotFoundAppError("Community not found")
 
 
-def closed_community_only_tag_condition(tag_table, entity_id_column, entity_fk_name: str):
-    """True when an entity is tagged only to closed communities (no public-scope escape hatch)."""
+def closed_community_only_tag_condition(
+    tag_table, entity_id_column, entity_fk_name: str, allowed_community_ids=None
+):
+    """True when an entity is tagged only to closed communities (no public-scope escape hatch).
+
+    ``allowed_community_ids`` are closed communities the viewer belongs to; a tag to one of them
+    makes the entity visible to that viewer.
+    """
     entity_fk = getattr(tag_table.c, entity_fk_name)
     has_closed_community_tag = exists(
         select(tag_table.c.id)
@@ -369,6 +375,7 @@ def closed_community_only_tag_condition(tag_table, entity_id_column, entity_fk_n
                     tag_table.c.community_id.is_not(None),
                     communities.c.join_policy != "closed",
                 ),
+                tag_table.c.community_id.in_(list(allowed_community_ids or [])),
             ),
         )
     )
