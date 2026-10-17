@@ -32,6 +32,7 @@ from app.services.plan_criteria import (
     pick_leading_plan_id,
     plan_average_rating,
 )
+from app.utils.plan_schedule import schedule_to_utc
 from app.utils.votes import can_cast_event_governance_vote, resolve_event_vote_population
 
 APPROVAL_THRESHOLD = 0.66
@@ -258,7 +259,7 @@ def submit_event_plan(
                     demand_consideration_note=demand_consideration_note.strip(),
                     location_label=resolved_location_label,
                     location_id=resolved_location_id,
-                    schedule_payload=schedule_payload,
+                    schedule_payload=schedule_to_utc(schedule_payload),
                     plan_payload=plan_payload,
                     is_leading=auto_execute,
                     status="approved" if auto_execute else "open",

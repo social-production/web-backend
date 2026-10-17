@@ -26,6 +26,7 @@ from app.models import (
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.search import index_document
+from app.utils.plan_schedule import schedule_to_utc
 from app.utils.slugs import allocate_unique_slug
 from app.utils.usernames import username_matches
 from app.utils.votes import required_votes
@@ -602,7 +603,7 @@ def create_event(
         current_phase_id = "activity"
         plan_title_value = (plan_title or "").strip() or title.strip()
         plan_description_value = (plan_description or "").strip() or description.strip()
-        schedule_value = dict(schedule_payload or {})
+        schedule_value = schedule_to_utc(schedule_payload)
         plan_value = dict(plan_payload or {})
         plan_phases = plan_value.get("planPhases") or plan_value.get("plan_phases") or []
         if not isinstance(plan_phases, list) or not plan_phases:
@@ -621,7 +622,7 @@ def create_event(
         )
         plan_title_value = (plan_title or "").strip()
         plan_description_value = (plan_description or "").strip()
-        schedule_value = dict(schedule_payload or {})
+        schedule_value = schedule_to_utc(schedule_payload)
         plan_value = dict(plan_payload or {})
 
     now = datetime.now(UTC)
