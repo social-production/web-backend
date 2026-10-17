@@ -178,6 +178,16 @@ def add_project_value(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required"
         )
+    existing = db.execute(
+        select(project_values.c.id).where(
+            project_values.c.project_id == project_row["id"],
+            func.lower(project_values.c.label) == normalized.lower(),
+        )
+    ).first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="That value is already listed"
+        )
 
     try:
         created = (

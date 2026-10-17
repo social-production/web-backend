@@ -413,6 +413,16 @@ def add_event_value(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="label is required"
         )
+    existing = db.execute(
+        select(event_values.c.id).where(
+            event_values.c.event_id == event_row["id"],
+            func.lower(event_values.c.label) == normalized.lower(),
+        )
+    ).first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="That value is already listed"
+        )
 
     try:
         created = (

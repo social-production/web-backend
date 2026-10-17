@@ -87,7 +87,13 @@ def assessment_criteria_for_plan(
             for item in PROJECT_DISTRIBUTION_RUBRIC
         )
 
+    seen_labels: set[str] = set()
     for value_id, value_label in prominent_values:
+        # Two values with the same name ask the same question; rate it once.
+        key = " ".join(str(value_label).lower().split())
+        if key in seen_labels:
+            continue
+        seen_labels.add(key)
         criteria.append(
             {
                 "criterionId": value_criterion_id(value_id),
