@@ -27,6 +27,7 @@ from app.services.events.phases.gates import (
 from app.services.events.phases.serializers import _serialize_phase_request
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
+from app.services.proposer_vote import cast_proposer_yes
 
 
 def create_phase_change_request(
@@ -168,6 +169,15 @@ def create_phase_change_request(
             href=f"/events/{event_row['slug']}?open=vote&voteKind=phase_change&voteTarget={created['id']}",
         )
     db.commit()
+    # Opening the vote counts as the proposer's Yes.
+    if not auto_execute:
+        voted = cast_proposer_yes(
+            lambda vote: vote_phase_change_request(
+                db, current_user_id, event_slug, created["id"], vote
+            )
+        )
+        if voted is not None:
+            return {"request": voted["request"]}
     return {"request": _serialize_phase_request(created, summary)}
 
 

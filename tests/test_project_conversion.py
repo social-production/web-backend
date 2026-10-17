@@ -133,9 +133,12 @@ def test_close_sets_is_closed_and_drops_from_feed():
         assert propose.status_code == 200, propose.text
         request_id = propose.json()["request"]["id"]
 
-        executed = False
+        # Opening the vote counts the owner's Yes, which may already pass it.
+        executed = propose.json()["request"]["status"] != "open"
         last_vote = None
         for token in (seeded["owner_token"], seeded["member_token"]):
+            if executed:
+                break
             last_vote = client.post(
                 f"/projects/{seeded['project_slug']}/phase-requests/{request_id}/vote",
                 headers=_auth_header(token),
@@ -148,9 +151,9 @@ def test_close_sets_is_closed_and_drops_from_feed():
             if executed:
                 break
 
-        assert last_vote is not None
         assert executed is True
-        assert last_vote.json()["current_phase_id"] == "phase-7"
+        if last_vote is not None:
+            assert last_vote.json()["current_phase_id"] == "phase-7"
 
         detail = client.get(f"/projects/{seeded['project_slug']}")
         assert detail.status_code == 200, detail.text
@@ -192,9 +195,12 @@ def test_conversion_creates_successor_lineage_and_inherited_history():
         assert propose.status_code == 200, propose.text
         request_id = propose.json()["request"]["id"]
 
-        executed = False
+        # Opening the vote counts the owner's Yes, which may already pass it.
+        executed = propose.json()["request"]["status"] != "open"
         last_vote = None
         for token in (seeded["owner_token"], seeded["member_token"]):
+            if executed:
+                break
             last_vote = client.post(
                 f"/projects/{seeded['project_slug']}/phase-requests/{request_id}/vote",
                 headers=_auth_header(token),
@@ -207,7 +213,6 @@ def test_conversion_creates_successor_lineage_and_inherited_history():
             if executed:
                 break
 
-        assert last_vote is not None
         assert executed is True
 
         db = SessionLocal()
@@ -321,8 +326,10 @@ def test_duplicate_conversion_is_rejected():
         )
         assert propose.status_code == 200, propose.text
         request_id = propose.json()["request"]["id"]
-        executed = False
+        executed = propose.json()["request"]["status"] != "open"
         for token in (seeded["owner_token"], seeded["member_token"]):
+            if executed:
+                break
             vote = client.post(
                 f"/projects/{seeded['project_slug']}/phase-requests/{request_id}/vote",
                 headers=_auth_header(token),

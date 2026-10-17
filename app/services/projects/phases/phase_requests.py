@@ -31,6 +31,7 @@ from app.services.projects.phases.gates import (
 )
 from app.services.projects.phases.labels import display_stage_label
 from app.services.projects.phases.serializers import _serialize_phase_request
+from app.services.proposer_vote import cast_proposer_yes
 
 
 def create_phase_change_request(
@@ -224,6 +225,15 @@ def create_phase_change_request(
             href=f"/projects/{project_row['slug']}?open=vote&voteKind=phase_change&voteTarget={created['id']}",
         )
     db.commit()
+    # Opening the vote counts as the proposer's Yes.
+    if created["status"] == "open":
+        voted = cast_proposer_yes(
+            lambda vote: vote_phase_change_request(
+                db, current_user_id, project_slug, created["id"], vote
+            )
+        )
+        if voted is not None:
+            return {"request": voted["request"]}
     return {"request": _serialize_phase_request(created, summary)}
 
 
