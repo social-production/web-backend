@@ -25,7 +25,7 @@ from app.services.events.phases.serializers import _serialize_edit_request
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.proposer_vote import cast_proposer_yes
 from app.services.search import index_document
-from app.utils.edits import changed_text
+from app.utils.edits import changed_text, ensure_no_overlapping_edit
 
 
 def _changed_values(row) -> dict[str, object]:
@@ -52,6 +52,14 @@ def create_edit_request(
     if proposed_title is None and proposed_description is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nothing has changed"
+        )
+    if not auto_execute:
+        ensure_no_overlapping_edit(
+            db,
+            event_edit_requests,
+            event_edit_requests.c.event_id,
+            event_row["id"],
+            {"title": proposed_title, "description": proposed_description},
         )
 
     try:

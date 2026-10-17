@@ -25,7 +25,7 @@ from app.services.projects.phases.gates import (
 from app.services.projects.phases.serializers import _serialize_edit_request
 from app.services.proposer_vote import cast_proposer_yes
 from app.services.search import index_document
-from app.utils.edits import changed_text
+from app.utils.edits import changed_text, ensure_no_overlapping_edit
 
 
 def create_project_edit_request(
@@ -65,6 +65,17 @@ def create_project_edit_request(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nothing has changed"
         )
+    ensure_no_overlapping_edit(
+        db,
+        project_edit_requests,
+        project_edit_requests.c.project_id,
+        project_row["id"],
+        {
+            "title": proposed_title,
+            "description": proposed_description,
+            "location_label": proposed_location_label,
+        },
+    )
 
     created = (
         db.execute(

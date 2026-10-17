@@ -119,3 +119,18 @@ def test_an_edit_that_changes_nothing_is_refused(client: TestClient) -> None:
         json={"title": "Repair night", "description": "Fix things together."},
     )
     assert unchanged.status_code == 422, unchanged.text
+
+
+def test_a_second_edit_to_the_same_field_is_refused(client: TestClient, monkeypatch) -> None:
+    import app.services.projects.phases.edit_requests as edit_requests
+
+    monkeypatch.setattr(edit_requests, "_project_vote_population", lambda _db, _row: 2)
+    headers, slug, _member = _seed_project()
+    _propose(client, headers, slug, "Repair night v4", "Fix things together.")
+    again = client.post(
+        f"/projects/{slug}/edit-requests",
+        headers=headers,
+        json={"title": "Repair night v5", "description": "Fix things together."},
+    )
+    assert again.status_code == 409, again.text
+    assert "already being voted on" in again.json()["detail"]
