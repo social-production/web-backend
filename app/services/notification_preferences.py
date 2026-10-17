@@ -40,6 +40,7 @@ KIND_TO_CATEGORY: dict[str, str] = {
     "hr-share": "shares_invites",
     "evt-invite": "shares_invites",
     "community-invite": "shares_invites",
+    "community-removed": "shares_invites",
     "hr-role-signup": "roles",
     "prj-role-suggest": "roles",
     "evt-role-suggest": "roles",

@@ -925,6 +925,13 @@ async def get_project_detail(
         "settingsChangeRequests": settings_change_requests,
     }
 
+    visible_phases = _visible_lifecycle_phases(
+        phase_mode,
+        effective_subtype,
+        str(row["current_phase_id"]),
+        include_access=include_access,
+    )
+    visible_phase_ids = {str(phase["id"]) for phase in visible_phases}
     lifecycle = {
         "projectMode": row["project_mode"],
         "currentSubtype": effective_subtype,
@@ -942,12 +949,7 @@ async def get_project_detail(
         "voteContextLabel": vote_context_label,
         "voteContextPopulation": vote_context_population,
         "notes": [],
-        "phases": _visible_lifecycle_phases(
-            phase_mode,
-            effective_subtype,
-            str(row["current_phase_id"]),
-            include_access=include_access,
-        ),
+        "phases": visible_phases,
         "viewerCanRequestPhaseChanges": viewer_can_request_phase_changes,
         "viewerCanVoteOnPhaseChanges": viewer_can_vote_on_phase_changes,
         "phaseChangeRequests": phase_change_requests,
@@ -955,10 +957,11 @@ async def get_project_detail(
         "nextPhaseId": next_phase_id,
         "nextPhaseLabel": next_phase_label,
         "viewerCanRevertPhase": viewer_is_manager,
+        # Only phases this kind of project shows, so the Return menu never names a hidden one.
         "revertablePhaseIds": [
             phase_id
             for phase_id, order, _, _, _ in PROJECT_PHASES
-            if order < current_order and order <= 3
+            if order < current_order and order <= 3 and phase_id in visible_phase_ids
         ],
         "revertHistory": revert_history,
         "requestSystem": request_system,

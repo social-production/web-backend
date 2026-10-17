@@ -205,6 +205,25 @@ def _tally(db: Session, kind: str, row, proposal) -> dict:
     }
 
 
+def _notify_removed(db: Session, kind: str, row, target_id: UUID, actor_id: UUID | None) -> None:
+    from app.services.notifications import create_notification
+
+    noun = "community" if kind == "community" else "channel"
+    create_notification(
+        db=db,
+        recipient_id=target_id,
+        actor_id=actor_id,
+        kind="community-removed",
+        surface=noun,
+        subject_type=noun,
+        subject_id=row["id"],
+        target_id=row["id"],
+        title=str(row["name"]),
+        body=f"You were removed from this {noun}. Ask a member for a new invite to rejoin.",
+        href="/",
+    )
+
+
 def _apply(db: Session, kind: str, row, proposal) -> None:
     table = _table(kind)
     payload = proposal["payload"] or {}
@@ -217,6 +236,9 @@ def _apply(db: Session, kind: str, row, proposal) -> None:
                 scope_memberships.c.scope_id == row["id"],
                 scope_memberships.c.user_id == UUID(str(payload["target_user_id"])),
             )
+        )
+        _notify_removed(
+            db, kind, row, UUID(str(payload["target_user_id"])), proposal.get("proposer_id")
         )
     elif proposal["kind"] == "to_collaborative":
         db.execute(update(table).where(table.c.id == row["id"]).values(governance="collaborative"))
@@ -475,6 +497,7 @@ def remove_member(db: Session, viewer_id: UUID, kind: str, slug: str, username: 
         )
     )
     db.commit()
+    _notify_removed(db, kind, row, target, viewer_id)
     return settings_payload(db, viewer_id, kind, slug)
 
 
