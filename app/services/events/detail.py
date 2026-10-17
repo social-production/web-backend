@@ -138,6 +138,8 @@ async def get_event_detail(
         select(event_editors.c.user_id).where(event_editors.c.event_id == event_id)
     ).all()
     editor_ids = {user_id for (user_id,) in editor_rows}
+    if editor_ids - usernames.keys():
+        usernames.update(_username_lookup(db, editor_ids - usernames.keys()))
 
     creator_username = usernames.get(row["created_by"], {}).get("username", "unknown")
 
@@ -195,6 +197,7 @@ async def get_event_detail(
             "id": str(user_id),
             "username": usernames.get(user_id, {}).get("username", "unknown"),
             "bio": usernames.get(user_id, {}).get("bio", ""),
+            "profileImageUrl": usernames.get(user_id, {}).get("profileImageUrl"),
         }
         summary = trust_by_user.get(user_id)
         if summary is not None:
@@ -486,6 +489,9 @@ async def get_event_detail(
     assignments_by_role: dict[UUID, list[UUID]] = {}
     for role_id, user_id in assignment_rows:
         assignments_by_role.setdefault(role_id, []).append(user_id)
+    missing_assignees = {user_id for _, user_id in assignment_rows} - usernames.keys()
+    if missing_assignees:
+        usernames.update(_username_lookup(db, missing_assignees))
 
     roles_by_activity: dict[UUID, list[Mapping[str, object]]] = {}
     for role in role_rows:
