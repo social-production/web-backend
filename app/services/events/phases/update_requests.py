@@ -24,6 +24,7 @@ from app.services.events.phases.gates import (
 )
 from app.services.events.phases.serializers import _serialize_update_request
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.proposer_vote import cast_proposer_yes
 
 
 def _bump_event_recent_activity(db: Session, event_id: UUID) -> None:
@@ -91,6 +92,13 @@ def create_update_request(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not create update request",
         ) from exc
+
+    if created["status"] == "open":
+        voted = cast_proposer_yes(
+            lambda vote: vote_update_request(db, current_user_id, event_slug, created["id"], vote)
+        )
+        if voted is not None:
+            return {"request": voted["request"], "executed": voted["executed"]}
 
     summary = _compute_votes(db, event_update_request_votes, created["id"], member_count)
     return {"request": _serialize_update_request(created, summary), "executed": executed}

@@ -25,6 +25,7 @@ from app.services.projects.phases.gates import (
     _project_vote_population,
 )
 from app.services.projects.phases.serializers import _serialize_update_request
+from app.services.proposer_vote import cast_proposer_yes
 
 
 def _bump_project_recent_activity(db: Session, project_id: UUID) -> None:
@@ -95,6 +96,15 @@ def create_project_update_request(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not create update request",
         ) from exc
+
+    if created["status"] == "open":
+        voted = cast_proposer_yes(
+            lambda vote: vote_project_update_request(
+                db, current_user_id, project_slug, created["id"], vote
+            )
+        )
+        if voted is not None:
+            return {"request": voted["request"], "executed": voted["executed"]}
 
     summary = _compute_simple_vote_summary(
         db, project_update_request_votes, created["id"], member_count

@@ -14,10 +14,11 @@ from app.models import project_memberships, projects
 from tests.conftest import seed_user
 
 
-def _seed_project() -> tuple[dict[str, str], str]:
+def _seed_project() -> tuple[dict[str, str], str, dict[str, str]]:
     db = SessionLocal()
     try:
         owner_id, _ = seed_user(db, username_prefix="partial")
+        member_id, _ = seed_user(db, username_prefix="partial-m")
         now = datetime.now(UTC)
         project_id = uuid4()
         slug = f"partial-{project_id.hex[:8]}"
@@ -44,17 +45,22 @@ def _seed_project() -> tuple[dict[str, str], str]:
                 last_activity_at=now,
             )
         )
-        db.execute(
-            insert(project_memberships).values(
-                project_id=project_id,
-                user_id=owner_id,
-                is_manager=False,
-                is_manager_candidate=False,
-                joined_at=now,
+        for user_id in (owner_id, member_id):
+            db.execute(
+                insert(project_memberships).values(
+                    project_id=project_id,
+                    user_id=user_id,
+                    is_manager=False,
+                    is_manager_candidate=False,
+                    joined_at=now,
+                )
             )
-        )
         db.commit()
-        return {"Authorization": f"Bearer {create_access_token(str(owner_id))}"}, slug
+        return (
+            {"Authorization": f"Bearer {create_access_token(str(owner_id))}"},
+            slug,
+            {"Authorization": f"Bearer {create_access_token(str(member_id))}"},
+        )
     finally:
         db.close()
 
@@ -79,16 +85,22 @@ def _pass(client: TestClient, headers, slug: str, request_id: str) -> None:
     assert voted.json()["executed"] is True
 
 
-def test_two_open_edits_both_stick(client: TestClient) -> None:
-    headers, slug = _seed_project()
+def test_two_open_edits_both_stick(client: TestClient, monkeypatch) -> None:
+    import app.services.projects.phases.edit_requests as edit_requests
+
+    # Two active members: the proposer's Yes is counted, but the edit needs the other one too.
+    monkeypatch.setattr(edit_requests, "_project_vote_population", lambda _db, _row: 2)
+    headers, slug, member = _seed_project()
     # Both are drafted from the same page while neither has passed yet.
     title_edit = _propose(client, headers, slug, "Repair night (Town Hall)", "Fix things together.")
     description_edit = _propose(client, headers, slug, "Repair night", "Bring broken toasters.")
     assert title_edit["description"] is None
     assert description_edit["title"] is None
+    # The proposer's own Yes is counted when the vote opens.
+    assert title_edit["vote_summary"]["yes_count"] == 1
 
-    _pass(client, headers, slug, title_edit["id"])
-    _pass(client, headers, slug, description_edit["id"])
+    _pass(client, member, slug, title_edit["id"])
+    _pass(client, member, slug, description_edit["id"])
 
     db = SessionLocal()
     try:
@@ -100,7 +112,7 @@ def test_two_open_edits_both_stick(client: TestClient) -> None:
 
 
 def test_an_edit_that_changes_nothing_is_refused(client: TestClient) -> None:
-    headers, slug = _seed_project()
+    headers, slug, _member = _seed_project()
     unchanged = client.post(
         f"/projects/{slug}/edit-requests",
         headers=headers,

@@ -23,6 +23,7 @@ from app.services.events.phases.gates import (
 )
 from app.services.events.phases.serializers import _serialize_edit_request
 from app.services.meaningful_actions import record_meaningful_action
+from app.services.proposer_vote import cast_proposer_yes
 from app.services.search import index_document
 from app.utils.edits import changed_text
 
@@ -102,6 +103,13 @@ def create_edit_request(
             href=f"/events/{event_row['slug']}",
         )
         db.commit()
+
+    if not auto_execute:
+        voted = cast_proposer_yes(
+            lambda vote: vote_edit_request(db, current_user_id, event_slug, created["id"], vote)
+        )
+        if voted is not None:
+            return {"request": voted["request"], "executed": voted["executed"]}
 
     summary = _compute_votes(
         db, event_edit_request_votes, created["id"], _event_vote_population(db, event_row)

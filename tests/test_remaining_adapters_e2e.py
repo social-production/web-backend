@@ -232,7 +232,8 @@ def run() -> None:
             headers=_auth_header(seeded["owner_token"]),
             json={"vote": "yes"},
         )
-        assert edit_vote_owner.status_code == 200, edit_vote_owner.text
+        # The proposer's Yes is counted on creation, so the edit may already have passed.
+        _assert_vote_or_closed(edit_vote_owner, "Project edit request is already closed")
         edit_vote_member = client.post(
             f"/projects/{seeded['project_slug']}/edit-requests/{edit_request_id}/vote",
             headers=_auth_header(seeded["member_token"]),

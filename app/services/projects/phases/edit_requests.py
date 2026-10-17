@@ -23,6 +23,7 @@ from app.services.projects.phases.gates import (
     _project_vote_population,
 )
 from app.services.projects.phases.serializers import _serialize_edit_request
+from app.services.proposer_vote import cast_proposer_yes
 from app.services.search import index_document
 from app.utils.edits import changed_text
 
@@ -92,6 +93,14 @@ def create_project_edit_request(
         .one()
     )
     db.commit()
+    voted = cast_proposer_yes(
+        lambda vote: vote_project_edit_request(
+            db, current_user_id, project_slug, created["id"], vote
+        )
+    )
+    if voted is not None:
+        return {"request": voted["request"], "executed": voted["executed"]}
+
     summary = _compute_simple_vote_summary(
         db, project_edit_request_votes, created["id"], _project_vote_population(db, project_row)
     )
