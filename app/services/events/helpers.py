@@ -66,8 +66,21 @@ def _iso(value: object | None) -> str | None:
     return datetime.now(UTC).isoformat()
 
 
+def _plan_zone(schedule: dict | None):
+    """The zone plan times were typed in; older plans without one are read as UTC."""
+    name = str((schedule or {}).get("timeZone") or "").strip()
+    if not name:
+        return UTC
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(name)
+    except Exception:
+        return UTC
+
+
 def _parse_plan_local_datetime(
-    date_value: str | None, time_value: str | None, fallback_time: str
+    date_value: str | None, time_value: str | None, fallback_time: str, zone=UTC
 ) -> datetime | None:
     normalized_date = (date_value or "").strip()
     if not normalized_date:
@@ -83,7 +96,7 @@ def _parse_plan_local_datetime(
         return None
 
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
+        return parsed.replace(tzinfo=zone).astimezone(UTC)
     return parsed
 
 
@@ -93,8 +106,9 @@ def _event_plan_schedule_bounds(schedule: dict | None) -> tuple[datetime | None,
 
     start_date = schedule.get("startDate") or ""
     end_date = schedule.get("endDate") or start_date
-    start = _parse_plan_local_datetime(start_date, schedule.get("startTimeLabel"), "00:00")
-    end = _parse_plan_local_datetime(end_date, schedule.get("finishTimeLabel"), "23:59")
+    zone = _plan_zone(schedule)
+    start = _parse_plan_local_datetime(start_date, schedule.get("startTimeLabel"), "00:00", zone)
+    end = _parse_plan_local_datetime(end_date, schedule.get("finishTimeLabel"), "23:59", zone)
     return start, end
 
 

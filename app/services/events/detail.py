@@ -403,6 +403,7 @@ async def get_event_detail(
             "endDate": end_date,
             "startTimeLabel": start_time_label,
             "finishTimeLabel": finish_time_label,
+            "timeZone": schedule_payload.get("timeZone"),
             "label": schedule_payload.get("label") or schedule_mode.replace("-", " ").title(),
         }
 
