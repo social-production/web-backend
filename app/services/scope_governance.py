@@ -353,6 +353,23 @@ def propose(
             **payload,
             "organizer_ids": [str(value) for value in payload.get("organizer_ids") or [viewer_id]],
         }
+    stored_payload = {
+        key: (str(value) if isinstance(value, UUID) else value) for key, value in payload.items()
+    }
+    # The same change already open: send people to that vote instead of splitting it.
+    for open_payload in db.execute(
+        select(scope_proposals.c.payload).where(
+            scope_proposals.c.scope_kind == kind,
+            scope_proposals.c.scope_id == row["id"],
+            scope_proposals.c.kind == proposal_kind,
+            scope_proposals.c.status == "open",
+        )
+    ).scalars():
+        if (open_payload or {}) == stored_payload:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="That change is already being voted on. Vote on it instead.",
+            )
     proposal_id = uuid4()
     db.execute(
         insert(scope_proposals).values(
@@ -360,10 +377,7 @@ def propose(
             scope_kind=kind,
             scope_id=row["id"],
             kind=proposal_kind,
-            payload={
-                key: (str(value) if isinstance(value, UUID) else value)
-                for key, value in payload.items()
-            },
+            payload=stored_payload,
             proposer_id=viewer_id,
         )
     )
@@ -592,6 +606,7 @@ def settings_payload(db: Session, viewer_id: UUID | None, kind: str, slug: str) 
                     viewer_id is not None
                     and viewer_id in _electorate(db, kind, row, proposal["kind"])
                 ),
+                "created_at": proposal["created_at"].isoformat(),
                 "closes_at": (proposal["created_at"] + timedelta(days=PROPOSAL_DAYS)).isoformat(),
             }
         )
