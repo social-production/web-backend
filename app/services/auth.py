@@ -31,6 +31,10 @@ AUTH_RATE_LIMIT = 10
 AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
 AUTH_RATE_LIMIT_PREFIX = "auth-rate-limit"
 TOKEN_BLACKLIST_PREFIX = "token-blacklist"
+TOKEN_ROTATED_PREFIX = "token-rotated"
+# Two tabs often refresh with the same cookie at once. The one that loses the race
+# still gets new tokens if the old refresh token was rotated moments ago.
+REFRESH_REUSE_GRACE_SECONDS = 30
 
 
 def _normalize_username(username: str) -> str:
@@ -253,7 +257,10 @@ async def refresh_auth_session(refresh_token: str, db: Session | None = None) ->
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
             )
 
-    await _blacklist_token(jti, exp)
+    if not await _rotation_allows_reuse(jti, exp):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been revoked"
+        )
 
     access_token = create_access_token(subject)
     rotated_refresh = create_refresh_token(subject)
@@ -264,6 +271,35 @@ async def refresh_auth_session(refresh_token: str, db: Session | None = None) ->
         "csrf_token": csrf_token,
         "token_type": "bearer",
     }
+
+
+async def _rotation_allows_reuse(jti: str, exp: int) -> bool:
+    """Record the first rotation of a refresh token; allow reuse only within the grace window."""
+    now = datetime.now(UTC).timestamp()
+    ttl_seconds = exp - int(now)
+    if ttl_seconds <= 0:
+        return False
+    redis_client: Redis = get_redis_client()
+    key = f"{TOKEN_ROTATED_PREFIX}:{jti}"
+    try:
+        first = await redis_client.set(key, str(now), ex=ttl_seconds, nx=True)
+        if first:
+            return True
+        rotated_at = await redis_client.get(key)
+    except Exception:
+        from app.config import get_settings
+
+        if get_settings().rate_limit_fail_closed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service temporarily unavailable",
+            ) from None
+        return True
+    try:
+        value = rotated_at.decode() if isinstance(rotated_at, bytes) else str(rotated_at)
+        return now - float(value) <= REFRESH_REUSE_GRACE_SECONDS
+    except (TypeError, ValueError):
+        return False
 
 
 async def _blacklist_token(jti: str, exp: int) -> None:

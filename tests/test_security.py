@@ -211,7 +211,9 @@ def test_production_rejects_wildcard_cors():
         settings.validate_runtime_settings()
 
 
-def test_refresh_rotates_tokens(client: TestClient, unique_ip: str):
+def test_refresh_rotates_tokens(client: TestClient, unique_ip: str, monkeypatch):
+    import app.services.auth as auth_service
+
     username = "sec-refresh"
     session = _register_and_login(client, username, unique_ip=unique_ip)
     old_refresh = session["refresh"]
@@ -222,6 +224,14 @@ def test_refresh_rotates_tokens(client: TestClient, unique_ip: str):
     assert new_refresh
     assert new_refresh != old_refresh
 
+    # A second tab refreshing with the same cookie moments later still succeeds.
+    racing_tab = client.post(
+        "/auth/refresh", cookies={REFRESH_COOKIE: old_refresh}, headers=session["headers"]
+    )
+    assert racing_tab.status_code == 200
+
+    # After the grace window the old token is refused.
+    monkeypatch.setattr(auth_service, "REFRESH_REUSE_GRACE_SECONDS", -1)
     stale = client.post(
         "/auth/refresh", cookies={REFRESH_COOKIE: old_refresh}, headers=session["headers"]
     )
