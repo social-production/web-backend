@@ -18,6 +18,7 @@ class ViewerSummaryOut(BaseModel):
     username: str
     bio: str | None = None
     profileImageUrl: str | None = None
+    standing: str | None = None
 
 
 class FeatureFlagsOut(BaseModel):

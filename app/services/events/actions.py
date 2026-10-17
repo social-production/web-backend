@@ -226,6 +226,11 @@ async def toggle_event_signal(
         .first()
     )
 
+    # Removing your own signal is always allowed; adding or switching one is a vote.
+    removing = existing is not None and existing["signal_type"] == normalized_signal
+    if not removing:
+        ensure_established_voter(db, current_user_id)
+
     action = "none"
 
     try:

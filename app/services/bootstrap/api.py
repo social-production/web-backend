@@ -16,6 +16,7 @@ from app.services.bootstrap.summary import (
     _get_viewer_row,
     get_bootstrap_summary,
 )
+from app.services.standing import standing_for
 
 
 def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object]:
@@ -46,6 +47,8 @@ def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object
             "username": viewer["username"],
             "bio": viewer["bio"],
             "profileImageUrl": viewer["profile_image_url"],
+            # "paused" means a bot review was upheld: the account is read-only.
+            "standing": standing_for(db, current_user_id).level,
         },
         "featureFlags": {
             "assets": False,

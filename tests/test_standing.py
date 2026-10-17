@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import insert, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -356,3 +356,30 @@ def test_warm_swarm_cannot_pass_a_vote_alone(db_transaction: Session, warmup_on)
     assert summary["yes_count"] == 4
     assert summary["meets_quorum"] is False
     assert summary["is_passing"] is False
+
+
+def test_new_account_cannot_add_support_but_can_take_it_back(
+    db_transaction: Session, warmup_on
+) -> None:
+    import asyncio
+
+    from app.models import project_signals
+    from app.services.projects.actions import toggle_project_signal
+
+    founder = _founder(db_transaction)
+    project_id = _project(db_transaction, founder)
+    slug = db_transaction.execute(
+        select(projects.c.slug).where(projects.c.id == project_id)
+    ).scalar_one()
+    user_id, _name = seed_user(db_transaction, username_prefix="standing-signal")
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(toggle_project_signal(db_transaction, None, user_id, slug, "demand"))
+    assert raised.value.status_code == 403
+
+    # A signal from before the rule can still be withdrawn.
+    db_transaction.execute(
+        insert(project_signals).values(project_id=project_id, user_id=user_id, signal_type="demand")
+    )
+    removed = asyncio.run(toggle_project_signal(db_transaction, None, user_id, slug, "demand"))
+    assert removed["action"] == "removed"
