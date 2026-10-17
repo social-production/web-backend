@@ -84,6 +84,12 @@ def create_edit_request(
                 .where(events.c.id == event_row["id"])
                 .values(**_changed_values(created))
             )
+            # The organizer's decision is their Yes, so History shows who approved it.
+            db.execute(
+                insert(event_edit_request_votes).values(
+                    request_id=created["id"], voter_id=current_user_id, vote="yes"
+                )
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
