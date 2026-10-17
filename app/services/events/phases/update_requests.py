@@ -21,6 +21,8 @@ from app.services.events.phases.gates import (
     _ensure_member,
     _event_vote_population,
     _get_event_by_slug,
+    _is_event_organizer,
+    _is_organizer_controlled,
 )
 from app.services.events.phases.serializers import _serialize_update_request
 from app.services.meaningful_actions import record_meaningful_action
@@ -67,7 +69,17 @@ def create_update_request(
         )
 
         executed = False
-        if member_count <= 1:
+        # Organizer-controlled events: an organizer's update posts straight away.
+        organizer_posts = _is_organizer_controlled(event_row) and _is_event_organizer(
+            db, event_row, current_user_id
+        )
+        if organizer_posts:
+            db.execute(
+                insert(event_update_request_votes).values(
+                    request_id=created["id"], voter_id=current_user_id, vote="yes"
+                )
+            )
+        if member_count <= 1 or organizer_posts:
             db.execute(
                 update(event_update_requests)
                 .where(event_update_requests.c.id == created["id"])
