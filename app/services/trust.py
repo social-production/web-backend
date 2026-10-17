@@ -7,6 +7,7 @@ Bootstrap accounts use max(real gate ratio, fading floor) until the floor hits 0
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -589,7 +590,9 @@ def load_trust_graph(db: Session) -> dict[UUID, TrustAccountView]:
 
 
 def invalidate_trust_graph(db: Session) -> None:
+    global _summary_cache
     db.info.pop(_CACHE_KEY, None)
+    _summary_cache = None
 
 
 def user_can_vote(db: Session, user_id: UUID) -> bool:
@@ -646,15 +649,27 @@ def _round_ratio(value: float) -> float:
     return round(float(value), 4)
 
 
+# Trust badges are display-only and the whole graph is rebuilt to make them, so detail pages
+# reuse the summaries for a short while instead of recomputing them on every request.
+_SUMMARY_TTL_SECONDS = 30.0
+_summary_cache: tuple[float, dict[UUID, dict[str, object]]] | None = None
+
+
 def trust_summaries(db: Session) -> dict[UUID, dict[str, object]]:
+    global _summary_cache
+    now = time.monotonic()
+    if _summary_cache is not None and now < _summary_cache[0]:
+        return _summary_cache[1]
     graph = load_trust_graph(db)
-    return {
+    summaries = {
         user_id: {
             "real_r": _round_ratio(view.real_r),
             "bootstrap_floor": view.bootstrap_floor_active,
         }
         for user_id, view in graph.items()
     }
+    _summary_cache = (now + _SUMMARY_TTL_SECONDS, summaries)
+    return summaries
 
 
 def _trust_people(
