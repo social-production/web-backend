@@ -194,21 +194,23 @@ def _layer2_allows(db: Session, user_id: UUID) -> bool:
 
 def is_established_voter(db: Session, user_id: UUID) -> bool:
     """Warm or full standing (see app/services/standing.py)."""
-    if not _layer2_allows(db, user_id):
-        return False
-    from app.services.standing import standing_for
+    from app.services.standing import FULL, standing_for
 
-    return standing_for(db, user_id).can_vote
+    standing = standing_for(db, user_id)
+    if standing.level == FULL:
+        return True
+    return standing.can_vote and _layer2_allows(db, user_id)
 
 
 def ensure_established_voter(db: Session, user_id: UUID) -> None:
-    if not _layer2_allows(db, user_id):
-        from app.services.standing import next_step
+    from app.services.standing import FULL, next_step, standing_for
 
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=next_step(db, user_id))
-    from app.services.standing import next_step, standing_for
-
-    if not standing_for(db, user_id).can_vote:
+    standing = standing_for(db, user_id)
+    # Full members vote, including the platform's first accounts, which start full before
+    # they'd pass the new-account warm-up.
+    if standing.level == FULL:
+        return
+    if not standing.can_vote or not _layer2_allows(db, user_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=next_step(db, user_id))
 
 
