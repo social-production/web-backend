@@ -498,6 +498,13 @@ async def get_event_detail(
     for role in role_rows:
         roles_by_activity.setdefault(role["activity_id"], []).append(role)
 
+    # Stage ids on activities point at plan stages; show the stage title, not the raw id.
+    plan_stage_titles = {
+        str(phase.get("id")): str(phase.get("title") or "")
+        for plan in event_plans_payload
+        for phase in (plan.get("planPhases") or [])
+        if phase.get("id") and phase.get("title")
+    }
     live_activities: list[dict[str, object]] = []
     ended_activity_payloads: list[dict[str, object]] = []
     assignments_by_activity: dict[UUID, set[UUID]] = {}
@@ -571,7 +578,9 @@ async def get_event_detail(
             "maximumParticipants": maximum_participants,
             "committedCount": len(committed_users),
             "viewerAssignedRoleLabel": viewer_assigned_label,
-            "linkedPlanPhaseLabel": activity["linked_plan_phase_id"],
+            "linkedPlanPhaseLabel": plan_stage_titles.get(
+                str(activity["linked_plan_phase_id"] or ""), activity["linked_plan_phase_id"]
+            ),
             "statusTone": activity_status_tone(len(committed_users), minimum_participants),
             "roles": activity_roles,
             "note": activity["note"],
