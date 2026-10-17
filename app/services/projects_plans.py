@@ -27,7 +27,11 @@ from app.services.plan_criteria import (
     pick_leading_plan_id,
     plan_average_rating,
 )
-from app.utils.votes import can_cast_project_governance_vote, resolve_project_vote_population
+from app.utils.votes import (
+    can_cast_project_governance_vote,
+    ensure_established_voter,
+    resolve_project_vote_population,
+)
 
 APPROVAL_THRESHOLD = 0.66
 
@@ -123,6 +127,8 @@ def _ensure_can_cast_plan_vote(
         user_id=user_id,
         is_platform_tagged=bool(project_row.get("is_platform_tagged")),
     ):
+        # Members still need voting standing (not new, not paused) to vote on or rate plans.
+        ensure_established_voter(db, user_id)
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN, detail="Only project members can vote on plans"

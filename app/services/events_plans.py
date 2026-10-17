@@ -33,7 +33,11 @@ from app.services.plan_criteria import (
     plan_average_rating,
 )
 from app.utils.plan_schedule import schedule_to_utc
-from app.utils.votes import can_cast_event_governance_vote, resolve_event_vote_population
+from app.utils.votes import (
+    can_cast_event_governance_vote,
+    ensure_established_voter,
+    resolve_event_vote_population,
+)
 
 APPROVAL_THRESHOLD = 0.66
 VALID_VOTES = {"yes", "no", "neutral"}
@@ -154,6 +158,8 @@ def _ensure_member(db: Session, event_id: UUID, user_id: UUID) -> None:
 
 def _ensure_can_cast_plan_vote(db: Session, event_row: Mapping[str, object], user_id: UUID) -> None:
     if can_cast_event_governance_vote(db, event_id=event_row["id"], user_id=user_id):
+        # Members still need voting standing (not new, not paused) to vote on or rate plans.
+        ensure_established_voter(db, user_id)
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
