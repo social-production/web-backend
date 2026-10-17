@@ -136,28 +136,31 @@ COLLECTIVE_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
 PERSONAL_SERVICE_OVERRIDES: dict[str, PhaseCopy] = {
     "phase-1": PhaseCopy(
         summary=(
-            "Offer your personal service and manage incoming requests. "
-            "You set availability and handle bookings directly, without a group vote. "
+            "One person offers this service. They list open times, and people can ask for one "
+            "or send a written request. The provider accepts or declines each request directly, "
+            "without a group vote. "
             "You are only looking at this phase until the project reaches it."
         ),
         mechanics=(
-            "You define availability, roles, and how clients can book time with you.",
-            "Requests appear on your calendar; you accept, plan, or decline them directly.",
-            "No multi-member governance voting is required for standard personal-service flow.",
-            "Close the service when you are no longer accepting bookings.",
+            "The provider lists one-off times and weekly hours that people can request.",
+            "Signed-in people can request a time or write in; each request opens a private chat "
+            "with the provider.",
+            "Only the provider and the person asking see a request. Everyone else sees the time "
+            "as Taken, with no names.",
+            "The provider closes the service when they stop taking requests.",
         ),
         note="Personal services skip collective proposal and multi-plan voting.",
     ),
     "phase-2": PhaseCopy(
         summary=(
-            "Your personal service is closed and no longer accepting activity. "
-            "Past bookings stay visible, and new requests are not accepted. "
+            "This personal service is closed and no longer takes requests. "
+            "Past bookings stay with the provider and the people who booked them. "
             "You are only looking at this phase until the project reaches it."
         ),
         mechanics=(
-            "Existing history and past bookings remain visible.",
-            "You can reopen by creating a new service listing if the platform allows it.",
-            "Clients cannot submit new requests while the service is closed.",
+            "No new requests can be sent while the service is closed.",
+            "Past bookings stay private to the provider and each requester.",
+            "The provider can start a new listing to offer the service again.",
         ),
     ),
 }

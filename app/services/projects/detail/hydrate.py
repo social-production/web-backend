@@ -427,6 +427,21 @@ async def get_project_detail(
     for role in role_rows:
         roles_by_activity.setdefault(role["activity_id"], []).append(role)
 
+    linked_request_ids = [
+        item["linked_request_id"] for item in activities_rows if item.get("linked_request_id")
+    ]
+    booking_requesters = (
+        dict(
+            db.execute(
+                select(
+                    project_service_requests.c.id, project_service_requests.c.requester_id
+                ).where(project_service_requests.c.id.in_(linked_request_ids))
+            ).all()
+        )
+        if linked_request_ids and current_user_id is not None
+        else {}
+    )
+
     live_activities: list[dict[str, object]] = []
     ended_activity_payloads: list[dict[str, object]] = []
     activity_rows_by_id: dict[UUID, Mapping[str, object]] = {}
@@ -513,10 +528,15 @@ async def get_project_detail(
         }
         activity_rows_by_id[activity["id"]] = activity
         assignments_by_activity[activity["id"]] = committed_users
+        # A booking on a personal service is between the provider and the requester.
         hide_booking = (
             row["project_mode"] == "personal-service"
             and current_user_id != row["author_id"]
             and activity.get("linked_request_id") is not None
+            and (
+                current_user_id is None
+                or booking_requesters.get(activity["linked_request_id"]) != current_user_id
+            )
         )
         if hide_booking:
             continue
@@ -975,6 +995,7 @@ async def get_project_detail(
                 db,
                 project_id=project_id,
                 viewer_is_creator=bool(current_user_id and current_user_id == row["author_id"]),
+                viewer_id=current_user_id,
             ),
         }
         if row["project_mode"] == "personal-service"

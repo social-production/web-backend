@@ -124,6 +124,7 @@ def expand_availability_slots(
     *,
     project_id: UUID,
     viewer_is_creator: bool,
+    viewer_id: UUID | None = None,
     now: datetime | None = None,
     horizon_weeks: int = AVAILABILITY_HORIZON_WEEKS,
 ) -> list[dict[str, object]]:
@@ -159,6 +160,7 @@ def expand_availability_slots(
                 project_service_requests.c.title,
                 project_service_requests.c.scheduled_at,
                 project_service_requests.c.ends_at,
+                project_service_requests.c.requester_id,
                 users.c.username,
             )
             .select_from(
@@ -196,6 +198,16 @@ def expand_availability_slots(
                 )
         return items
 
+    def viewer_booked(start: datetime, end: datetime) -> bool:
+        """The viewer's own accepted request covers this slot (they may see that, nothing more)."""
+        if viewer_id is None:
+            return False
+        return any(
+            request["requester_id"] == viewer_id
+            and _overlaps(start, end, request["scheduled_at"], request["ends_at"])
+            for request in accepted_requests
+        )
+
     def hold_covers(start: datetime, end: datetime) -> bool:
         return any(_overlaps(start, end, hold["starts_at"], hold["ends_at"]) for hold in holds)
 
@@ -232,6 +244,7 @@ def expand_availability_slots(
                                 "scheduledAt": start.isoformat(),
                                 "held": held,
                                 "bookings": bookings,
+                                "viewerBooked": viewer_booked(start, end),
                                 "statusTone": "green",
                             }
                         )
@@ -248,17 +261,21 @@ def expand_availability_slots(
         held = hold_covers(start, end)
         is_booking = linked_request_id is not None
         bookings = bookings_for(start, end) if viewer_is_creator else []
+        booked_by_viewer = viewer_booked(start, end)
         slots.append(
             {
                 "id": str(activity["id"]),
                 "source": "activity",
                 "activityId": str(activity["id"]),
-                "title": activity["title"],
+                "title": activity["title"]
+                if viewer_is_creator or booked_by_viewer or not is_booking
+                else "Taken",
                 "startAt": start.isoformat(),
                 "endAt": end.isoformat(),
                 "scheduledAt": start.isoformat(),
                 "held": held or is_booking,
                 "bookings": bookings,
+                "viewerBooked": booked_by_viewer,
                 "statusTone": "green",
             }
         )
@@ -287,12 +304,15 @@ def expand_availability_slots(
             {
                 "id": f"request:{request['id']}",
                 "source": "request",
-                "title": request["title"] if viewer_is_creator else "Taken",
+                "title": request["title"]
+                if viewer_is_creator or request["requester_id"] == viewer_id
+                else "Taken",
                 "startAt": start.isoformat(),
                 "endAt": end.isoformat(),
                 "scheduledAt": start.isoformat(),
                 "held": True,
                 "bookings": [],
+                "viewerBooked": viewer_id is not None and request["requester_id"] == viewer_id,
                 "statusTone": "green",
             }
         )
