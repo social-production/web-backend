@@ -628,4 +628,64 @@ def settings_payload(db: Session, viewer_id: UUID | None, kind: str, slug: str) 
         "viewer_is_organizer": viewer_role == "manager",
         "viewer_edits_directly": mode == "organizer" and viewer_role == "manager",
         "proposals": items,
+        "recent_decisions": _recent_decisions(db, kind, row["id"], slug),
     }
+
+
+def _recent_decisions(db: Session, kind: str, scope_id: UUID, slug: str) -> list[dict]:
+    """The latest closed decisions with their final tallies, newest first."""
+    rows = (
+        db.execute(
+            select(scope_proposals)
+            .where(
+                scope_proposals.c.scope_kind == kind,
+                scope_proposals.c.scope_id == scope_id,
+                scope_proposals.c.status != "open",
+            )
+            .order_by(scope_proposals.c.closed_at.desc().nulls_last())
+            .limit(20)
+        )
+        .mappings()
+        .all()
+    )
+    if not rows:
+        return []
+    ids = [row["id"] for row in rows]
+    counts: dict = {}
+    for proposal_id, vote, total in db.execute(
+        select(scope_proposal_votes.c.proposal_id, scope_proposal_votes.c.vote, func.count())
+        .where(scope_proposal_votes.c.proposal_id.in_(ids))
+        .group_by(scope_proposal_votes.c.proposal_id, scope_proposal_votes.c.vote)
+    ).all():
+        counts.setdefault(proposal_id, {})[vote] = int(total)
+    proposer_ids = {row["proposer_id"] for row in rows if row["proposer_id"]}
+    names = (
+        dict(
+            db.execute(
+                select(users.c.id, users.c.username).where(users.c.id.in_(list(proposer_ids)))
+            ).all()
+        )
+        if proposer_ids
+        else {}
+    )
+    decisions = []
+    for row in rows:
+        payload = dict(row["payload"] or {})
+        if payload.get("image_key"):
+            payload["image_url"] = (
+                f"/scopes/{_plural(kind)}/{slug}/image?key={payload['image_key']}"
+            )
+        decisions.append(
+            {
+                "id": str(row["id"]),
+                "kind": row["kind"],
+                "payload": payload,
+                "proposer": names.get(row["proposer_id"]),
+                "outcome": row["status"],
+                "yes": counts.get(row["id"], {}).get("yes", 0),
+                "no": counts.get(row["id"], {}).get("no", 0),
+                "created_at": row["created_at"].isoformat(),
+                "closed_at": row["closed_at"].isoformat() if row["closed_at"] else None,
+            }
+        )
+    return decisions
