@@ -62,7 +62,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return self.limit, self.window_seconds
 
     def _user_rate_key(self, request: Request) -> str | None:
-        if not any(request.url.path.startswith(prefix) for prefix in USER_LIMITED_PREFIXES):
+        # Signed-in requests count per account everywhere except sign-in itself, so people
+        # sharing an address (an office, or a proxy in front of the API) don't share a limit.
+        if request.url.path.startswith("/auth/") and not any(
+            request.url.path.startswith(prefix) for prefix in USER_LIMITED_PREFIXES
+        ):
             return None
 
         token = request.cookies.get(ACCESS_COOKIE)
