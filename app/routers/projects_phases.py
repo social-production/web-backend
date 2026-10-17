@@ -121,8 +121,9 @@ class ProjectUpdateRequestOut(BaseModel):
 class ProjectEditRequestOut(BaseModel):
     id: UUID
     project_id: UUID
-    title: str
-    description: str
+    # None when the edit leaves that field unchanged.
+    title: str | None = None
+    description: str | None = None
     location_label: str | None = None
     author_id: UUID | None = None
     status: str

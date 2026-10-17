@@ -24,6 +24,7 @@ from app.services.projects.phases.gates import (
 )
 from app.services.projects.phases.serializers import _serialize_edit_request
 from app.services.search import index_document
+from app.utils.edits import changed_text
 
 
 def create_project_edit_request(
@@ -56,13 +57,21 @@ def create_project_edit_request(
             is_online=is_online,
         )
 
+    # Store only what changes, so two passed edits never undo each other.
+    proposed_title = changed_text(title, project_row["title"])
+    proposed_description = changed_text(description, project_row["description"])
+    if proposed_title is None and proposed_description is None and proposed_location_label is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nothing has changed"
+        )
+
     created = (
         db.execute(
             insert(project_edit_requests)
             .values(
                 project_id=project_row["id"],
-                title=title.strip(),
-                description=description.strip(),
+                title=proposed_title,
+                description=proposed_description,
                 location_label=proposed_location_label,
                 location_id=proposed_location_id,
                 author_id=current_user_id,
@@ -171,15 +180,19 @@ def vote_project_edit_request(
                 .values(status="approved")
             )
             applied_values = {
-                "title": request_row["title"],
-                "description": request_row["description"],
+                field: request_row[field]
+                for field in ("title", "description")
+                if request_row[field] is not None
             }
             if request_row.get("location_label"):
                 applied_values["location_label"] = request_row["location_label"]
                 applied_values["location_id"] = request_row.get("location_id")
-            db.execute(
-                update(projects).where(projects.c.id == project_row["id"]).values(**applied_values)
-            )
+            if applied_values:
+                db.execute(
+                    update(projects)
+                    .where(projects.c.id == project_row["id"])
+                    .values(**applied_values)
+                )
             executed = True
         elif not summary.get("can_still_pass", True):
             db.execute(

@@ -122,8 +122,9 @@ class EventEditRequestCreateIn(BaseModel):
 class EventEditRequestOut(BaseModel):
     id: UUID
     event_id: UUID
-    title: str
-    description: str
+    # None when the edit leaves that field unchanged.
+    title: str | None = None
+    description: str | None = None
     author_id: UUID | None = None
     status: str
     created_at: object

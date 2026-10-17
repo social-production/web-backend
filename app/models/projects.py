@@ -481,8 +481,8 @@ project_edit_requests = table(
     "project_edit_requests",
     uuid_pk(),
     project_fk("project_id", nullable=False),
-    sa.Column("title", sa.String(200), nullable=False),
-    sa.Column("description", sa.Text, nullable=False),
+    sa.Column("title", sa.String(200), nullable=True),
+    sa.Column("description", sa.Text, nullable=True),
     sa.Column("location_label", sa.String(160), nullable=True),
     sa.Column(
         "location_id",

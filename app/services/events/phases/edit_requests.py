@@ -24,6 +24,11 @@ from app.services.events.phases.gates import (
 from app.services.events.phases.serializers import _serialize_edit_request
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.search import index_document
+from app.utils.edits import changed_text
+
+
+def _changed_values(row) -> dict[str, object]:
+    return {field: row[field] for field in ("title", "description") if row[field] is not None}
 
 
 def create_edit_request(
@@ -40,14 +45,22 @@ def create_edit_request(
     # and applied immediately for the creator/co-organizers.
     auto_execute = _is_organizer_controlled(event_row)
 
+    # Store only what changes, so two passed edits never undo each other.
+    proposed_title = changed_text(title, event_row["title"])
+    proposed_description = changed_text(description, event_row["description"])
+    if proposed_title is None and proposed_description is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nothing has changed"
+        )
+
     try:
         created = (
             db.execute(
                 insert(event_edit_requests)
                 .values(
                     event_id=event_row["id"],
-                    title=title.strip(),
-                    description=description.strip(),
+                    title=proposed_title,
+                    description=proposed_description,
                     author_id=current_user_id,
                     status="approved" if auto_execute else "open",
                 )
@@ -68,7 +81,7 @@ def create_edit_request(
             db.execute(
                 update(events)
                 .where(events.c.id == event_row["id"])
-                .values(title=created["title"], description=created["description"])
+                .values(**_changed_values(created))
             )
         db.commit()
     except IntegrityError as exc:
@@ -83,8 +96,8 @@ def create_edit_request(
             db=db,
             entity_type="event",
             entity_id=event_row["id"],
-            title=created["title"],
-            summary=created["description"],
+            title=created["title"] or event_row["title"],
+            summary=created["description"] or event_row["description"],
             meta="event",
             href=f"/events/{event_row['slug']}",
         )
@@ -204,10 +217,7 @@ def vote_edit_request(
             db.execute(
                 update(events)
                 .where(events.c.id == event_row["id"])
-                .values(
-                    title=request_row["title"],
-                    description=request_row["description"],
-                )
+                .values(**_changed_values(request_row))
             )
             executed = True
         elif not summary.get("can_still_pass", True):
