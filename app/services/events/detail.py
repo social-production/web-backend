@@ -70,6 +70,7 @@ from app.services.plan_criteria import (
     serialize_plan_criterion_assessments,
 )
 from app.services.signal_gates import build_proposal_signal_summary
+from app.utils.edits import edit_changes
 from app.utils.votes import is_platform_event, required_votes, resolve_event_vote_population
 
 EVENT_SIGNAL_TYPES = frozenset({"demand", "opposition"})
@@ -748,18 +749,12 @@ async def get_event_detail(
                         ),
                         "payload": {
                             "type": "edit",
-                            "changes": [
-                                {
-                                    "label": "Title",
-                                    "before": str(row["title"]),
-                                    "after": str(req["title"]),
-                                },
-                                {
-                                    "label": "Description",
-                                    "before": str(row["description"]),
-                                    "after": str(req["description"]),
-                                },
-                            ],
+                            "changes": edit_changes(
+                                [
+                                    ("Title", row["title"], req["title"]),
+                                    ("Description", row["description"], req["description"]),
+                                ]
+                            ),
                         },
                     },
                 )
@@ -1150,6 +1145,7 @@ async def get_event_detail(
         "governance": governance,
         "homeCommunity": home_community,
         "scheduledAt": _iso(row["scheduled_at"]),
+        "endsAt": _iso(row["ends_at"]) if row.get("ends_at") else None,
         "channelTags": channel_tags,
         "communityTags": community_tags,
         "createdByUsername": creator_username,
@@ -1315,18 +1311,12 @@ def _build_event_decision_history(
                     ),
                     "payload": {
                         "type": "edit",
-                        "changes": [
-                            {
-                                "label": "Title",
-                                "before": str(row["title"]),
-                                "after": str(req["title"]),
-                            },
-                            {
-                                "label": "Description",
-                                "before": str(row["description"]),
-                                "after": str(req["description"]),
-                            },
-                        ],
+                        "changes": edit_changes(
+                            [
+                                ("Title", row["title"], req["title"]),
+                                ("Description", row["description"], req["description"]),
+                            ]
+                        ),
                     },
                 },
             )

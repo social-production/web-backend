@@ -20,6 +20,7 @@ EVENT_PAGE_DATA_KEYS = {
     "description",
     "isPrivate",
     "scheduledAt",
+    "endsAt",
     "channelTags",
     "communityTags",
     "createdByUsername",

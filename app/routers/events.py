@@ -118,6 +118,7 @@ class EventDetailResponse(BaseModel):
     governance: str
     homeCommunity: dict[str, Any] | None = None
     scheduledAt: str | None = None
+    endsAt: str | None = None
     channelTags: list[dict[str, Any]]
     communityTags: list[dict[str, Any]]
     createdByUsername: str

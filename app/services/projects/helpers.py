@@ -35,6 +35,7 @@ from app.services.detail_links import build_link_decision_history_entries
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.projects_plans import _plan_subtype_from_payload
 from app.services.search import index_document
+from app.utils.edits import edit_changes
 from app.utils.slugs import allocate_unique_slug
 from app.utils.votes import required_votes
 
@@ -758,12 +759,12 @@ def _build_project_history(
                     "payload": {
                         "type": "edit",
                         "changes": [
-                            {"label": "Title", "before": current_title, "after": req["title"]},
-                            {
-                                "label": "Description",
-                                "before": current_description,
-                                "after": req["description"],
-                            },
+                            *edit_changes(
+                                [
+                                    ("Title", current_title, req["title"]),
+                                    ("Description", current_description, req["description"]),
+                                ]
+                            ),
                             *(
                                 [
                                     {
