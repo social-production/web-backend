@@ -904,26 +904,18 @@ def share_event_with_user(
         return {"ok": False, "error": "Choose another user."}
 
     if event_row["is_private"]:
-        existing_membership = db.execute(
-            select(event_memberships.c.event_id).where(
-                event_memberships.c.event_id == event_row["id"],
-                event_memberships.c.user_id == target_user["id"],
-            )
-        ).first()
-        if existing_membership is None:
-            db.execute(
-                insert(event_memberships).values(
-                    event_id=event_row["id"],
-                    user_id=target_user["id"],
-                    role="member",
-                    joined_at=datetime.now(UTC),
-                )
-            )
-            db.execute(
-                update(events)
-                .where(events.c.id == event_row["id"])
-                .values(member_count=events.c.member_count + 1)
-            )
+        # A private event's invitee joins once they accept (see app/services/invites.py).
+        from app.services.invites import EVENT, create_invite
+
+        create_invite(
+            db,
+            kind=EVENT,
+            scope_id=event_row["id"],
+            user_id=target_user["id"],
+            invited_by=current_user_id,
+            title=event_row["title"],
+        )
+        return {"ok": True}
 
     create_notification(
         db=db,

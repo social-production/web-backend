@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from app.models import channels, communities, scope_invites, scope_memberships, users
 from app.services.access_control import assert_can_view_scope
 from app.services.meaningful_actions import record_meaningful_action
-from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.utils.handles import canonicalize_handle, validate_handle
 from app.utils.usernames import username_matches
@@ -902,35 +901,16 @@ def invite_user_to_community(
     if existing is not None:
         return {"ok": True, "username": target_user["username"], "already_member": True}
 
-    try:
-        db.execute(
-            insert(scope_memberships).values(
-                scope_kind=COMMUNITY_SCOPE_KIND,
-                scope_id=community_row["id"],
-                user_id=target_user["id"],
-                role="member",
-            )
-        )
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not invite user",
-        ) from exc
+    # They join once they accept (see app/services/invites.py).
+    from app.services.invites import COMMUNITY, create_invite
 
-    create_notification(
-        db=db,
-        recipient_id=target_user["id"],
-        actor_id=current_user_id,
-        kind="community-invite",
-        surface="community",
-        subject_type="community",
-        subject_id=community_row["id"],
-        target_id=community_row["id"],
+    create_invite(
+        db,
+        kind=COMMUNITY,
+        scope_id=community_row["id"],
+        user_id=target_user["id"],
+        invited_by=current_user_id,
         title=community_row["name"],
-        body="You were invited to join this private community.",
-        href=f"/communities/{community_row['slug']}",
     )
 
     return {"ok": True, "username": target_user["username"], "already_member": False}

@@ -11,7 +11,7 @@ from app.auth.passwords import hash_password
 from app.db import SessionLocal
 from app.main import app
 from app.models import channels, communities, scope_memberships, user_follows, users
-from tests.conftest import private_event_plan_fields
+from tests.conftest import accept_invites, private_event_plan_fields
 
 
 @pytest.fixture
@@ -116,7 +116,8 @@ def test_invite_only_adds_members_and_hides_from_public_feed(client: TestClient)
     assert body["current_phase_id"] == "activity"
     event_slug = body["slug"]
 
-    # Invitee can load detail
+    # The invitee joins once they accept.
+    assert accept_invites(client, _auth_headers(invitee_id)) == 1
     invitee_detail = client.get(f"/events/{event_slug}", headers=_auth_headers(invitee_id))
     assert invitee_detail.status_code == 200
     detail = invitee_detail.json()
@@ -232,6 +233,7 @@ def test_private_collaborative_invite_only_starts_at_proposal(client: TestClient
     assert body["current_phase_id"] == "proposal"
     assert body["governance"] == "collaborative"
 
+    assert accept_invites(client, _auth_headers(invitee_id)) == 1
     invitee_detail = client.get(f"/events/{body['slug']}", headers=_auth_headers(invitee_id))
     assert invitee_detail.status_code == 200
     detail = invitee_detail.json()
@@ -323,6 +325,7 @@ def test_private_event_organizer_can_invite_and_promote(client: TestClient):
     assert any(editor["username"] == owner for editor in payload["eventEditors"])
     assert all(member_row["username"] != owner for member_row in payload["members"])
 
+    assert accept_invites(client, _auth_headers(member_id)) == 1
     member_detail = client.get(f"/events/{event_slug}", headers=_auth_headers(member_id))
     assert member_detail.status_code == 200
     assert member_detail.json()["viewerCanManageEditors"] is False

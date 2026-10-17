@@ -112,6 +112,7 @@ from app.models.projects import (
 from app.models.scopes import (
     channels,
     communities,
+    pending_invites,
     scope_confidence_votes,
     scope_invites,
     scope_memberships,
@@ -149,6 +150,7 @@ __all__ = [
     "scope_memberships",
     "scope_proposal_votes",
     "scope_proposals",
+    "pending_invites",
     "scope_invites",
     "scope_confidence_votes",
     "posts",

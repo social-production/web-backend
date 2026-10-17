@@ -11,6 +11,7 @@ from app.models import (
     user_settings,
     users,
 )
+from app.services.invites import pending_invite_count
 from app.services.messages import get_total_unread_message_count
 from app.services.notification_preferences import allowed_notification_kinds
 
@@ -75,5 +76,6 @@ def get_bootstrap_summary(db: Session, current_user_id: UUID | None) -> dict[str
         "unreadCounts": {
             "notifications": _get_unread_notification_count(db, current_user_id),
             "messages": _get_unread_message_count(db, current_user_id),
+            "invites": pending_invite_count(db, current_user_id),
         },
     }

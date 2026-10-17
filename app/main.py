@@ -24,6 +24,7 @@ from app.routers.events_plans import router as events_plans_router
 from app.routers.feedback import router as feedback_router
 from app.routers.feeds import router as feeds_router
 from app.routers.governance import router as governance_router
+from app.routers.invites import router as invites_router
 from app.routers.locations import router as locations_router
 from app.routers.messages import router as messages_router
 from app.routers.notifications import router as notifications_router
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
 
     app.include_router(bootstrap_router)
     app.include_router(auth_router)
+    app.include_router(invites_router)
     app.include_router(users_router)
     app.include_router(scopes_router)
     app.include_router(content_router)

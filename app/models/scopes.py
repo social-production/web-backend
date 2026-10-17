@@ -67,6 +67,19 @@ scope_invites = table(
     created_at(),
 )
 
+# A direct invite to a private community or event, waiting for the person to accept or decline.
+pending_invites = table(
+    "pending_invites",
+    uuid_pk(),
+    sa.Column("scope_kind", sa.String(16), nullable=False),
+    sa.Column("scope_id", UUID, nullable=False),
+    user_fk("user_id", nullable=False, ondelete="CASCADE"),
+    user_fk("invited_by", nullable=True, ondelete="SET NULL"),
+    sa.Column("status", sa.String(16), nullable=False, server_default="pending"),
+    created_at(),
+    sa.Column("responded_at", sa.DateTime(timezone=True), nullable=True),
+)
+
 scope_confidence_votes = table(
     "scope_confidence_votes",
     sa.Column(

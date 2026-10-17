@@ -87,7 +87,7 @@ def test_bootstrap_summary_returns_nested_unread_counts() -> None:
     assert response.status_code == 200, response.text
     payload = response.json()
     assert set(payload.keys()) == {"unreadCounts"}
-    assert set(payload["unreadCounts"].keys()) == {"notifications", "messages"}
+    assert set(payload["unreadCounts"].keys()) == {"notifications", "messages", "invites"}
     assert isinstance(payload["unreadCounts"]["notifications"], int)
     assert isinstance(payload["unreadCounts"]["messages"], int)
 
@@ -101,6 +101,7 @@ def test_bootstrap_summary_guest_returns_zero_counts() -> None:
         "unreadCounts": {
             "notifications": 0,
             "messages": 0,
+            "invites": 0,
         },
     }
 

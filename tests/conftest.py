@@ -293,3 +293,14 @@ def register_and_login_client(
         "csrf": client.cookies.get(CSRF_COOKIE, ""),
         "headers": headers,
     }
+
+
+def accept_invites(client, headers) -> int:
+    """Accept every pending invite for the signed-in user (direct invites wait for this)."""
+    listed = client.get("/invites", headers=headers)
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    for item in items:
+        accepted = client.post(f"/invites/{item['id']}/accept", headers=headers)
+        assert accepted.status_code == 200, accepted.text
+    return len(items)

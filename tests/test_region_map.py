@@ -269,6 +269,9 @@ def test_map_markers_invite_only_visible_to_invitee_not_outsider(db_transaction,
         "window": "all",
     }
 
+    from tests.conftest import accept_invites
+
+    assert accept_invites(isolated_client, _auth_header(invitee_token)) == 1
     invitee_response = isolated_client.get(
         "/feeds/map-markers",
         params=params,

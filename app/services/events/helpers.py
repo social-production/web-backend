@@ -24,7 +24,6 @@ from app.models import (
     users,
 )
 from app.services.meaningful_actions import record_meaningful_action
-from app.services.notifications import create_notification
 from app.services.search import index_document
 from app.utils.plan_schedule import schedule_to_utc
 from app.utils.slugs import allocate_unique_slug
@@ -692,24 +691,9 @@ def create_event(
             )
         )
 
-        for invitee_id, _username in invitees:
-            db.execute(
-                insert(event_memberships).values(
-                    event_id=created["id"],
-                    user_id=invitee_id,
-                    role="member",
-                    joined_at=now,
-                )
-            )
-        if invitees:
-            db.execute(
-                update(events)
-                .where(events.c.id == created["id"])
-                .values(member_count=events.c.member_count + len(invitees))
-            )
-
-        # Ensure co-organizers are members before granting editor.
-        existing_member_ids = {current_user_id, *[invitee_id for invitee_id, _ in invitees]}
+        # Invitees join once they accept (invites are sent below, after commit).
+        # Co-organizers are added directly: they help run the event.
+        existing_member_ids = {current_user_id}
         for editor_id, _username in editors:
             if editor_id not in existing_member_ids:
                 db.execute(
@@ -799,19 +783,19 @@ def create_event(
     # Reload after schedule sync may have updated the event.
     created = _get_event_by_slug_row(db, created["slug"])
 
+    from app.services.invites import EVENT, create_invite
+
+    editor_ids = {editor_id for editor_id, _ in editors}
     for invitee_id, _username in invitees:
-        create_notification(
-            db=db,
-            recipient_id=invitee_id,
-            actor_id=current_user_id,
-            kind="evt-invite",
-            surface="event",
-            subject_type="event",
-            subject_id=created["id"],
-            target_id=created["id"],
+        if invitee_id in editor_ids:
+            continue
+        create_invite(
+            db,
+            kind=EVENT,
+            scope_id=created["id"],
+            user_id=invitee_id,
+            invited_by=current_user_id,
             title=created["title"],
-            body=f"You were invited to an event: {created['title']}. Open /events/{created['slug']}",
-            href=f"/events/{created['slug']}",
         )
 
     tags = _get_event_tags(db, created["id"])

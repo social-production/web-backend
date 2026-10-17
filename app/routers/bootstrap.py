@@ -30,6 +30,7 @@ class FeatureFlagsOut(BaseModel):
 class UnreadCountsOut(BaseModel):
     notifications: int
     messages: int
+    invites: int = 0
 
 
 class BootstrapSummaryResponse(BaseModel):
