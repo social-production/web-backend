@@ -151,6 +151,7 @@ class MessageOut(BaseModel):
     kind: str = "text"
     call_outcome: str | None = None
     call_duration_seconds: int | None = None
+    sender_username: str | None = None
 
 
 class PinOut(BaseModel):

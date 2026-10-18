@@ -11,9 +11,7 @@ from tests.conftest import seed_user
 from tests.test_personal_service_privacy import SECRET_TITLE, _auth, _setup
 
 
-def test_channel_members_are_listed_with_standing_even_signed_out(
-    db_transaction, isolated_client
-):
+def test_channel_members_are_listed_with_standing_even_signed_out(db_transaction, isolated_client):
     from tests.conftest import seed_channel_with_membership
 
     creator_id, creator_name = seed_user(db_transaction, username_prefix="mem-creator")
@@ -46,9 +44,7 @@ def test_sharing_a_project_drops_the_link_into_the_direct_chat(db_transaction, i
     assert any(f"Open project: /projects/{ctx['slug']}" in item["body"] for item in lines)
 
 
-def test_provider_can_rate_a_finished_booking_and_sees_who_booked(
-    db_transaction, isolated_client
-):
+def test_provider_can_rate_a_finished_booking_and_sees_who_booked(db_transaction, isolated_client):
     ctx = _setup(db_transaction, isolated_client)
     project_id = db_transaction.execute(
         select(projects.c.id).where(projects.c.slug == ctx["slug"])

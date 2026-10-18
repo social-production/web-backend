@@ -410,6 +410,15 @@ def get_messages_for_conversation(
     )
     attachment_rows = attachments_by_message(db, message_ids)
     replies = _reply_snapshots(db, [row["reply_to_id"] for row in rows if row.get("reply_to_id")])
+    # Names for everyone who wrote here, including people who have since left the chat.
+    sender_ids = {row["sender_id"] for row in rows if row.get("sender_id")}
+    sender_names = (
+        dict(
+            db.execute(select(users.c.id, users.c.username).where(users.c.id.in_(sender_ids))).all()
+        )
+        if sender_ids
+        else {}
+    )
     for row in rows:
         try:
             plaintext = decrypt_message(row["encrypted_body"])
@@ -419,13 +428,16 @@ def get_messages_for_conversation(
                 detail="Stored message could not be decrypted",
             ) from exc
         items.append(
-            _serialize_message(
-                row,
-                plaintext,
-                report=reports_by_id.get(row["id"]),
-                attachments=attachment_rows.get(row["id"], []),
-                reply=replies.get(row["reply_to_id"]) if row.get("reply_to_id") else None,
-            )
+            {
+                **_serialize_message(
+                    row,
+                    plaintext,
+                    report=reports_by_id.get(row["id"]),
+                    attachments=attachment_rows.get(row["id"], []),
+                    reply=replies.get(row["reply_to_id"]) if row.get("reply_to_id") else None,
+                ),
+                "sender_username": sender_names.get(row.get("sender_id")),
+            }
         )
 
     peer_read_at = None

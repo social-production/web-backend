@@ -270,6 +270,7 @@ def test_members_can_leave_a_group_and_the_creator_hands_over(client: TestClient
     assert lines.status_code == 200, lines.text
     system = [item for item in lines.json()["items"] if item.get("kind") == "system"]
     assert system and system[-1]["body"] == f"{owner[1]} left the group."
+    assert all(item["sender_username"] == owner[1] for item in system)
 
     # The remaining member now manages the group.
     added = client.post(
