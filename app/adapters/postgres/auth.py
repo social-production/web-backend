@@ -9,7 +9,7 @@ from app.services import auth as auth_service
 
 
 class JwtAuthProvider:
-    """Current production auth — swap for SupabaseAuthProvider later."""
+    """Current production auth: JWTs in httpOnly cookies."""
 
     def __init__(self, db: Session) -> None:
         self._db = db

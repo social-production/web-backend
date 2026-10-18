@@ -1,7 +1,7 @@
 """Provider ports — stable interfaces for infra-backed capabilities.
 
 Current implementations live under ``app.adapters``. Future providers
-(Supabase Auth, alternate cache, etc.) implement these Protocols.
+(another auth service, alternate cache, etc.) implement these Protocols.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class AccessPolicy(Protocol):
 
 
 class AuthProvider(Protocol):
-    """Authentication lifecycle — current JWT implementation; Supabase later."""
+    """Authentication lifecycle; the current implementation uses JWTs."""
 
     def register(
         self,
