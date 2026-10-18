@@ -230,8 +230,24 @@ def test_refresh_rotates_tokens(client: TestClient, unique_ip: str, monkeypatch)
     )
     assert racing_tab.status_code == 200
 
-    # After the grace window the old token is refused.
+    latest_refresh = racing_tab.cookies.get(REFRESH_COOKIE)
+    assert latest_refresh
     monkeypatch.setattr(auth_service, "REFRESH_REUSE_GRACE_SECONDS", -1)
+
+    # A browser that left the page mid-refresh never stored the new cookie. While the token that
+    # replaced the old one is unused, the old one still works, so the person isn't signed out.
+    lost_response = client.post(
+        "/auth/refresh", cookies={REFRESH_COOKIE: old_refresh}, headers=session["headers"]
+    )
+    assert lost_response.status_code == 200, lost_response.text
+    replacement = lost_response.cookies.get(REFRESH_COOKIE)
+    assert replacement
+
+    # Once the replacement has been used, reusing the old token is replay, so it's refused.
+    used = client.post(
+        "/auth/refresh", cookies={REFRESH_COOKIE: replacement}, headers=session["headers"]
+    )
+    assert used.status_code == 200, used.text
     stale = client.post(
         "/auth/refresh", cookies={REFRESH_COOKIE: old_refresh}, headers=session["headers"]
     )

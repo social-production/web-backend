@@ -113,6 +113,26 @@ def get_linked_chats(db: Session, current_user_id: UUID) -> dict[str, object]:
         )
         target_ids.update(commented_ids)
 
+    # Commenting once doesn't keep a private event's chat after you leave it.
+    member_event_ids = {
+        row[0]
+        for row in db.execute(
+            select(event_memberships.c.event_id).where(
+                event_memberships.c.user_id == current_user_id
+            )
+        ).all()
+    }
+    if event_ids - member_event_ids:
+        private_left = set(
+            db.execute(
+                select(events.c.id).where(
+                    events.c.id.in_(list(event_ids - member_event_ids)),
+                    events.c.is_private.is_(True),
+                )
+            ).scalars()
+        )
+        event_ids -= private_left
+
     items = []
 
     if event_ids:

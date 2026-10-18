@@ -31,6 +31,7 @@ from app.models import (
 )
 from app.services.access_control import (
     assert_can_view_scope,
+    hide_private_community_items,
 )
 from app.services.content import _help_request_role_summaries, _load_help_request_roles
 from app.services.feeds.builder import _build_feed
@@ -139,6 +140,12 @@ def get_home_feed(
     )
 
 
+def _viewer_community_ids(db: Session, viewer_id: UUID | None) -> list[UUID]:
+    if viewer_id is None:
+        return []
+    return _get_user_scope_ids(db, viewer_id)[1]
+
+
 def get_personal_feed(
     db: Session,
     current_user_id: UUID,
@@ -228,7 +235,9 @@ def get_personal_feed(
 
     combined = union_all(*parts).subquery("personal_feed")
 
-    stmt = select(combined)
+    stmt = select(combined).where(
+        hide_private_community_items(combined, _viewer_community_ids(db, current_user_id))
+    )
     stmt = _apply_schedule_window_filter(stmt, combined, safe_window, timezone_name)
     stmt = (
         stmt.order_by(*sort_order_columns(combined, safe_sort))
@@ -242,7 +251,9 @@ def get_personal_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     help_request_ids = [row["id"] for row in rows if row["entity_type"] == "help_request"]
-    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids, help_request_ids)
+    tags = _fetch_tags_for_items(
+        db, project_ids, thread_ids, event_ids, help_request_ids, viewer_id=current_user_id
+    )
     updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
     viewer_signals = _fetch_viewer_signals_for_rows(db, rows, current_user_id)
@@ -555,7 +566,10 @@ def get_user_feed(
 
     combined = union_all(*parts).subquery("user_feed")
 
-    stmt = select(combined)
+    # Someone's profile must not show what they do in private communities you aren't in.
+    stmt = select(combined).where(
+        hide_private_community_items(combined, _viewer_community_ids(db, viewer_user_id))
+    )
     stmt = _apply_schedule_window_filter(stmt, combined, safe_window, timezone_name)
     stmt = (
         stmt.order_by(*sort_order_columns(combined, safe_sort))
@@ -569,7 +583,9 @@ def get_user_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     help_request_ids = [row["id"] for row in rows if row["entity_type"] == "help_request"]
-    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids, help_request_ids)
+    tags = _fetch_tags_for_items(
+        db, project_ids, thread_ids, event_ids, help_request_ids, viewer_id=viewer_user_id
+    )
     updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, viewer_user_id)
     viewer_signals = _fetch_viewer_signals_for_rows(db, rows, viewer_user_id)

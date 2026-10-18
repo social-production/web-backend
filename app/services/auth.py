@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from uuid import UUID
 
+import jwt as pyjwt
 from fastapi import HTTPException, Request, status
 from redis.asyncio import Redis
 from sqlalchemy import insert, select, update
@@ -28,10 +29,12 @@ from app.utils.request import get_client_ip
 from app.utils.usernames import username_matches
 
 AUTH_RATE_LIMIT = 10
+REFRESH_RATE_LIMIT = 120
 AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
 AUTH_RATE_LIMIT_PREFIX = "auth-rate-limit"
 TOKEN_BLACKLIST_PREFIX = "token-blacklist"
 TOKEN_ROTATED_PREFIX = "token-rotated"
+TOKEN_SUCCESSOR_PREFIX = "token-successor"
 # Two tabs often refresh with the same cookie at once. The one that loses the race
 # still gets new tokens if the old refresh token was rotated moments ago.
 REFRESH_REUSE_GRACE_SECONDS = 30
@@ -101,7 +104,12 @@ def public_auth_payload(request: Request, payload: dict[str, object]) -> dict[st
 async def enforce_auth_rate_limit(request: Request) -> None:
     client_host = get_client_ip(request)
     window_bucket = int(time.time() // AUTH_RATE_LIMIT_WINDOW_SECONDS)
-    key = f"{AUTH_RATE_LIMIT_PREFIX}:{client_host}:{window_bucket}"
+    # Refreshing needs a valid refresh token already, so it gets its own, roomier bucket: several
+    # people (or tabs) behind one address shouldn't be signed out by each other's logins.
+    is_refresh = request.url.path.rstrip("/").endswith("/auth/refresh")
+    bucket = "refresh" if is_refresh else "login"
+    limit = REFRESH_RATE_LIMIT if is_refresh else AUTH_RATE_LIMIT
+    key = f"{AUTH_RATE_LIMIT_PREFIX}:{bucket}:{client_host}:{window_bucket}"
 
     redis_client: Redis = get_redis_client()
     try:
@@ -116,7 +124,7 @@ async def enforce_auth_rate_limit(request: Request) -> None:
             )
         return
 
-    if current_count > AUTH_RATE_LIMIT:
+    if current_count > limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Auth rate limit exceeded"
         )
@@ -264,6 +272,7 @@ async def refresh_auth_session(refresh_token: str, db: Session | None = None) ->
 
     access_token = create_access_token(subject)
     rotated_refresh = create_refresh_token(subject)
+    await _record_successor(jti, rotated_refresh, exp)
     csrf_token = secrets.token_urlsafe(32)
     return {
         "access_token": access_token,
@@ -271,6 +280,34 @@ async def refresh_auth_session(refresh_token: str, db: Session | None = None) ->
         "csrf_token": csrf_token,
         "token_type": "bearer",
     }
+
+
+async def _record_successor(jti: str, rotated_refresh: str, exp: int) -> None:
+    """Remember which token replaced this one, to tell a lost response from a stolen token."""
+    ttl_seconds = exp - int(datetime.now(UTC).timestamp())
+    if ttl_seconds <= 0:
+        return
+    try:
+        successor = pyjwt.decode(rotated_refresh, options={"verify_signature": False}).get("jti")
+        if successor:
+            await get_redis_client().set(
+                f"{TOKEN_SUCCESSOR_PREFIX}:{jti}", str(successor), ex=ttl_seconds
+            )
+    except Exception:
+        return
+
+
+async def _successor_unused(redis_client: Redis, jti: str) -> bool:
+    """True when the token issued in place of ``jti`` was never presented.
+
+    A browser that left the page mid-refresh never stored the new cookie and still holds the
+    old one. Reusing it is then safe; reuse after the replacement was used still fails.
+    """
+    successor = await redis_client.get(f"{TOKEN_SUCCESSOR_PREFIX}:{jti}")
+    if not successor:
+        return False
+    value = successor.decode() if isinstance(successor, bytes) else str(successor)
+    return not await redis_client.exists(f"{TOKEN_ROTATED_PREFIX}:{value}")
 
 
 async def _rotation_allows_reuse(jti: str, exp: int) -> bool:
@@ -297,7 +334,9 @@ async def _rotation_allows_reuse(jti: str, exp: int) -> bool:
         return True
     try:
         value = rotated_at.decode() if isinstance(rotated_at, bytes) else str(rotated_at)
-        return now - float(value) <= REFRESH_REUSE_GRACE_SECONDS
+        if now - float(value) <= REFRESH_REUSE_GRACE_SECONDS:
+            return True
+        return await _successor_unused(redis_client, jti)
     except (TypeError, ValueError):
         return False
 

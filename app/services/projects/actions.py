@@ -195,7 +195,7 @@ def add_project_value(
     label: str,
 ) -> dict[str, object]:
     project_row = _get_project_by_slug_row(db, slug)
-    _ensure_project_member(db, project_row["id"], current_user_id)
+    # Projects are public: anyone signed in can share one, member or not.
     if str(project_row["current_phase_id"]) != "phase-1":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

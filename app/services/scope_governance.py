@@ -552,7 +552,8 @@ def remove_member(db: Session, viewer_id: UUID, kind: str, slug: str, username: 
 
 
 def open_vote_count(db: Session, viewer_id: UUID | None, kind: str, scope_id: UUID) -> int:
-    if viewer_id is None:
+    """Open decisions this viewer can still vote on. Only members vote, so others see none."""
+    if viewer_id is None or viewer_id not in _memberships(db, kind, scope_id):
         return 0
     voted = select(scope_proposal_votes.c.proposal_id).where(
         scope_proposal_votes.c.voter_id == viewer_id

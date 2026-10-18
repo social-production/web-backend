@@ -26,6 +26,7 @@ from app.models import (
     project_signals,
     project_tags,
     project_updates,
+    scope_memberships,
     thread_tags,
 )
 from app.services.content import _help_request_role_summaries
@@ -423,9 +424,26 @@ def _fetch_tags_for_items(
     thread_ids: list[UUID],
     event_ids: list[UUID],
     help_request_ids: list[UUID] | None = None,
+    *,
+    viewer_id: UUID | None,
 ) -> dict[str, dict[str, list[dict[str, str | None]]]]:
-    """Returns {entity_id_str: {'channels': [...], 'communities': [...]}}."""
+    """Returns {entity_id_str: {'channels': [...], 'communities': [...]}}.
+
+    A private community the viewer isn't in is left out, so its name never shows on a card.
+    """
     result: dict[str, dict[str, list[dict[str, str | None]]]] = {}
+    viewer_community_ids = (
+        set(
+            db.execute(
+                select(scope_memberships.c.scope_id).where(
+                    scope_memberships.c.scope_kind == "community",
+                    scope_memberships.c.user_id == viewer_id,
+                )
+            ).scalars()
+        )
+        if viewer_id is not None
+        else set()
+    )
 
     sources = (
         (project_tags, project_tags.c.project_id, project_ids),
@@ -446,6 +464,8 @@ def _fetch_tags_for_items(
                     communities.c.slug.label("community_slug"),
                     communities.c.name.label("community_name"),
                     communities.c.image_storage_key.label("community_image_key"),
+                    communities.c.id.label("community_id"),
+                    communities.c.join_policy.label("community_join_policy"),
                 )
                 .select_from(table)
                 .outerjoin(channels, channels.c.id == table.c.channel_id)
@@ -469,7 +489,11 @@ def _fetch_tags_for_items(
                         ),
                     }
                 )
-            if row["community_slug"]:
+            hidden_community = (
+                row["community_join_policy"] == "closed"
+                and row["community_id"] not in viewer_community_ids
+            )
+            if row["community_slug"] and not hidden_community:
                 bucket["communities"].append(
                     {
                         "slug": row["community_slug"],

@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from uuid import UUID
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, case, cast, exists, null, or_, select
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Session
 
 from app.domain.access_policy import EntityTagScope, can_view_by_tag_scope
@@ -380,6 +381,48 @@ def closed_community_only_tag_condition(
         )
     )
     return and_(has_closed_community_tag, ~has_public_scope_tag)
+
+
+_TAGGED_ENTITY_TABLES = (
+    ("thread", thread_tags, "thread_id"),
+    ("project", project_tags, "project_id"),
+    ("event", event_tags, "event_id"),
+    ("help_request", help_request_tags, "help_request_id"),
+)
+
+
+def hide_private_community_items(combined, viewer_community_ids):
+    """WHERE clause for a combined feed: drop items, and comments on items, that live only in
+    private communities the viewer isn't in.
+
+    Feed rows carry ``entity_type`` and ``id``; comment rows carry the parent's type in
+    ``project_mode`` and its id (as text) in ``project_subtype``.
+    """
+    allowed = list(viewer_community_ids or [])
+    # CASE keeps Postgres from casting other rows' subtype text (e.g. "repair") to a uuid.
+    comment_subject_id = case(
+        (
+            combined.c.entity_type == "comment_activity",
+            cast(combined.c.project_subtype, PG_UUID(as_uuid=True)),
+        ),
+        else_=cast(null(), PG_UUID(as_uuid=True)),
+    )
+    hidden = []
+    for entity_type, tag_table, fk in _TAGGED_ENTITY_TABLES:
+        hidden.append(
+            and_(
+                combined.c.entity_type == entity_type,
+                closed_community_only_tag_condition(tag_table, combined.c.id, fk, allowed),
+            )
+        )
+        hidden.append(
+            and_(
+                combined.c.entity_type == "comment_activity",
+                combined.c.project_mode == entity_type,
+                closed_community_only_tag_condition(tag_table, comment_subject_id, fk, allowed),
+            )
+        )
+    return ~or_(*hidden)
 
 
 def filter_search_results(

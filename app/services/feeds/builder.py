@@ -106,7 +106,9 @@ def _build_feed(
     thread_ids = [row["id"] for row in rows if row["entity_type"] == "thread"]
     event_ids = [row["id"] for row in rows if row["entity_type"] == "event"]
     help_request_ids = [row["id"] for row in rows if row["entity_type"] == "help_request"]
-    tags = _fetch_tags_for_items(db, project_ids, thread_ids, event_ids, help_request_ids)
+    tags = _fetch_tags_for_items(
+        db, project_ids, thread_ids, event_ids, help_request_ids, viewer_id=current_user_id
+    )
     updates = _fetch_latest_updates_for_items(db, project_ids, event_ids)
     active_votes = _fetch_active_votes_for_rows(db, rows, current_user_id)
     viewer_signals = _fetch_viewer_signals_for_rows(db, rows, current_user_id)

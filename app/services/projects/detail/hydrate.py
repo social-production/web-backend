@@ -1241,7 +1241,8 @@ async def get_project_detail(
         "members": members,
         "viewerIsMember": viewer_is_member,
         "viewerCanToggleMembership": current_user_id is not None,
-        "viewerCanShare": viewer_is_member,
+        # Projects are public, so anyone signed in can pass one on.
+        "viewerCanShare": current_user_id is not None,
         "shareContacts": share_contacts,
         "report": report,
         "isRemovedByReport": is_removed,

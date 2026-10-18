@@ -87,6 +87,14 @@ def test_members_vote_on_a_collaborative_edit(client: TestClient) -> None:
     assert proposal["kind"] == "edit"
     assert proposed.json()["description"] == "seed"
 
+    # The Vote badge counts only decisions you could vote on: members yes, outsiders no.
+    def open_votes(user) -> int:
+        page = client.get(f"/scopes/communities/{slug}", headers=_auth(user[0]))
+        return page.json()["open_votes"]
+
+    assert open_votes(second) == 1
+    assert open_votes(outsider) == 0
+
     refused = client.post(
         f"/scopes/proposals/{proposal['id']}/vote", headers=_auth(outsider[0]), json={"vote": "yes"}
     )
