@@ -439,6 +439,30 @@ def _ensure_organizer(db: Session, kind: str, row, viewer_id: UUID) -> None:
         )
 
 
+def _record_direct(
+    db: Session, kind: str, row, viewer_id: UUID, proposal_kind: str, payload: dict
+) -> None:
+    """Organizer changes apply at once but still go in Past decisions, with their Yes."""
+    proposal_id = uuid4()
+    now = _now()
+    db.execute(
+        insert(scope_proposals).values(
+            id=proposal_id,
+            scope_kind=kind,
+            scope_id=row["id"],
+            kind=proposal_kind,
+            payload=payload,
+            proposer_id=viewer_id,
+            status="passed",
+            created_at=now,
+            closed_at=now,
+        )
+    )
+    db.execute(
+        insert(scope_proposal_votes).values(proposal_id=proposal_id, voter_id=viewer_id, vote="yes")
+    )
+
+
 def edit(db: Session, viewer_id: UUID, kind: str, slug: str, payload: dict) -> dict:
     """Organizers apply straight away; everyone else opens a member vote."""
     row = _row(db, kind, slug)
@@ -453,6 +477,7 @@ def edit(db: Session, viewer_id: UUID, kind: str, slug: str, payload: dict) -> d
     if _mode(kind, row) == "organizer":
         _ensure_organizer(db, kind, row, viewer_id)
         _apply_edit(db, kind, row, clean)
+        _record_direct(db, kind, row, viewer_id, "edit", clean)
         db.commit()
         return settings_payload(db, viewer_id, kind, slug)
     return propose(db, viewer_id, kind, slug, "edit", clean)
@@ -509,6 +534,14 @@ def remove_member(db: Session, viewer_id: UUID, kind: str, slug: str, username: 
             scope_memberships.c.scope_id == row["id"],
             scope_memberships.c.user_id == target,
         )
+    )
+    _record_direct(
+        db,
+        kind,
+        row,
+        viewer_id,
+        "remove_member",
+        {"target_user_id": str(target), "username": username},
     )
     db.commit()
     _notify_removed(db, kind, row, target, viewer_id)

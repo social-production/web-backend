@@ -21,7 +21,9 @@ def test_new_account_is_refused_with_the_reason(monkeypatch):
     monkeypatch.setattr(
         standing_module, "standing_for", lambda db, user_id: standing_module.Standing("new", 0.0)
     )
-    monkeypatch.setattr(standing_module, "next_step", lambda db, user_id: "Voting opens after…")
+    monkeypatch.setattr(
+        votes, "warmup_gap", lambda db, user_id, action="voting": f"Warm up before {action}."
+    )
     with pytest.raises(HTTPException) as refused:
         votes.ensure_established_voter(None, uuid4())
-    assert refused.value.detail == "Voting opens after…"
+    assert refused.value.detail == "Warm up before voting."

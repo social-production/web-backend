@@ -117,6 +117,11 @@ def test_organizers_edit_directly_and_switching_needs_their_vote(client: TestCli
     assert direct.status_code == 200, direct.text
     assert direct.json()["name"] == "Garden-Crew"
     assert direct.json()["governance"] == "organizer"
+    recorded = direct.json()["recent_decisions"][0]
+    assert recorded["kind"] == "edit"
+    assert recorded["outcome"] == "passed"
+    assert recorded["yes"] == 1
+    assert recorded["payload"]["name"] == "Garden-Crew"
 
     blocked = client.patch(
         f"/scopes/communities/{slug}/settings", headers=_auth(member[0]), json={"name": "Mine"}

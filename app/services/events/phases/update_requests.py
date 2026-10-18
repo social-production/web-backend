@@ -73,13 +73,15 @@ def create_update_request(
         organizer_posts = _is_organizer_controlled(event_row) and _is_event_organizer(
             db, event_row, current_user_id
         )
-        if organizer_posts:
+        posts_now = member_count <= 1 or organizer_posts
+        if posts_now:
+            # Record the poster's Yes so History shows who decided, not an empty vote.
             db.execute(
                 insert(event_update_request_votes).values(
                     request_id=created["id"], voter_id=current_user_id, vote="yes"
                 )
             )
-        if member_count <= 1 or organizer_posts:
+        if posts_now:
             db.execute(
                 update(event_update_requests)
                 .where(event_update_requests.c.id == created["id"])

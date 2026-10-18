@@ -337,7 +337,7 @@ def list_active_board_member_ids(db: Session) -> list[UUID]:
 
 
 def volunteer_as_candidate(db: Session, current_user_id: UUID) -> dict[str, object]:
-    ensure_established_voter(db, current_user_id)
+    ensure_established_voter(db, current_user_id, "volunteering as a moderator")
     if get_settings().governance_trust_ratio_enabled:
         from app.services.trust import moderator_weight_detail, user_vouch_weight
 

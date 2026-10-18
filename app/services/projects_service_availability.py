@@ -260,6 +260,9 @@ def expand_availability_slots(
             end = end.replace(tzinfo=UTC)
         held = hold_covers(start, end)
         is_booking = linked_request_id is not None
+        if is_booking and any(request["id"] == linked_request_id for request in accepted_requests):
+            # Shown through the slot it holds (or its own "request:" slot) below, not twice.
+            continue
         bookings = bookings_for(start, end) if viewer_is_creator else []
         booked_by_viewer = viewer_booked(start, end)
         slots.append(

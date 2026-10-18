@@ -256,6 +256,8 @@ def send_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not send message"
         ) from exc
 
+    _notify_chat_mentions(db, conversation_id, current_user_id, plaintext)
+
     reply = (
         _reply_snapshots(db, [reply_to_id] if reply_to_id else []).get(reply_to_id)
         if reply_to_id
@@ -266,6 +268,48 @@ def send_message(
             created, plaintext, attachments=stored_attachments, reply=reply
         )
     }
+
+
+def _notify_chat_mentions(
+    db: Session, conversation_id: UUID, author_id: UUID, plaintext: str
+) -> None:
+    """@name in a chat pings that person, if they're in the chat. The message text stays private."""
+    from app.services.governance import _mentioned_user_ids
+    from app.services.notifications import create_notification
+
+    mentioned = set(_mentioned_user_ids(db, plaintext, author_id))
+    if not mentioned:
+        return
+    members = set(
+        db.execute(
+            select(conversation_members.c.user_id).where(
+                conversation_members.c.conversation_id == conversation_id
+            )
+        ).scalars()
+    )
+    recipients = mentioned & members
+    if not recipients:
+        return
+    title = db.execute(
+        select(conversations.c.title).where(conversations.c.id == conversation_id)
+    ).scalar_one_or_none()
+    author = db.execute(
+        select(users.c.username).where(users.c.id == author_id)
+    ).scalar_one_or_none()
+    where = f"in {title}" if title else "in a chat"
+    for recipient_id in recipients:
+        create_notification(
+            db=db,
+            recipient_id=recipient_id,
+            actor_id=author_id,
+            kind="mention",
+            surface="inbox",
+            subject_type="thread",
+            subject_id=conversation_id,
+            title=title or "Chat",
+            body=f"{author or 'Someone'} mentioned you {where}.",
+            href=f"/messages?conversation={conversation_id}",
+        )
 
 
 CALL_OUTCOMES = frozenset({"completed", "missed", "declined"})

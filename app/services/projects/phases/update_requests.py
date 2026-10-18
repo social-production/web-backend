@@ -72,6 +72,12 @@ def create_project_update_request(
 
         executed = False
         if member_count <= 1:
+            # Record the poster's Yes so History shows who decided, not an empty vote.
+            db.execute(
+                insert(project_update_request_votes).values(
+                    request_id=created["id"], voter_id=current_user_id, vote="yes"
+                )
+            )
             db.execute(
                 update(project_update_requests)
                 .where(project_update_requests.c.id == created["id"])

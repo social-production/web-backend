@@ -275,7 +275,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                     "href": f"/help-requests/{hr_id}",
                     "meta": "Your request",
                     "createdAt": _small_iso(row["needed_at"]),
-                    "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                    "timeLabel": _small_iso(row["needed_at"]),
                     "countLabel": f"{signed} signed up · {needed} needed"
                     if needed > 0
                     else f"{signed} signed up",
@@ -334,7 +334,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                     "href": f"/help-requests/{hr_id}",
                     "meta": "You signed up",
                     "createdAt": _small_iso(row["needed_at"]),
-                    "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                    "timeLabel": _small_iso(row["needed_at"]),
                     "countLabel": f"{signed} signed up · {needed} needed"
                     if needed > 0
                     else f"{signed} signed up",
@@ -405,7 +405,7 @@ def _build_activity_rail(db: Session, current_user_id: UUID) -> list[dict[str, o
                         "href": f"/help-requests/{hr_id}",
                         "meta": "",
                         "createdAt": _small_iso(row["needed_at"]),
-                        "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                        "timeLabel": _small_iso(row["needed_at"]),
                         "countLabel": f"{signed} signed up · {needed} needed"
                         if needed > 0
                         else f"{signed} signed up",

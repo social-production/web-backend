@@ -478,7 +478,7 @@ def commit_help_request_role(
             subject_id=help_request_id,
             target_id=role_id,
             title=str(help_request_row["title"]),
-            body=f'Someone signed up for the "{role_row["title"]}" role.',
+            body=f'{_username(db, current_user_id)} signed up for the "{role_row["title"]}" role.',
             href=f"/help-requests/{help_request_id}",
         )
 
@@ -519,3 +519,8 @@ def uncommit_help_request_role(
     )
     db.commit()
     return {"ok": True, "help_request_id": help_request_id, "role_id": role_id}
+
+
+def _username(db: Session, user_id: UUID) -> str:
+    name = db.execute(select(users.c.username).where(users.c.id == user_id)).scalar_one_or_none()
+    return name or "Someone"

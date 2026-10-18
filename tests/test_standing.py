@@ -147,7 +147,9 @@ def test_new_account_can_take_part_but_not_vote(db_transaction: Session, warmup_
     with pytest.raises(HTTPException) as raised:
         ensure_established_voter(db_transaction, user_id)
     assert raised.value.status_code == 403
-    assert "Voting opens after 7 days and 3 contributions" in str(raised.value.detail)
+    detail = str(raised.value.detail)
+    assert detail.startswith("New accounts warm up before voting. Yours needs 7 days more")
+    assert "3 more contributions (you have 0 of 3)" in detail
 
 
 def test_warm_account_votes_at_half_weight(db_transaction: Session, warmup_on) -> None:
@@ -253,6 +255,41 @@ def test_bot_marks_open_a_review_instead_of_pausing(db_transaction: Session, war
     review = review_payload(db_transaction, suspect, markers[0])
     assert review is not None and review["status"] == "open"
     assert review["viewer_can_vote"] is True
+
+
+def test_review_tells_full_members_who_share_a_space(db_transaction: Session, warmup_on) -> None:
+    from app.models import notifications, scope_memberships
+
+    founder = _founder(db_transaction)
+    markers = [_full_member(db_transaction, founder, f"standing-mk-{i}") for i in range(3)]
+    neighbour = _full_member(db_transaction, founder, "standing-neighbour")
+    stranger = _full_member(db_transaction, founder, "standing-far")
+    suspect = _warm_user(db_transaction, "standing-sus")
+    community_id = uuid4()
+    for user_id in (suspect, neighbour, markers[0]):
+        db_transaction.execute(
+            insert(scope_memberships).values(
+                id=uuid4(),
+                scope_kind="community",
+                scope_id=community_id,
+                user_id=user_id,
+                role="member",
+                created_at=datetime.now(UTC),
+            )
+        )
+    for marker in markers:
+        _stance(db_transaction, marker, suspect, "bot")
+    maybe_open_review(db_transaction, suspect)
+
+    told = set(
+        db_transaction.execute(
+            select(notifications.c.recipient_id).where(notifications.c.kind == "bot-review-vote")
+        ).scalars()
+    )
+    assert neighbour in told
+    assert stranger not in told
+    assert markers[0] not in told
+    assert suspect not in told
 
 
 def test_upheld_review_pauses_and_pauses_vouching(

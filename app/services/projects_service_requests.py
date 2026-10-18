@@ -504,6 +504,35 @@ def update_service_request_status(
                 starts_at=request_row["scheduled_at"],
                 ends_at=request_row["ends_at"],
             )
+        if (
+            normalized_status == "accepted"
+            and project_row["project_mode"] == "personal-service"
+            and request_row["scheduled_at"] is not None
+            and request_row["ends_at"] is not None
+            and request_row.get("linked_activity_id") is None
+        ):
+            # An accepted timed request becomes a booking: it shows in the provider's agenda,
+            # and once it's over both people find it in history and can rate it.
+            booking_id = db.execute(
+                insert(project_activities)
+                .values(
+                    project_id=project_row["id"],
+                    linked_request_id=request_id,
+                    title=str(request_row["title"]).strip()[:200] or "Booking",
+                    author_id=project_row["author_id"],
+                    scheduled_at=request_row["scheduled_at"],
+                    ends_at=request_row["ends_at"],
+                    location_label=str(project_row.get("location_label") or "")[:160],
+                    note="",
+                    status="active",
+                )
+                .returning(project_activities.c.id)
+            ).scalar_one()
+            db.execute(
+                update(project_service_requests)
+                .where(project_service_requests.c.id == request_id)
+                .values(linked_activity_id=booking_id)
+            )
         db.commit()
     except IntegrityError as exc:
         db.rollback()

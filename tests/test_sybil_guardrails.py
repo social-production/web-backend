@@ -98,7 +98,7 @@ def test_new_account_is_refused_when_warmup_is_on(
     with pytest.raises(HTTPException) as raised:
         ensure_established_voter(db_transaction, user_id)
     assert raised.value.status_code == 403
-    assert str(raised.value.detail).startswith("Voting opens after")
+    assert str(raised.value.detail).startswith("New accounts warm up before")
 
 
 def test_old_account_with_counted_actions_is_accepted(
@@ -371,7 +371,7 @@ def test_new_account_cannot_volunteer_but_can_take_an_activity_role(
     with pytest.raises(HTTPException) as raised:
         volunteer_as_candidate(db_transaction, user_id)
     assert raised.value.status_code == 403
-    assert str(raised.value.detail).startswith("Voting opens after")
+    assert str(raised.value.detail).startswith("New accounts warm up before")
 
     monkeypatch.setattr(Session, "commit", lambda self: self.flush())
     result = commit_project_activity_role(

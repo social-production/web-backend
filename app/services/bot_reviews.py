@@ -13,11 +13,21 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.models import account_stances, bot_mark_cooldowns, bot_review_votes, bot_reviews, users
+from app.models import (
+    account_stances,
+    bot_mark_cooldowns,
+    bot_review_votes,
+    bot_reviews,
+    conversation_members,
+    event_memberships,
+    project_memberships,
+    scope_memberships,
+    users,
+)
 from app.services.standing import FULL, compute_standings
 from app.utils.votes import required_votes, weekly_active_users_global
 
@@ -27,6 +37,8 @@ COOLDOWN_DAYS = 30
 APPEAL_AFTER_DAYS = 30
 BOT_SHARE = 0.66
 MIN_VOTES = 3
+# Most people told about one review, so a busy account can't flood everyone's bell.
+MAX_REVIEW_NOTICES = 100
 
 
 def _now() -> datetime:
@@ -148,6 +160,67 @@ def maybe_open_review(db: Session, target_id: UUID) -> None:
         "Full members are voting on whether this account belongs to a real person. "
         "You can keep posting while the review is open.",
     )
+    _notify_people_who_know_them(db, target_id, review_id, standings)
+
+
+def _shared_member_ids(db: Session, target_id: UUID) -> set:
+    """Everyone who shares a community, channel, project, event or chat with the account."""
+    shared: set = set()
+    for table, key in (
+        (scope_memberships, (scope_memberships.c.scope_kind, scope_memberships.c.scope_id)),
+        (project_memberships, (project_memberships.c.project_id,)),
+        (event_memberships, (event_memberships.c.event_id,)),
+        (conversation_members, (conversation_members.c.conversation_id,)),
+    ):
+        theirs = select(*key).where(table.c.user_id == target_id)
+        rows = db.execute(
+            select(table.c.user_id)
+            .where(tuple_(*key).in_(theirs) if len(key) > 1 else key[0].in_(theirs))
+            .distinct()
+        ).scalars()
+        shared.update(rows)
+    shared.discard(target_id)
+    return shared
+
+
+def _notify_people_who_know_them(
+    db: Session, target_id: UUID, review_id: UUID, standings: dict
+) -> None:
+    """Full members who share a space with the account hear about the review and can vote.
+
+    The people who marked it already know; nobody else is told who marked it.
+    """
+    from app.services.notifications import create_notification
+
+    markers = set(
+        db.execute(
+            select(account_stances.c.source_user_id).where(
+                account_stances.c.target_user_id == target_id, account_stances.c.stance == "bot"
+            )
+        ).scalars()
+    )
+    voters = [
+        user_id
+        for user_id in _shared_member_ids(db, target_id)
+        if user_id not in markers and getattr(standings.get(user_id), "level", None) == FULL
+    ][:MAX_REVIEW_NOTICES]
+    username = db.execute(select(users.c.username).where(users.c.id == target_id)).scalar_one()
+    for voter_id in voters:
+        create_notification(
+            db,
+            recipient_id=voter_id,
+            kind="bot-review-vote",
+            surface="account",
+            subject_type="account",
+            subject_id=review_id,
+            target_id=target_id,
+            title=f"Is {username} a real person?",
+            body=(
+                f"{username} is in a bot review, and you share a space with them. "
+                "If you know them, vote Real person or Bot on their profile."
+            ),
+            href=f"/profile/{username}",
+        )
 
 
 def _tally(db: Session, review, standings: dict) -> dict:

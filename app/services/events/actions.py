@@ -32,6 +32,11 @@ from app.services.activity_role_suggestions import (
     notify_role_suggestion,
     role_insert_suggestion_values,
 )
+from app.services.activity_roles import (
+    notify_member_left,
+    notify_role_taken,
+    release_upcoming_roles,
+)
 from app.services.events.helpers import (
     _ensure_event_member,
     _get_event_by_slug_row,
@@ -163,6 +168,9 @@ def leave_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, obje
             .where(events.c.id == event_row["id"])
             .values(member_count=func.greatest(events.c.member_count - 1, 0))
         )
+        released = release_upcoming_roles(
+            db, kind="event", scope_id=event_row["id"], user_id=current_user_id
+        )
 
         db.commit()
     except IntegrityError as exc:
@@ -181,6 +189,22 @@ def leave_event(db: Session, current_user_id: UUID, slug: str) -> dict[str, obje
         redis.delete("governance:weekly_active")
     except Exception:
         pass
+
+    organizer_ids = {event_row["created_by"]} | set(
+        db.execute(
+            select(event_editors.c.user_id).where(event_editors.c.event_id == event_row["id"])
+        ).scalars()
+    )
+    notify_member_left(
+        db,
+        kind="event",
+        scope_id=event_row["id"],
+        slug=str(event_row["slug"]),
+        title=str(event_row["title"]),
+        organizer_ids=[item for item in organizer_ids if item is not None],
+        actor_id=current_user_id,
+        released_roles=released,
+    )
 
     return {"ok": True, "joined": False, "slug": event_row["slug"]}
 
@@ -818,6 +842,16 @@ def commit_event_activity_role(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not commit event activity role",
         ) from exc
+
+    notify_role_taken(
+        db,
+        kind="event",
+        scope_id=event_row["id"],
+        slug=str(event_row["slug"]),
+        activity_row=activity_row,
+        role_label=str(role_row["label"]),
+        actor_id=current_user_id,
+    )
 
     return {
         "ok": True,

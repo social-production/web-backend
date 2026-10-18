@@ -576,3 +576,35 @@ def remove_group_member(
     refreshed = _get_conversation_row(db, conversation_id)
     participants = _get_conversation_participants(db, conversation_id)
     return {"conversation": _serialize_conversation(refreshed, participants)}
+
+
+def leave_group(db: Session, current_user_id: UUID, conversation_id: UUID) -> dict[str, object]:
+    """Leave a group chat. If the creator leaves, the longest-standing member takes over."""
+    conversation_row = _get_conversation_row(db, conversation_id)
+    _ensure_member(db, conversation_id, current_user_id)
+    if conversation_row["kind"] != "group":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only group chats can be left. Delete a direct chat instead.",
+        )
+    db.execute(
+        delete(conversation_members).where(
+            conversation_members.c.conversation_id == conversation_id,
+            conversation_members.c.user_id == current_user_id,
+        )
+    )
+    if conversation_row["created_by"] == current_user_id:
+        successor = db.execute(
+            select(conversation_members.c.user_id)
+            .where(conversation_members.c.conversation_id == conversation_id)
+            .order_by(conversation_members.c.joined_at.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if successor is not None:
+            db.execute(
+                update(conversations)
+                .where(conversations.c.id == conversation_id)
+                .values(created_by=successor)
+            )
+    db.commit()
+    return {"ok": True}

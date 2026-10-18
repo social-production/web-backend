@@ -192,7 +192,7 @@ def _build_activity_rail_history(db: Session, current_user_id: UUID) -> list[dic
                 "createdAt": _small_iso(row["needed_at"]),
                 "scheduledAt": _small_iso(row["needed_at"]),
                 "endsAt": _small_iso(row["needed_at"]),
-                "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                "timeLabel": _small_iso(row["needed_at"]),
                 "viewerIsAuthor": True,
                 "viewerParticipated": True,
                 "body": _truncate_update_body(str(row["body"] or "")),
@@ -245,7 +245,7 @@ def _build_activity_rail_history(db: Session, current_user_id: UUID) -> list[dic
                 "createdAt": _small_iso(row["needed_at"]),
                 "scheduledAt": _small_iso(row["needed_at"]),
                 "endsAt": _small_iso(row["needed_at"]),
-                "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                "timeLabel": _small_iso(row["needed_at"]),
                 "viewerParticipated": True,
                 "body": _truncate_update_body(str(row["body"] or "")),
             }
@@ -928,7 +928,7 @@ def _append_current_role_signups(
                 "meta": "You signed up",
                 "createdAt": _small_iso(row["needed_at"]),
                 "scheduledAt": _small_iso(row["needed_at"]),
-                "timeLabel": row["schedule_label"] or _small_iso(row["needed_at"]),
+                "timeLabel": _small_iso(row["needed_at"]),
                 "viewerParticipated": True,
             }
         )

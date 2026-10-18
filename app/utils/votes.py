@@ -144,20 +144,37 @@ def _established_clause(user_id_column):
 
 def _layer2_allows(db: Session, user_id: UUID) -> bool:
     """True when warm-up is off, or the account is old enough and active enough."""
+    return warmup_gap(db, user_id) is None
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _duration(delta: timedelta) -> str:
+    hours = max(1, int((delta.total_seconds() + 3599) // 3600))
+    if hours >= 24:
+        return _plural((hours + 23) // 24, "day")
+    return _plural(hours, "hour")
+
+
+def warmup_gap(db: Session, user_id: UUID, action: str = "voting") -> str | None:
+    """Why this account can't vote yet, naming what's left; None once warm-up is done."""
     if not governance_guardrails_enabled():
-        return True
+        return None
 
     settings = get_settings()
     created_at = db.execute(
         select(users.c.created_at).where(users.c.id == user_id)
     ).scalar_one_or_none()
     if created_at is None:
-        return False
+        return "Sign in to vote."
 
     now = datetime.now(UTC)
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=UTC)
     effective_start = created_at
+    penalised = False
     if settings.governance_removal_penalty_hours > 0:
         latest_penalty = db.execute(
             select(func.max(meaningful_actions.c.occurred_at)).where(
@@ -173,23 +190,41 @@ def _layer2_allows(db: Session, user_id: UUID) -> bool:
             )
             if penalty_start > effective_start:
                 effective_start = penalty_start
+                penalised = True
 
+    missing: list[str] = []
     min_age = timedelta(hours=max(settings.governance_min_account_age_hours, 0))
-    if now - effective_start < min_age:
-        return False
+    wait = min_age - (now - effective_start)
+    if wait > timedelta(0):
+        missing.append(f"{_duration(wait)} more")
 
-    if settings.governance_min_meaningful_actions > 0:
-        counted = db.execute(
-            select(func.count())
-            .select_from(meaningful_actions)
-            .where(
-                meaningful_actions.c.user_id == user_id,
-                meaningful_actions.c.action_type.in_(meaningful_action_types()),
+    needed = max(0, int(settings.governance_min_meaningful_actions))
+    if needed > 0:
+        counted = int(
+            db.execute(
+                select(func.count())
+                .select_from(meaningful_actions)
+                .where(
+                    meaningful_actions.c.user_id == user_id,
+                    meaningful_actions.c.action_type.in_(meaningful_action_types()),
+                )
+            ).scalar_one()
+            or 0
+        )
+        if counted < needed:
+            missing.append(
+                f"{_plural(needed - counted, 'more contribution')} "
+                f"(you have {counted} of {needed}), like commenting, posting or starting a project"
             )
-        ).scalar_one()
-        if int(counted or 0) < settings.governance_min_meaningful_actions:
-            return False
-    return True
+
+    if not missing:
+        return None
+    if penalised:
+        return (
+            f"{action.capitalize()} is paused for a while after a moderator removed your content. "
+            f"It opens again after {' and '.join(missing)}."
+        )
+    return f"New accounts warm up before {action}. Yours needs {' and '.join(missing)}."
 
 
 def is_established_voter(db: Session, user_id: UUID) -> bool:
@@ -202,16 +237,30 @@ def is_established_voter(db: Session, user_id: UUID) -> bool:
     return standing.can_vote and _layer2_allows(db, user_id)
 
 
-def ensure_established_voter(db: Session, user_id: UUID) -> None:
-    from app.services.standing import FULL, next_step, standing_for
+def ensure_established_voter(db: Session, user_id: UUID, action: str = "voting") -> None:
+    from app.services.standing import FULL, standing_for
 
     standing = standing_for(db, user_id)
     # Full members vote, including the platform's first accounts, which start full before
     # they'd pass the new-account warm-up.
     if standing.level == FULL:
         return
-    if not standing.can_vote or not _layer2_allows(db, user_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=next_step(db, user_id))
+    if not standing.can_vote:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=voting_refusal(db, user_id, action)
+        )
+    gap = warmup_gap(db, user_id, action)
+    if gap is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=gap)
+
+
+def voting_refusal(db: Session, user_id: UUID, action: str = "voting") -> str:
+    """Why someone whose standing doesn't allow voting is refused."""
+    from app.services.standing import PAUSED, standing_for
+
+    if standing_for(db, user_id).level == PAUSED:
+        return f"A community review found this account is a bot, so it can't do {action}."
+    return warmup_gap(db, user_id, action) or f"Your account can't do {action} yet."
 
 
 def _append_voter_filters(db: Session, filters: list, user_id_column) -> None:

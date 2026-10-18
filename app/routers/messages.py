@@ -532,6 +532,17 @@ def remove_member_from_group(
     )
 
 
+@router.post("/conversations/{conversation_id}/leave")
+def leave_group_chat(
+    conversation_id: UUID,
+    current_user_id: UUID = Depends(get_current_user_id),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    from app.services.messages.conversations import leave_group
+
+    return leave_group(db=db, current_user_id=current_user_id, conversation_id=conversation_id)
+
+
 @router.get("/linked-chats", response_model=LinkedChatsListResponse)
 def list_linked_chats(
     current_user_id: UUID = Depends(get_current_user_id),

@@ -248,3 +248,31 @@ def test_a_finished_call_is_logged_once_in_the_chat(client: TestClient) -> None:
     )
     items = thread.json()["items"]
     assert [item["kind"] for item in items].count("call") == 1
+
+
+def test_members_can_leave_a_group_and_the_creator_hands_over(client: TestClient) -> None:
+    owner, member, _outsider = _seed_pair("leave")
+    group = client.post(
+        "/messages/group",
+        headers=_auth(owner[0]),
+        json={"title": "Leave group", "participant_usernames": [member[1]]},
+    )
+    assert group.status_code == 200, group.text
+    group_id = group.json()["conversation"]["id"]
+
+    left = client.post(f"/messages/conversations/{group_id}/leave", headers=_auth(owner[0]))
+    assert left.status_code == 200, left.text
+    gone = client.get(f"/messages/conversations/{group_id}/messages", headers=_auth(owner[0]))
+    assert gone.status_code in {403, 404}
+
+    # The remaining member now manages the group.
+    added = client.post(
+        f"/messages/conversations/{group_id}/members",
+        headers=_auth(member[0]),
+        json={"username": owner[1]},
+    )
+    assert added.status_code == 200, added.text
+
+    direct_id = _direct(client, owner, member[1])
+    refused = client.post(f"/messages/conversations/{direct_id}/leave", headers=_auth(owner[0]))
+    assert refused.status_code == 422

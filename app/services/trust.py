@@ -124,7 +124,9 @@ def trust_vote_detail() -> str:
 def moderator_weight_detail() -> str:
     params = TrustParams.from_settings()
     return (
-        f"Volunteering as a moderator needs vouch weight of at least {params.vote_threshold:.2f}."
+        "Volunteering as a moderator needs vouches from full members first "
+        f"(a vouch weight of at least {params.vote_threshold:.2f}). Ask people who know you "
+        "to vouch on your profile."
     )
 
 

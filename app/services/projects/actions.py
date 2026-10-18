@@ -31,6 +31,11 @@ from app.services.activity_role_suggestions import (
     notify_role_suggestion,
     role_insert_suggestion_values,
 )
+from app.services.activity_roles import (
+    notify_member_left,
+    notify_role_taken,
+    release_upcoming_roles,
+)
 from app.services.meaningful_actions import record_meaningful_action
 from app.services.notifications import create_notification
 from app.services.projects.helpers import (
@@ -118,11 +123,15 @@ def leave_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, ob
             )
         )
 
+        released = 0
         if result.rowcount and result.rowcount > 0:
             db.execute(
                 update(projects)
                 .where(projects.c.id == project_row["id"])
                 .values(member_count=func.greatest(projects.c.member_count - 1, 0))
+            )
+            released = release_upcoming_roles(
+                db, kind="project", scope_id=project_row["id"], user_id=current_user_id
             )
 
         db.commit()
@@ -141,6 +150,26 @@ def leave_project(db: Session, current_user_id: UUID, slug: str) -> dict[str, ob
         redis.delete("governance:weekly_active")
     except Exception:
         pass
+
+    if result.rowcount:
+        manager_ids = {project_row["author_id"]} | set(
+            db.execute(
+                select(project_memberships.c.user_id).where(
+                    project_memberships.c.project_id == project_row["id"],
+                    project_memberships.c.is_manager.is_(True),
+                )
+            ).scalars()
+        )
+        notify_member_left(
+            db,
+            kind="project",
+            scope_id=project_row["id"],
+            slug=str(project_row["slug"]),
+            title=str(project_row["title"]),
+            organizer_ids=[item for item in manager_ids if item is not None],
+            actor_id=current_user_id,
+            released_roles=released,
+        )
 
     return {"ok": True, "joined": False, "slug": project_row["slug"]}
 
@@ -601,6 +630,16 @@ def commit_project_activity_role(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not commit activity role",
         ) from exc
+
+    notify_role_taken(
+        db,
+        kind="project",
+        scope_id=project_row["id"],
+        slug=str(project_row["slug"]),
+        activity_row=activity_row,
+        role_label=str(role_row["label"]),
+        actor_id=current_user_id,
+    )
 
     return {
         "ok": True,
