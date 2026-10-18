@@ -93,8 +93,10 @@ class UserSettings(BaseModel):
     require_follow_approval: bool
     preferred_language: str
     display_timezone: str | None = None
-    combine_feeds: bool = False
+    combine_feeds: bool = True
     text_size: str = "medium"
+    accent_color: str = "green"
+    font_family: str = "inter"
     default_location_id: UUID | None = None
     notification_categories: list[str]
 
@@ -137,6 +139,8 @@ class UpdateOwnProfileSettingsRequest(BaseModel):
     display_timezone: str | None = None
     combine_feeds: bool | None = None
     text_size: str | None = None
+    accent_color: str | None = None
+    font_family: str | None = None
     default_location_id: UUID | None = None
     notification_categories: list[str] | None = None
 

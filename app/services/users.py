@@ -34,6 +34,8 @@ USER_SETTINGS_FIELDS = {
     "display_timezone",
     "combine_feeds",
     "text_size",
+    "accent_color",
+    "font_family",
     "default_location_id",
     "notification_categories",
 }
@@ -90,6 +92,8 @@ def _serialize_settings(row: Mapping[str, object]) -> dict[str, object]:
         "text_size": row["text_size"]
         if row["text_size"] in {"small", "medium", "large"}
         else "medium",
+        "accent_color": row["accent_color"] if row["accent_color"] in ACCENT_COLORS else "green",
+        "font_family": row["font_family"] if row["font_family"] in FONT_FAMILIES else "inter",
         "default_location_id": row["default_location_id"],
         "notification_categories": normalize_notification_categories(
             row.get("notification_categories")
@@ -197,7 +201,10 @@ def get_own_profile(db: Session, current_user_id: UUID) -> dict[str, object]:
     return {"user": _serialize_user(user_row), "settings": _serialize_settings(settings_row)}
 
 
-VALID_LANGUAGES = {"en", "nl"}
+VALID_LANGUAGES = {"en", "nl", "ru"}
+# Personal style choices; the web app maps each to its colours and fonts.
+ACCENT_COLORS = {"green", "blue", "purple", "orange", "pink", "teal"}
+FONT_FAMILIES = {"inter", "system", "readable"}
 
 
 def update_own_profile_settings(
@@ -223,6 +230,16 @@ def update_own_profile_settings(
                 detail="invalid_text_size",
             )
         settings_updates["text_size"] = text_size
+
+    for key, allowed, detail in (
+        ("accent_color", ACCENT_COLORS, "invalid_accent_color"),
+        ("font_family", FONT_FAMILIES, "invalid_font_family"),
+    ):
+        if key in settings_updates:
+            value = str(settings_updates[key]).strip().lower()
+            if value not in allowed:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+            settings_updates[key] = value
 
     if "display_timezone" in settings_updates:
         timezone_value = settings_updates["display_timezone"]

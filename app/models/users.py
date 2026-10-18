@@ -51,8 +51,10 @@ user_settings = table(
     sa.Column("require_follow_approval", sa.Boolean, nullable=False, server_default=sa.false()),
     sa.Column("preferred_language", sa.String(5), nullable=False, server_default="en"),
     sa.Column("display_timezone", sa.String(64), nullable=True),
-    sa.Column("combine_feeds", sa.Boolean, nullable=False, server_default=sa.false()),
+    sa.Column("combine_feeds", sa.Boolean, nullable=False, server_default=sa.true()),
     sa.Column("text_size", sa.String(8), nullable=False, server_default="medium"),
+    sa.Column("accent_color", sa.String(12), nullable=False, server_default="green"),
+    sa.Column("font_family", sa.String(12), nullable=False, server_default="inter"),
     sa.Column(
         "notification_categories",
         JSONB,
