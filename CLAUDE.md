@@ -6,6 +6,9 @@
 - Anti-bot: `app/services/standing.py` (new → warm → full → paused; weights and quorum population) and `app/services/bot_reviews.py` (3 marks open a public review; full members decide). `trust.py`'s ratio graph is display-only now.
 - Calls signalling: `app/services/messages/calls.py` (Redis pub/sub). Messages: `app/services/messages/*`.
 - Settings: `app/config.py` (`GOVERNANCE_*` env vars on Railway).
+- Privacy: anything listed to a viewer must hide items tagged only to private (closed) communities they aren't in. Single-entity selects use `closed_community_only_tag_condition`; combined feeds use `hide_private_community_items` (both in `app/services/access_control.py`). Tag chips come from `feeds/serializers.py::_fetch_tags_for_items(viewer_id=…)`.
+- Notifications: a new `kind` must be added to `KIND_TO_CATEGORY` in `app/services/notification_preferences.py` or `create_notification` drops it.
+- Auth: refresh tokens rotate; reuse is allowed within 30 s, or while the replacement token is unused (`_rotation_allows_reuse` in `app/services/auth.py`).
 
 ## Rules
 - Alembic revision IDs must be ≤ 32 chars (`alembic_version` is varchar(32)); Railway runs `alembic upgrade head` on start, so a bad migration crash-loops production.
