@@ -1,131 +1,51 @@
-# Social Production Web Backend
+# Social Production: web-backend
 
-Phase 1 backend — FastAPI + PostgreSQL 16 + Redis, Alembic migrations, Docker Compose.
+The API behind the Social Production website: FastAPI, PostgreSQL 16 and Redis. The site lives in [web](https://github.com/social-production/web).
 
-## Recommended Beginner Setup
+- API: https://web-backend-production-dd75.up.railway.app (health: `/readyz`)
+- Live site: https://web-production-885ec.up.railway.app
 
-Use Docker unless you specifically want to manage Python, PostgreSQL, and Redis yourself.
+## Run it locally
 
-Prerequisites:
-
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- Git, if you are cloning the project for the first time
-
-From the `web-backend` folder:
-
-```bash
-docker compose up -d --build
-```
-
-Migrations and seed data run automatically on first start.
-
-Check that it worked:
-
-- API docs: `http://localhost:8000/docs`
-- Lightweight health check: `http://localhost:8000/healthz`
-- Readiness check: `http://localhost:8000/readyz`
-
-Then start the frontend from the `web` folder:
-
-```bash
-npm install
-npm run dev
-```
-
-Open `http://localhost:5173`.
-
-## Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `APP_ENV` | `development` | Set to `production` in deployed environments to enable startup safety checks |
-| `DATABASE_URL` | set in compose | PostgreSQL connection string |
-| `REDIS_URL` | set in compose | Redis connection string |
-| `JWT_SECRET` | local dev value | Secret for JWT tokens. Generate: `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `JWT_ACCESS_EXPIRE_MINUTES` | `15` | Access token lifetime in minutes |
-| `MESSAGE_ENCRYPTION_KEY` | generate locally | Fernet key for message encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
-| `CORS_ORIGINS` | `http://localhost:5173` | Allowed origins, e.g. `https://socialproduction.example` |
-| `GITHUB_TOKEN` | _(empty)_ | Fine-grained GitHub PAT with **Issues: write** on `GITHUB_REPO`. Required for the in-app feedback form. |
-| `GITHUB_REPO` | `social-production/web` | `owner/repo` where feedback issues are created |
-
-With Docker, copy `.env.example` to `.env`, generate `MESSAGE_ENCRYPTION_KEY`, and set `GITHUB_TOKEN` if you want feedback submissions to work:
+You need Docker.
 
 ```bash
 cp .env.example .env
-# Generate MESSAGE_ENCRYPTION_KEY and paste it into .env
-# python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 docker compose up -d --build
 ```
 
-Set `APP_ENV=production`, real secrets, and explicit CORS origins before exposing the service externally. Production startup fails fast if placeholder secrets or wildcard CORS are used.
+The API runs at http://localhost:8000 (interactive docs at `/docs`) and reloads when you edit code. Migrations and seed data run on start.
 
-## Manual Setup (No Docker)
+Then start the site from the `web` folder with `npm run dev`.
 
-Use this only if you do not want Docker.
+Start over with an empty database: `docker compose down -v && docker compose up -d --build`.
 
-Prerequisites:
+## Settings
 
-- Python 3.11+
-- PostgreSQL 16
-- Redis 7
-- A local database named `social_production`
+`.env.example` lists every setting with a comment. The ones that matter most:
 
-```bash
-python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -e .
+| Setting | What it does |
+|---|---|
+| `JWT_SECRET`, `MESSAGE_ENCRYPTION_KEY` | Must be real secrets in production; the app refuses to start with placeholders. |
+| `CORS_ORIGINS` | Which sites may call the API. |
+| `GOVERNANCE_*` | Warm-up rules for new accounts and voting thresholds. |
+| `GITHUB_TOKEN`, `GITHUB_REPO` | Turns site feedback into GitHub issues. |
 
-# Set environment variables (or add to a .env file)
-export APP_ENV=development
-export DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/social_production
-export REDIS_URL=redis://localhost:6379/0
-export JWT_SECRET=<generate with: python -c "import secrets; print(secrets.token_hex(32))">
-export MESSAGE_ENCRYPTION_KEY=<generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
-export CORS_ORIGINS=http://localhost:5173
-
-# Run migrations and seed
-alembic upgrade head
-python scripts/seed.py
-
-# Start the server
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-## Running Tests
+## Checks
 
 ```bash
-# With Docker:
-docker compose exec backend python -m pytest tests/ -v
-
-# Without Docker (venv active):
-python -m pytest tests/ -v
+ruff check app tests && ruff format --check app tests
+python -m pytest -q   # uses the Docker Postgres
 ```
 
-## Troubleshooting
+## How the code is laid out
 
-### Port already in use
+Routes are in `app/routers/`, logic in `app/services/`, tables in `app/models/`, migrations in `alembic/versions/`. Migration IDs must be 32 characters or fewer, because production runs `alembic upgrade head` on start and a bad ID stops it booting. More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-- **5432** (PostgreSQL): stop any local postgres or change the host port in `docker-compose.yml`
-- **6379** (Redis): stop any local redis or change the port mapping
-- **8000** (backend): find the process with `lsof -i :8000` and stop it
+## Deploy
 
-### Backend container exits immediately
+Pushing to `main` redeploys on Railway and runs migrations. Push this repo before `web` when the site needs new fields, and wait for `/readyz` to return 200. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-```bash
-docker compose logs backend
-```
+## Contributing
 
-Common causes: `DATABASE_URL` unreachable because postgres is still starting (wait and retry), or invalid secret values.
-
-### Frontend cannot reach the backend
-
-Make sure `CORS_ORIGINS` includes `http://localhost:5173` and that the backend is reachable at `http://localhost:8000/docs`.
-
-### Start fresh (wipes all data)
-
-```bash
-docker compose down -v
-docker compose up -d --build
-```
-
-Migrations and seed run automatically on startup.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/SECURITY.md](docs/SECURITY.md).
