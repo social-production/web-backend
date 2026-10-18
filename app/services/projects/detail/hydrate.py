@@ -442,6 +442,18 @@ async def get_project_detail(
         else {}
     )
 
+    personal_service = row["project_mode"] == "personal-service"
+    # On a personal service, plain activities are open-availability windows. A booking inside
+    # one replaces it in the agenda, and windows never become history: nothing happened in them.
+    booking_spans = [
+        (item["scheduled_at"], item["ends_at"])
+        for item in activities_rows
+        if personal_service and item.get("linked_request_id")
+    ]
+
+    def _is_availability_window(item: Mapping[str, object]) -> bool:
+        return personal_service and not item.get("linked_request_id")
+
     live_activities: list[dict[str, object]] = []
     ended_activity_payloads: list[dict[str, object]] = []
     activity_rows_by_id: dict[UUID, Mapping[str, object]] = {}
@@ -525,6 +537,9 @@ async def get_project_detail(
             "isActive": not is_activity_ended(activity["ends_at"], now)
             and len(committed_users) >= minimum_participants,
             "rolesLocked": is_activity_ended(activity["ends_at"], now),
+            "linkedRequestId": (
+                str(activity["linked_request_id"]) if activity.get("linked_request_id") else None
+            ),
         }
         activity_rows_by_id[activity["id"]] = activity
         assignments_by_activity[activity["id"]] = committed_users
@@ -539,6 +554,14 @@ async def get_project_detail(
             )
         )
         if hide_booking:
+            continue
+        if _is_availability_window(activity) and (
+            is_activity_ended(activity["ends_at"], now)
+            or any(
+                start < activity["ends_at"] and end > activity["scheduled_at"]
+                for start, end in booking_spans
+            )
+        ):
             continue
         if is_activity_ended(activity["ends_at"], now):
             ended_activity_payloads.append(activity_payload)

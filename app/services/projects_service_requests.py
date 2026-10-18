@@ -528,6 +528,18 @@ def update_service_request_status(
                 )
                 .returning(project_activities.c.id)
             ).scalar_one()
+            # The provider holds the booking's one role, so history counts them as the
+            # participant: they can mark it done and rate it, like the requester.
+            provider_role_id = db.execute(
+                insert(project_activity_roles)
+                .values(activity_id=booking_id, label="Provider", required_count=1, maximum_count=1)
+                .returning(project_activity_roles.c.id)
+            ).scalar_one()
+            db.execute(
+                insert(project_activity_assignments).values(
+                    role_id=provider_role_id, user_id=project_row["author_id"]
+                )
+            )
             db.execute(
                 update(project_service_requests)
                 .where(project_service_requests.c.id == request_id)

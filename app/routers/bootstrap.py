@@ -60,6 +60,7 @@ class BootstrapResponse(BaseModel):
     suggestedContacts: list[ViewerSummaryOut]
     activityRail: list[dict[str, object]]
     activityRailHistory: list[dict[str, object]] = []
+    pausedUsernames: list[str] = []
 
 
 class OnboardingAccountModeOut(BaseModel):

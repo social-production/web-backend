@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models import users
 from app.services.bootstrap.activity_rail import _build_activity_rail
 from app.services.bootstrap.activity_rail_history import _build_activity_rail_history
 from app.services.bootstrap.directory import (
@@ -16,7 +18,15 @@ from app.services.bootstrap.summary import (
     _get_viewer_row,
     get_bootstrap_summary,
 )
-from app.services.standing import standing_for
+from app.services.standing import paused_ids, standing_for
+
+
+def _paused_usernames(db: Session) -> list[str]:
+    """Accounts a bot review found to be bots, so posts and comments can carry a Paused label."""
+    ids = paused_ids(db)
+    if not ids:
+        return []
+    return sorted(db.execute(select(users.c.username).where(users.c.id.in_(ids))).scalars())
 
 
 def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object]:
@@ -37,6 +47,7 @@ def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object
             "suggestedContacts": [],
             "activityRail": [],
             "activityRailHistory": [],
+            "pausedUsernames": _paused_usernames(db),
         }
 
     viewer = _get_viewer_row(db, current_user_id)
@@ -64,4 +75,5 @@ def get_bootstrap(db: Session, current_user_id: UUID | None) -> dict[str, object
         "suggestedContacts": _get_suggested_contacts(db, current_user_id),
         "activityRail": _build_activity_rail(db, current_user_id),
         "activityRailHistory": _build_activity_rail_history(db, current_user_id),
+        "pausedUsernames": _paused_usernames(db),
     }

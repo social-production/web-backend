@@ -28,6 +28,28 @@ def _target_user(db: Session, current_user_id: UUID, username: str):
     return target, None
 
 
+def send_share_message(
+    db: Session,
+    sender_id: UUID,
+    recipient_username: str,
+    *,
+    kind_label: str,
+    title: str,
+    href: str,
+) -> None:
+    """Drop the shared link into the 1:1 chat, so it sits with the rest of the conversation."""
+    from app.services.messages.conversations import start_direct_conversation
+    from app.services.messages.messaging import send_message
+
+    conversation = start_direct_conversation(db, sender_id, recipient_username)["conversation"]
+    send_message(
+        db,
+        sender_id,
+        UUID(str(conversation["id"])),
+        f"Shared a {kind_label}: {title}\nOpen {kind_label}: {href}",
+    )
+
+
 def share_post_with_user(
     db: Session,
     current_user_id: UUID,
@@ -52,6 +74,14 @@ def share_post_with_user(
         target_id=post["id"],
         title=title,
         body="A post was shared with you.",
+        href=f"/posts/{post['id']}",
+    )
+    send_share_message(
+        db,
+        current_user_id,
+        target["username"],
+        kind_label="post",
+        title=title,
         href=f"/posts/{post['id']}",
     )
     return {"ok": True}
@@ -81,6 +111,14 @@ def share_thread_with_user(
         body="A thread was shared with you.",
         href=f"/threads/{thread['slug']}",
     )
+    send_share_message(
+        db,
+        current_user_id,
+        target["username"],
+        kind_label="thread",
+        title=str(thread.get("title") or "Thread"),
+        href=f"/threads/{thread['slug']}",
+    )
     return {"ok": True}
 
 
@@ -107,6 +145,14 @@ def share_help_request_with_user(
         target_id=help_request["id"],
         title=str(help_request.get("title") or "Help request"),
         body="A help request was shared with you.",
+        href=f"/help-requests/{help_request['id']}",
+    )
+    send_share_message(
+        db,
+        current_user_id,
+        target["username"],
+        kind_label="help request",
+        title=str(help_request.get("title") or "Help request"),
         href=f"/help-requests/{help_request['id']}",
     )
     return {"ok": True}

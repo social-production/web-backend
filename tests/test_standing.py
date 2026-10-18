@@ -290,6 +290,14 @@ def test_review_tells_full_members_who_share_a_space(db_transaction: Session, wa
     assert stranger not in told
     assert markers[0] not in told
     assert suspect not in told
+    # The markers hear the review they asked for is open.
+    opened = set(
+        db_transaction.execute(
+            select(notifications.c.recipient_id).where(notifications.c.kind == "bot-review-result")
+        ).scalars()
+    )
+    assert set(markers) <= opened
+    assert suspect not in opened
 
 
 def test_upheld_review_pauses_and_pauses_vouching(
@@ -312,6 +320,16 @@ def test_upheld_review_pauses_and_pauses_vouching(
     with pytest.raises(HTTPException):
         ensure_not_paused(db_transaction, suspect)
     assert vouch_banned_until(db_transaction, voucher) is not None
+    from app.models import notifications
+
+    results = db_transaction.execute(
+        select(notifications.c.recipient_id, notifications.c.title).where(
+            notifications.c.kind == "bot-review-result"
+        )
+    ).all()
+    found = {recipient for recipient, title in results if title.endswith("is a bot")}
+    assert set(voters) <= found
+    assert founder in found
 
 
 def test_cleared_review_removes_marks_and_cools_markers(

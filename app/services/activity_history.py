@@ -23,6 +23,7 @@ from app.models import (
     project_service_history_completions,
     project_service_requests,
     projects,
+    users,
 )
 
 
@@ -322,6 +323,11 @@ def build_project_history_items(
         request_row = requests_by_activity.get(activity_id)
         linked_request_id = activity_row.get("linked_request_id")
         requester_user_id = request_row["requester_id"] if request_row is not None else None
+        if requester_user_id is not None and requester_user_id not in usernames:
+            name = db.execute(
+                select(users.c.username).where(users.c.id == requester_user_id)
+            ).scalar_one_or_none()
+            usernames[requester_user_id] = {"username": name or "unknown"}
         requester_username = (
             usernames.get(requester_user_id, {}).get("username", "unknown")
             if requester_user_id is not None

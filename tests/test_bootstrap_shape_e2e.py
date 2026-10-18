@@ -20,6 +20,7 @@ BOOTSTRAP_PAYLOAD_KEYS = {
     "suggestedContacts",
     "activityRail",
     "activityRailHistory",
+    "pausedUsernames",
 }
 
 

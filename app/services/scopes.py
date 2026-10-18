@@ -763,11 +763,15 @@ def list_scope_members(
         .all()
     )
 
+    from app.services.standing import NEW, compute_standings
+
+    standings = compute_standings(db)
     items = [
         {
             **_serialize_user(row),
             "role": row["role"],
             "joined_at": row["created_at"],
+            "standing": standings[row["id"]].level if row["id"] in standings else NEW,
         }
         for row in rows
     ]

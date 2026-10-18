@@ -265,6 +265,12 @@ def test_members_can_leave_a_group_and_the_creator_hands_over(client: TestClient
     gone = client.get(f"/messages/conversations/{group_id}/messages", headers=_auth(owner[0]))
     assert gone.status_code in {403, 404}
 
+    # The others see who went.
+    lines = client.get(f"/messages/conversations/{group_id}/messages", headers=_auth(member[0]))
+    assert lines.status_code == 200, lines.text
+    system = [item for item in lines.json()["items"] if item.get("kind") == "system"]
+    assert system and system[-1]["body"] == f"{owner[1]} left the group."
+
     # The remaining member now manages the group.
     added = client.post(
         f"/messages/conversations/{group_id}/members",

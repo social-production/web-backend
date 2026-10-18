@@ -54,6 +54,7 @@ KIND_TO_CATEGORY: dict[str, str] = {
     # Your account is under (or came out of) a bot review; always worth knowing.
     "bot-review": "votes_needed",
     "bot-review-vote": "votes_needed",
+    "bot-review-result": "votes_needed",
     "svc-request": "roles",
     "prj-phase-vote": "votes_needed",
     "evt-phase-vote": "votes_needed",

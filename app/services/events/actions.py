@@ -253,7 +253,7 @@ async def toggle_event_signal(
     # Removing your own signal is always allowed; adding or switching one is a vote.
     removing = existing is not None and existing["signal_type"] == normalized_signal
     if not removing:
-        ensure_established_voter(db, current_user_id)
+        ensure_established_voter(db, current_user_id, "giving a Support signal")
 
     action = "none"
 
@@ -962,6 +962,16 @@ def share_event_with_user(
         target_id=event_row["id"],
         title=event_row["title"],
         body=f"{event_row['title']} was shared with you.",
+        href=f"/events/{event_row['slug']}",
+    )
+    from app.services.content.shares import send_share_message
+
+    send_share_message(
+        db,
+        current_user_id,
+        target_user["username"],
+        kind_label="event",
+        title=event_row["title"],
         href=f"/events/{event_row['slug']}",
     )
     return {"ok": True}

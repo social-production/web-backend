@@ -161,6 +161,17 @@ def maybe_open_review(db: Session, target_id: UUID) -> None:
         "You can keep posting while the review is open.",
     )
     _notify_people_who_know_them(db, target_id, review_id, standings)
+    _notify_participants(
+        db,
+        target_id,
+        review_id,
+        title="A bot review of {username} is open",
+        body=(
+            "Three full members marked {username}, so full members now vote Real person or Bot "
+            "on their profile for up to 7 days."
+        ),
+        voters=False,
+    )
 
 
 def _shared_member_ids(db: Session, target_id: UUID) -> set:
@@ -223,6 +234,42 @@ def _notify_people_who_know_them(
         )
 
 
+def _notify_participants(
+    db: Session, target_id: UUID, review_id: UUID, *, title: str, body: str, voters: bool
+) -> None:
+    """Tell the people who marked the account (and, once it's decided, who voted) how it went."""
+    from app.services.notifications import create_notification
+
+    recipients = set(
+        db.execute(
+            select(account_stances.c.source_user_id).where(
+                account_stances.c.target_user_id == target_id, account_stances.c.stance == "bot"
+            )
+        ).scalars()
+    )
+    if voters:
+        recipients.update(
+            db.execute(
+                select(bot_review_votes.c.voter_id).where(bot_review_votes.c.review_id == review_id)
+            ).scalars()
+        )
+    recipients.discard(target_id)
+    username = db.execute(select(users.c.username).where(users.c.id == target_id)).scalar_one()
+    for recipient_id in recipients:
+        create_notification(
+            db,
+            recipient_id=recipient_id,
+            kind="bot-review-result",
+            surface="account",
+            subject_type="account",
+            subject_id=review_id,
+            target_id=target_id,
+            title=title.format(username=username),
+            body=body.format(username=username),
+            href=f"/profile/{username}",
+        )
+
+
 def _tally(db: Session, review, standings: dict) -> dict:
     rows = db.execute(
         select(bot_review_votes.c.voter_id, bot_review_votes.c.vote).where(
@@ -266,14 +313,31 @@ def _close(db: Session, review, outcome: str) -> None:
     )
     target_id = review["target_user_id"]
     if outcome == "upheld":
+        re_review_on = (now + timedelta(days=APPEAL_AFTER_DAYS)).strftime("%b %-d")
         _notify(
             db,
             target_id,
             review["id"],
             "A review found this account is a bot",
-            "The account is now read-only. You can ask for one re-review in 30 days.",
+            f"The account is now read-only. You can ask for one re-review from {re_review_on}.",
+        )
+        _notify_participants(
+            db,
+            target_id,
+            review["id"],
+            title="The review found {username} is a bot",
+            body="{username} is now read-only, and their votes no longer count.",
+            voters=True,
         )
         return
+    _notify_participants(
+        db,
+        target_id,
+        review["id"],
+        title="The review cleared {username}",
+        body="Members agreed {username} is a real person. Bot marks on them were cleared.",
+        voters=True,
+    )
     markers = list(
         db.execute(
             select(account_stances.c.source_user_id).where(

@@ -10,7 +10,7 @@ from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.crypto.messages import decrypt_message
+from app.crypto.messages import decrypt_message, encrypt_message
 from app.models import (
     conversation_members,
     conversations,
@@ -606,5 +606,23 @@ def leave_group(db: Session, current_user_id: UUID, conversation_id: UUID) -> di
                 .where(conversations.c.id == conversation_id)
                 .values(created_by=successor)
             )
+    name = db.execute(
+        select(users.c.username).where(users.c.id == current_user_id)
+    ).scalar_one_or_none()
+    # A "btstrp1 left the group." line, so the others can see who went.
+    db.execute(
+        insert(messages).values(
+            conversation_id=conversation_id,
+            sender_id=current_user_id,
+            encrypted_body=encrypt_message(f"{name or 'Someone'} left the group."),
+            encryption_version=1,
+            kind="system",
+        )
+    )
+    db.execute(
+        update(conversations)
+        .where(conversations.c.id == conversation_id)
+        .values(last_message_at=datetime.now(UTC))
+    )
     db.commit()
     return {"ok": True}

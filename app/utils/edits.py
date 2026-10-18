@@ -37,10 +37,8 @@ def ensure_no_overlapping_edit(db, table, owner_column, owner_id, proposed: dict
     for open_row in open_rows:
         overlap = [column for column, value in zip(changing, open_row) if value is not None]
         if overlap:
-            names = " and ".join(
-                column.replace("_label", "").replace("_", " ") for column in overlap
-            )
+            # Edit sheets send every field, so naming the overlap would list unchanged ones.
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"An edit to the {names} is already being voted on. Vote on it first.",
+                detail="Another edit is already being voted on. Vote on it first.",
             )
